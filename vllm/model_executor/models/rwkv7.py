@@ -40,15 +40,12 @@ from vllm.model_executor.models.interfaces import (
     SupportsPP,
 )
 from vllm.sequence import IntermediateTensors
-from vllm.utils.torch_utils import (
-    STR_DTYPE_TO_TORCH_DTYPE,
-    get_kv_cache_torch_dtype,
-)
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 
 from .utils import AutoWeightsLoader, PPMissingLayer, make_layers, maybe_prefix
 
 LOG_DECAY_SCALE = -0.6065306597126334
+RWKV7_RUNTIME_DTYPE = torch.float32
 
 
 def get_tp_world_size() -> int:
@@ -500,17 +497,11 @@ class RWKV7Block(nn.Module, MambaBase):
         return "linear_attention"
 
     def get_state_dtype(self) -> tuple[torch.dtype, ...]:
-        assert self.model_config is not None
-        assert self.cache_config is not None
-        shift_dtype = get_kv_cache_torch_dtype(
-            self.cache_config.mamba_cache_dtype, self.model_config.dtype
+        return (
+            RWKV7_RUNTIME_DTYPE,
+            RWKV7_RUNTIME_DTYPE,
+            RWKV7_RUNTIME_DTYPE,
         )
-        recurrent_dtype = (
-            shift_dtype
-            if self.cache_config.mamba_ssm_cache_dtype == "auto"
-            else STR_DTYPE_TO_TORCH_DTYPE[self.cache_config.mamba_ssm_cache_dtype]
-        )
-        return (shift_dtype, recurrent_dtype, shift_dtype)
 
     def get_state_shape(self) -> tuple[tuple[int, ...], ...]:
         return (
@@ -775,6 +766,10 @@ class RWKV7ForCausalLM(nn.Module, HasInnerState, IsAttentionFree, SupportsPP):
         else:
             self.lm_head = PPMissingLayer()
 
+        self.model.to(RWKV7_RUNTIME_DTYPE)
+        if get_pp_group().is_last_rank:
+            self.lm_head.to(RWKV7_RUNTIME_DTYPE)
+
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
@@ -807,18 +802,11 @@ class RWKV7ForCausalLM(nn.Module, HasInnerState, IsAttentionFree, SupportsPP):
     def get_mamba_state_dtype_from_config(
         cls, vllm_config: VllmConfig
     ) -> tuple[torch.dtype, ...]:
-        shift_dtype = get_kv_cache_torch_dtype(
-            vllm_config.cache_config.mamba_cache_dtype,
-            vllm_config.model_config.dtype,
+        return (
+            RWKV7_RUNTIME_DTYPE,
+            RWKV7_RUNTIME_DTYPE,
+            RWKV7_RUNTIME_DTYPE,
         )
-        recurrent_dtype = (
-            shift_dtype
-            if vllm_config.cache_config.mamba_ssm_cache_dtype == "auto"
-            else STR_DTYPE_TO_TORCH_DTYPE[
-                vllm_config.cache_config.mamba_ssm_cache_dtype
-            ]
-        )
-        return (shift_dtype, recurrent_dtype, shift_dtype)
 
     @classmethod
     def get_mamba_state_shape_from_config(
@@ -854,3 +842,4 @@ class RWKV7ForCausalLM(nn.Module, HasInnerState, IsAttentionFree, SupportsPP):
 
         loader = AutoWeightsLoader(self)
         return loader.load_weights(iter_weights())
+

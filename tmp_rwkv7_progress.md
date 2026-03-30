@@ -60,3 +60,15 @@ Branch: `codex/rwkv7-adapter-align`
 ### Local unrelated debug change intentionally left untouched
 
 - `vllm/v1/core/kv_cache_coordinator.py`
+
+### 2026-03-30 final update
+
+- The remaining `0.4B` mismatch was reproduced directly with `LLMEngine.step()`, not only through OpenAI serving.
+- The failing prompt remained within a single mamba block, so the issue was not a cross-block state-copy bug.
+- `RWKV7-Goose-World2.9-0.4B-HF` was correct in `float32` but drifted in default `dtype=auto`/`bfloat16`.
+- Current correctness-first fix: force RWKV7 runtime weights and cached states to `float32`.
+- After this fix:
+  - `tests/model_executor/test_rwkv7.py`: `7 passed`
+  - `0.4B` `/v1/completions` one-shot `max_tokens=16` matches step-by-step again
+  - `0.1B` `/v1/completions` one-shot `max_tokens=16` still matches step-by-step
+  - `0.4B` concurrent smoke test (`3 prompts`, `3 rounds`, `max_tokens=16`) remains stable

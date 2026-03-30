@@ -258,6 +258,29 @@ def test_rwkv7_mamba_state_copy_function_types():
     )
 
 
+def test_rwkv7_block_uses_fp32_runtime_state_dtype():
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            block = RWKV7Block(config=config, layer_idx=0, prefix="model.layers.0")
+            assert block.get_state_dtype() == (
+                torch.float32,
+                torch.float32,
+                torch.float32,
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
 def test_rwkv7_reference_parity_full_forward():
     if pytest is None:
         raise RuntimeError("pytest is required to run RWKV7 integration tests.")
