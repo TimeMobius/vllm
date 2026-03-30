@@ -179,6 +179,29 @@ def test_rwkv7_block_forward_without_metadata():
             cleanup_dist_env_and_memory()
 
 
+def test_rwkv7_block_registers_static_forward_context():
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            prefix = "model.layers.0"
+            block = RWKV7Block(config=config, layer_idx=0, prefix=prefix)
+            assert (
+                vllm_config.compilation_config.static_forward_context[prefix]
+                is block
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
 def test_rwkv7_block_updates_cached_states():
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))

@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.activations import ACT2FN as HF_ACT2FN
 
-from vllm.config import CacheConfig, ModelConfig, VllmConfig
+from vllm.config import CacheConfig, ModelConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed.parallel_state import (
     get_pp_group,
     get_tensor_model_parallel_rank,
@@ -483,6 +483,11 @@ class RWKV7Block(nn.Module, MambaBase):
             quant_config=quant_config,
             prefix=f"{prefix}.ffn",
         )
+
+        compilation_config = get_current_vllm_config().compilation_config
+        if prefix in compilation_config.static_forward_context:
+            raise ValueError(f"Duplicate layer name: {prefix}")
+        compilation_config.static_forward_context[prefix] = self
 
         self.kv_cache = (
             torch.tensor([]),
