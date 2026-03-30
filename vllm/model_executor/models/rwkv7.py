@@ -717,6 +717,93 @@ class RWKV7Block(nn.Module, MambaBase):
         hidden_states = hidden_states + ffn_out
         return hidden_states, v_first_out, attn_shift_state, recurrent_state, ffn_shift_state
 
+    def _run_prefill_batch(
+        self,
+        hidden_states: torch.Tensor,
+        v_first: torch.Tensor | None,
+        query_start_loc: torch.Tensor,
+        slot_ids: torch.Tensor,
+        has_initial_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        query_start_loc = query_start_loc.to(dtype=torch.long)
+        base_start = int(query_start_loc[0].item())
+        lengths = query_start_loc[1:] - query_start_loc[:-1]
+        max_query_len = int(lengths.max().item())
+
+        packed_hidden = [
+            hidden_states[int(start.item()) : int(end.item())]
+            for start, end in zip(query_start_loc[:-1], query_start_loc[1:])
+        ]
+        padded_hidden = nn.utils.rnn.pad_sequence(packed_hidden, batch_first=True)
+        if v_first is None:
+            padded_v_first = None
+        else:
+            packed_v_first = [
+                v_first[int(start.item()) : int(end.item())]
+                for start, end in zip(query_start_loc[:-1], query_start_loc[1:])
+            ]
+            padded_v_first = nn.utils.rnn.pad_sequence(
+                packed_v_first, batch_first=True
+            )
+
+        attn_shift_state, recurrent_state, ffn_shift_state = self._get_kv_states(
+            slot_ids
+        )
+        attn_shift_state = attn_shift_state.clone()
+        recurrent_state = recurrent_state.clone()
+        ffn_shift_state = ffn_shift_state.clone()
+
+        if not has_initial_state.all():
+            attn_shift_state[~has_initial_state] = 0
+            recurrent_state[~has_initial_state] = 0
+            ffn_shift_state[~has_initial_state] = 0
+
+        padded_output = padded_hidden.new_empty(padded_hidden.shape)
+        padded_v_first_out = hidden_states.new_empty(
+            padded_hidden.shape[0],
+            max_query_len,
+            self.local_value_dim,
+        )
+
+        for step in range(max_query_len):
+            active_idx = (lengths > step).nonzero(as_tuple=False).squeeze(-1)
+            step_hidden = padded_hidden.index_select(0, active_idx)[:, step]
+            step_v_first = (
+                None
+                if padded_v_first is None
+                else padded_v_first.index_select(0, active_idx)[:, step]
+            )
+            out, vf_out, attn_shift, recurrent, ffn_shift = self._run_decode_batch(
+                step_hidden,
+                step_v_first,
+                attn_shift_state.index_select(0, active_idx),
+                recurrent_state.index_select(0, active_idx),
+                ffn_shift_state.index_select(0, active_idx),
+            )
+            padded_output[active_idx, step] = out
+            padded_v_first_out[active_idx, step] = vf_out
+            attn_shift_state.index_copy_(0, active_idx, attn_shift)
+            recurrent_state.index_copy_(0, active_idx, recurrent)
+            ffn_shift_state.index_copy_(0, active_idx, ffn_shift)
+
+        total_prefill_tokens = int((query_start_loc[-1] - query_start_loc[0]).item())
+        output = hidden_states.new_empty((total_prefill_tokens, hidden_states.shape[-1]))
+        v_first_out = torch.empty(
+            (total_prefill_tokens, self.local_value_dim),
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        for seq_idx, (start, end) in enumerate(
+            zip(query_start_loc[:-1], query_start_loc[1:])
+        ):
+            start_idx = int(start.item()) - base_start
+            end_idx = int(end.item()) - base_start
+            seq_len = end_idx - start_idx
+            output[start_idx:end_idx] = padded_output[seq_idx, :seq_len]
+            v_first_out[start_idx:end_idx] = padded_v_first_out[seq_idx, :seq_len]
+
+        return output, v_first_out, attn_shift_state, recurrent_state, ffn_shift_state
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -759,22 +846,35 @@ class RWKV7Block(nn.Module, MambaBase):
             self._store_kv_states(decode_slot_ids, attn_shift, recurrent, ffn_shift)
 
         decode_offset = attn_metadata.num_decode_tokens
-        for prefill_idx in range(attn_metadata.num_prefills):
-            batch_idx = decode_offset + prefill_idx
-            start = int(attn_metadata.query_start_loc[batch_idx].item())
-            end = int(attn_metadata.query_start_loc[batch_idx + 1].item())
-            slot_id = int(state_indices[batch_idx].item())
-            query_len = end - start
-            context_len = int(attn_metadata.seq_lens[batch_idx].item()) - query_len
-            states = self._get_kv_state(slot_id, use_initial_state=context_len > 0)
-            out, vf_out, attn_shift, recurrent, ffn_shift = self._run_sequence(
-                hidden_states[start:end],
-                None if v_first is None else v_first[start:end],
-                *states,
+        if attn_metadata.num_prefills > 0:
+            prefill_query_start_loc = attn_metadata.query_start_loc[
+                decode_offset : decode_offset + attn_metadata.num_prefills + 1
+            ]
+            prefill_slot_ids = state_indices[
+                decode_offset : decode_offset + attn_metadata.num_prefills
+            ].to(dtype=torch.long)
+            prefill_lengths = (
+                prefill_query_start_loc[1:].to(dtype=torch.long)
+                - prefill_query_start_loc[:-1].to(dtype=torch.long)
             )
-            output[start:end] = out
-            v_first_out[start:end] = vf_out
-            self._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
+            prefill_seq_lens = attn_metadata.seq_lens[
+                decode_offset : decode_offset + attn_metadata.num_prefills
+            ].to(dtype=torch.long)
+            has_initial_state = (prefill_seq_lens - prefill_lengths) > 0
+            out, vf_out, attn_shift, recurrent, ffn_shift = self._run_prefill_batch(
+                hidden_states,
+                v_first,
+                prefill_query_start_loc,
+                prefill_slot_ids,
+                has_initial_state,
+            )
+            prefill_start = int(prefill_query_start_loc[0].item())
+            prefill_end = int(prefill_query_start_loc[-1].item())
+            output[prefill_start:prefill_end] = out
+            v_first_out[prefill_start:prefill_end] = vf_out
+            self._store_kv_states(
+                prefill_slot_ids, attn_shift, recurrent, ffn_shift
+            )
 
         return output, v_first_out
 
