@@ -431,9 +431,15 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
             else:
                 attention_groups.append((spec, [i], manager_cls))
 
-        assert len(attention_groups) > 1, (
-            "HybridKVCacheCoordinator requires at least two attention groups."
-        )
+        # Some models (e.g. RWKV-style with multiple state tensors) can expose
+        # multiple KV cache groups that all share an identical spec/manager
+        # combination. In that case there is effectively a single attention
+        # group after coalescing, and we can handle it without forcing the
+        # generic hybrid path to assert.
+        if len(attention_groups) == 1:
+            self.attention_groups = attention_groups
+            self.lcm_block_size = attention_groups[0][0].block_size
+            return
 
         # Put full attention first: its efficient left-to-right scan provides
         # a tighter initial bound, reducing work for subsequent groups.
