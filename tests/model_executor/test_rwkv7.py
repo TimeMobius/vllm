@@ -95,6 +95,23 @@ def _make_decode_metadata(
     )
 
 
+def _make_multi_decode_metadata(
+    total_seq_lens: list[int], state_indices: list[int], *, device: torch.device
+) -> LinearAttentionMetadata:
+    num_decodes = len(total_seq_lens)
+    return LinearAttentionMetadata(
+        num_prefills=0,
+        num_prefill_tokens=0,
+        num_decodes=num_decodes,
+        num_decode_tokens=num_decodes,
+        query_start_loc=torch.arange(
+            0, num_decodes + 1, dtype=torch.int32, device=device
+        ),
+        seq_lens=torch.tensor(total_seq_lens, dtype=torch.int32, device=device),
+        state_indices_tensor=torch.tensor(state_indices, dtype=torch.long, device=device),
+    )
+
+
 def _require_reference_checkpoint() -> tuple[Path, object]:
     if pytest is None:
         raise RuntimeError("pytest is required to run RWKV7 integration tests.")
@@ -245,6 +262,75 @@ def test_rwkv7_block_updates_cached_states():
             assert decode_v_first.shape == decode_hidden.shape
             assert torch.isfinite(decode_output).all()
             assert torch.isfinite(decode_v_first).all()
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+def test_rwkv7_block_batches_decode_tokens_without_changing_results():
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            block_batched = RWKV7Block(
+                config=config, layer_idx=0, prefix="model.layers.0"
+            )
+            _initialize_module_parameters(block_batched)
+            block_ref = RWKV7Block(config=config, layer_idx=0, prefix="model.layers.1")
+            block_ref.load_state_dict(block_batched.state_dict())
+
+            generator = torch.Generator().manual_seed(123)
+            state_shapes = block_batched.get_state_shape()
+            state_dtypes = block_batched.get_state_dtype()
+
+            def make_cache() -> tuple[torch.Tensor, ...]:
+                return tuple(
+                    torch.randn(
+                        (2, *shape),
+                        generator=generator,
+                        dtype=dtype,
+                    )
+                    for shape, dtype in zip(state_shapes, state_dtypes)
+                )
+
+            block_batched.kv_cache = make_cache()
+            block_ref.kv_cache = tuple(cache.clone() for cache in block_batched.kv_cache)
+
+            hidden_states = torch.randn(
+                2, config.hidden_size, generator=generator, dtype=torch.float32
+            )
+            metadata = _make_multi_decode_metadata(
+                [5, 7], [0, 1], device=torch.device("cpu")
+            )
+
+            output_batched, v_first_batched = block_batched(
+                hidden_states, None, metadata
+            )
+
+            output_ref = torch.empty_like(hidden_states)
+            v_first_ref = torch.empty_like(hidden_states)
+            for idx, slot_id in enumerate([0, 1]):
+                states = block_ref._get_kv_state(slot_id, use_initial_state=True)
+                out, v_first_out, attn_shift, recurrent, ffn_shift = block_ref._run_sequence(
+                    hidden_states[idx : idx + 1],
+                    None,
+                    *states,
+                )
+                output_ref[idx : idx + 1] = out
+                v_first_ref[idx : idx + 1] = v_first_out
+                block_ref._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
+
+            torch.testing.assert_close(output_batched, output_ref)
+            torch.testing.assert_close(v_first_batched, v_first_ref)
+            for batched_state, ref_state in zip(block_batched.kv_cache, block_ref.kv_cache):
+                torch.testing.assert_close(batched_state, ref_state)
         finally:
             cleanup_dist_env_and_memory()
 

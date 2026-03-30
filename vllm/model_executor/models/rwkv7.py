@@ -222,6 +222,18 @@ class RWKV7FeedForward(nn.Module):
         hidden, _ = self.value(hidden)
         return hidden, final_state
 
+    def forward_decode_batch(
+        self,
+        hidden_states: torch.Tensor,
+        cached_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        delta = cached_state.to(hidden_states.dtype) - hidden_states
+        mixed = hidden_states.addcmul(delta, self.x_k)
+        hidden, _ = self.key(mixed)
+        hidden = self.act_fn(hidden)
+        hidden, _ = self.value(hidden)
+        return hidden, hidden_states
+
 
 class RWKV7Attention(nn.Module):
     def __init__(
@@ -425,6 +437,87 @@ class RWKV7Attention(nn.Module):
         output, _ = self.o_proj(output)
         return output, final_shift_state, recurrent_state, v_first_out
 
+    def forward_decode_batch(
+        self,
+        hidden_states: torch.Tensor,
+        cached_shift_state: torch.Tensor,
+        recurrent_state: torch.Tensor,
+        v_first: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        delta = cached_shift_state.to(hidden_states.dtype) - hidden_states
+        final_shift_state = hidden_states
+
+        x_r = self.x_r.squeeze(0).squeeze(0)
+        x_w = self.x_w.squeeze(0).squeeze(0)
+        x_k = self.x_k.squeeze(0).squeeze(0)
+        x_v = self.x_v.squeeze(0).squeeze(0)
+        x_a = self.x_a.squeeze(0).squeeze(0)
+        x_g = self.x_g.squeeze(0).squeeze(0)
+
+        xr = hidden_states.addcmul(delta, x_r)
+        xw = hidden_states.addcmul(delta, x_w)
+        xk = hidden_states.addcmul(delta, x_k)
+        xv = hidden_states.addcmul(delta, x_v)
+        xa = hidden_states.addcmul(delta, x_a)
+        xg = hidden_states.addcmul(delta, x_g)
+
+        r, _ = self.r_proj(xr)
+        w = LOG_DECAY_SCALE * self.w_lora(xw).sigmoid()
+        k, _ = self.k_proj(xk)
+        v, _ = self.v_proj(xv)
+
+        if self.layer_idx == 0:
+            v_first_out = v
+        else:
+            if v_first is None:
+                raise ValueError("RWKV7 layers after layer 0 require `v_first`.")
+            v = torch.lerp(v, v_first, self.v_lora(xv).sigmoid())
+            v_first_out = v_first
+
+        a = self.a_lora(xa).sigmoid()
+        g = self.g_lora(xg)
+
+        r = r.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
+        w = w.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
+        k = k.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
+        a = a.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
+        v = v.view(-1, self.local_num_heads, self.head_v_dim).to(torch.float32)
+
+        local_k_k = self.k_k[self.key_start : self.key_end].view(
+            1, self.local_num_heads, self.head_dim
+        )
+        local_k_a = self.k_a[self.key_start : self.key_end].view(
+            1, self.local_num_heads, self.head_dim
+        )
+
+        kk = F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
+        k = k * (1 + (a - 1) * local_k_a.to(torch.float32))
+        recurrent_state = recurrent_state.to(torch.float32)
+
+        sa = (recurrent_state * (-kk).unsqueeze(-1)).sum(dim=-2)
+        recurrent_state = (
+            torch.exp(w).unsqueeze(-1) * recurrent_state
+            + (kk * a).unsqueeze(-1) * sa.unsqueeze(-2)
+            + k.unsqueeze(-1) * v.unsqueeze(-2)
+        )
+
+        output = (recurrent_state * r.unsqueeze(-1)).sum(dim=-2).reshape(
+            -1, self.local_value_dim
+        )
+        output = self.g_norm(output)
+
+        local_r_k = self.r_k[
+            self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
+            * self.local_num_heads
+        ].to(torch.float32)
+        correction = (
+            (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
+        ).reshape(-1, self.local_value_dim)
+        output = (output + correction) * g.to(torch.float32)
+        output = output.to(hidden_states.dtype)
+        output, _ = self.o_proj(output)
+        return output, final_shift_state, recurrent_state, v_first_out
+
 
 class RWKV7Block(nn.Module, MambaBase):
     def __init__(
@@ -551,6 +644,15 @@ class RWKV7Block(nn.Module, MambaBase):
             self.kv_cache[2][slot_id],
         )
 
+    def _get_kv_states(
+        self, slot_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return (
+            self.kv_cache[0].index_select(0, slot_ids),
+            self.kv_cache[1].index_select(0, slot_ids),
+            self.kv_cache[2].index_select(0, slot_ids),
+        )
+
     def _store_kv_state(
         self,
         slot_id: int,
@@ -567,6 +669,53 @@ class RWKV7Block(nn.Module, MambaBase):
         self.kv_cache[2][slot_id].copy_(
             ffn_shift_state.to(self.kv_cache[2][slot_id].dtype)
         )
+
+    def _store_kv_states(
+        self,
+        slot_ids: torch.Tensor,
+        attn_shift_state: torch.Tensor,
+        recurrent_state: torch.Tensor,
+        ffn_shift_state: torch.Tensor,
+    ) -> None:
+        self.kv_cache[0].index_copy_(
+            0, slot_ids, attn_shift_state.to(self.kv_cache[0].dtype)
+        )
+        self.kv_cache[1].index_copy_(
+            0, slot_ids, recurrent_state.to(self.kv_cache[1].dtype)
+        )
+        self.kv_cache[2].index_copy_(
+            0, slot_ids, ffn_shift_state.to(self.kv_cache[2].dtype)
+        )
+
+    def _run_decode_batch(
+        self,
+        hidden_states: torch.Tensor,
+        v_first: torch.Tensor | None,
+        attn_shift_state: torch.Tensor,
+        recurrent_state: torch.Tensor,
+        ffn_shift_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        residual = hidden_states
+        if self.pre_norm is not None:
+            residual = self.pre_norm(residual)
+
+        attn_input = self.attn_norm(residual)
+        attn_out, attn_shift_state, recurrent_state, v_first_out = (
+            self.attn.forward_decode_batch(
+                attn_input,
+                attn_shift_state,
+                recurrent_state,
+                v_first,
+            )
+        )
+        hidden_states = residual + attn_out
+
+        ffn_input = self.ffn_norm(hidden_states)
+        ffn_out, ffn_shift_state = self.ffn.forward_decode_batch(
+            ffn_input, ffn_shift_state
+        )
+        hidden_states = hidden_states + ffn_out
+        return hidden_states, v_first_out, attn_shift_state, recurrent_state, ffn_shift_state
 
     def forward(
         self,
@@ -595,17 +744,19 @@ class RWKV7Block(nn.Module, MambaBase):
         )
         state_indices = attn_metadata.state_indices_tensor
 
-        for idx in range(attn_metadata.num_decode_tokens):
-            slot_id = int(state_indices[idx].item())
-            states = self._get_kv_state(slot_id, use_initial_state=True)
-            out, vf_out, attn_shift, recurrent, ffn_shift = self._run_sequence(
-                hidden_states[idx : idx + 1],
-                None if v_first is None else v_first[idx : idx + 1],
+        if attn_metadata.num_decode_tokens > 0:
+            decode_slot_ids = state_indices[: attn_metadata.num_decode_tokens].to(
+                dtype=torch.long
+            )
+            states = self._get_kv_states(decode_slot_ids)
+            out, vf_out, attn_shift, recurrent, ffn_shift = self._run_decode_batch(
+                hidden_states[: attn_metadata.num_decode_tokens],
+                None if v_first is None else v_first[: attn_metadata.num_decode_tokens],
                 *states,
             )
-            output[idx : idx + 1] = out
-            v_first_out[idx : idx + 1] = vf_out
-            self._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
+            output[: attn_metadata.num_decode_tokens] = out
+            v_first_out[: attn_metadata.num_decode_tokens] = vf_out
+            self._store_kv_states(decode_slot_ids, attn_shift, recurrent, ffn_shift)
 
         decode_offset = attn_metadata.num_decode_tokens
         for prefill_idx in range(attn_metadata.num_prefills):
