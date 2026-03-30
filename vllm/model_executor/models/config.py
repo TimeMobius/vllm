@@ -9,6 +9,7 @@ from vllm.model_executor.models import ModelRegistry
 from vllm.utils.math_utils import cdiv, round_up
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
+from vllm.config.compilation import CUDAGraphMode
 from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec, MLAAttentionSpec
 
 if TYPE_CHECKING:
@@ -20,6 +21,10 @@ logger = init_logger(__name__)
 class VerifyAndUpdateConfig:
     @staticmethod
     def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+        return
+
+    @staticmethod
+    def apply_post_optimization_level_defaults(vllm_config: "VllmConfig") -> None:
         return
 
     @staticmethod
@@ -662,16 +667,26 @@ class VoyageQwen3BidirectionalEmbedModelConfig(VerifyAndUpdateConfig):
 
 
 class RWKV7ForCausalLMConfig(MambaModelConfig):
+    @staticmethod
+    def _apply_compilation_preferences(vllm_config: "VllmConfig") -> None:
+        compilation_config = vllm_config.compilation_config
+        if compilation_config.cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE:
+            compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
+            logger.info(
+                "Using PIECEWISE CUDA graph mode for RWKV7 because its decode "
+                "path relies on dynamic state indices."
+            )
+        if not compilation_config.cudagraph_copy_inputs:
+            compilation_config.cudagraph_copy_inputs = True
+
     @classmethod
     def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
         super().verify_and_update_config(vllm_config)
-        model_config = vllm_config.model_config
-        if not model_config.enforce_eager:
-            model_config.enforce_eager = True
-            logger.info(
-                "Enabling eager execution for RWKV7 because its initial vLLM "
-                "support uses eager recurrent updates."
-            )
+        cls._apply_compilation_preferences(vllm_config)
+
+    @classmethod
+    def apply_post_optimization_level_defaults(cls, vllm_config: "VllmConfig") -> None:
+        cls._apply_compilation_preferences(vllm_config)
 
 
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {

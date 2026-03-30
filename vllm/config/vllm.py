@@ -877,6 +877,12 @@ class VllmConfig:
 
         default_config = OPTIMIZATION_LEVEL_TO_CONFIG[self.optimization_level]
         self._apply_optimization_level_defaults(default_config)
+        if self.model_config is not None and self.model_config.architecture is not None:
+            from vllm.model_executor.models.config import MODELS_CONFIG_MAP
+
+            cls = MODELS_CONFIG_MAP.get(self.model_config.architecture, None)
+            if cls is not None:
+                cls.apply_post_optimization_level_defaults(self)
         if self.kernel_config.enable_flashinfer_autotune is None:
             raise ValueError(
                 "KernelConfig.enable_flashinfer_autotune must be set after applying "

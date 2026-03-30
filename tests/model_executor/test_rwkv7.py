@@ -4,6 +4,7 @@
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 from transformers import AutoTokenizer
@@ -16,6 +17,7 @@ from vllm.config import (
     VllmConfig,
     set_current_vllm_config,
 )
+from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.distributed.parallel_state import (
     ensure_model_parallel_initialized,
@@ -26,6 +28,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
     get_conv_copy_spec,
     get_temporal_copy_spec,
 )
+from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
 from vllm.model_executor.models.rwkv7 import RWKV7Block, RWKV7ForCausalLM
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
@@ -342,6 +345,41 @@ def test_rwkv7_mamba_state_copy_function_types():
         get_temporal_copy_spec,
         get_conv_copy_spec,
     )
+
+
+def test_rwkv7_config_prefers_piecewise_cudagraph_without_forcing_eager():
+    vllm_config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            enforce_eager=False,
+            supports_mamba_prefix_caching=False,
+            architecture="RWKV7ForCausalLM",
+            max_model_len=2048,
+        ),
+        cache_config=SimpleNamespace(
+            enable_prefix_caching=False,
+            mamba_cache_mode="none",
+            mamba_block_size=None,
+            block_size=16,
+        ),
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+            cudagraph_copy_inputs=False,
+        ),
+        scheduler_config=SimpleNamespace(enable_chunked_prefill=True),
+    )
+
+    RWKV7ForCausalLMConfig.verify_and_update_config(vllm_config)
+
+    assert vllm_config.model_config.enforce_eager is False
+    assert vllm_config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
+    assert vllm_config.compilation_config.cudagraph_copy_inputs is True
+
+    vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.FULL_AND_PIECEWISE
+    vllm_config.compilation_config.cudagraph_copy_inputs = False
+    RWKV7ForCausalLMConfig.apply_post_optimization_level_defaults(vllm_config)
+
+    assert vllm_config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
+    assert vllm_config.compilation_config.cudagraph_copy_inputs is True
 
 
 def test_rwkv7_block_uses_fp32_runtime_state_dtype():

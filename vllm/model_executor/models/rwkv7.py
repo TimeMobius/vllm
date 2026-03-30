@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.activations import ACT2FN as HF_ACT2FN
 
+from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ModelConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed.parallel_state import (
     get_pp_group,
@@ -779,6 +780,14 @@ class RWKV7Block(nn.Module, MambaBase):
         return output, v_first_out
 
 
+@support_torch_compile(
+    dynamic_arg_dims={
+        "input_ids": 0,
+        "positions": 0,
+        "intermediate_tensors": 0,
+        "inputs_embeds": 0,
+    }
+)
 class RWKV7Model(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
