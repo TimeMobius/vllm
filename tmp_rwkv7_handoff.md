@@ -86,6 +86,14 @@ From the latest probe log [vllm_rwkv7_8041_probe.log](/tmp/vllm_rwkv7_8041_probe
 - Runtime `cudagraph_mode` is really `PIECEWISE`.
 - `torch.compile` actually starts compiling RWKV7.
 
+From the eager control run [vllm_rwkv7_8044_eager.log](/tmp/vllm_rwkv7_8044_eager.log):
+
+- `--enforce-eager` starts successfully in about `25s`.
+- `/health` comes up.
+- `/v1/completions` returns normally.
+- This confirms the model/runtime logic itself is fine.
+- The main blocker is the compile path, not generic serving or model initialization.
+
 ### What is still not confirmed
 
 - Service readiness under the non-eager path
@@ -102,6 +110,32 @@ Observed in the latest probe:
 - `Dynamo bytecode transform time`: about `126.55s`
 
 The service did not reach `/health` before the probe timeout window and was later terminated. So this path is not yet ready for normal use.
+
+### Additional findings from deeper debug
+
+From the debug probe logs [vllm_rwkv7_8045_debug.log](/tmp/vllm_rwkv7_8045_debug.log):
+
+- WSL memory was not the primary blocker in the debug run.
+- Peak memory pressure did not force swap use during the captured non-eager debug attempt.
+- The real hot path is Dynamo tracing inside:
+  - [`RWKV7Attention.forward`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L335)
+  - specifically the time-step loop over sequence length around:
+    - [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L414)
+    - [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L423)
+- The trace log shows Dynamo repeatedly expanding the recurrent update body for each token in the prefill sequence.
+
+An attempted mitigation was tested:
+
+- temporarily marking `RWKV7Attention.forward()` with `@torch.compiler.disable`
+
+Result:
+
+- this does not work with vLLM's current compile wrapper
+- because vLLM uses `torch.compile(..., fullgraph=True)`
+- non-eager startup then fails fast with:
+  - `torch._dynamo.exc.Unsupported: Skip inlining torch.compiler.disable()d function`
+
+This means the simple "graph break this function" approach is not viable for the current RWKV7 compile path.
 
 ## Main Pitfalls Already Encountered
 
@@ -197,8 +231,8 @@ Handling:
 ### Highest priority
 
 1. Make the non-eager path actually reach ready state.
-2. Measure whether second startup is much faster with compile cache already populated.
-3. If still too slow, reduce compile scope for RWKV7 instead of compiling the whole model path.
+2. Avoid letting Dynamo trace RWKV7 prefill token-by-token Python recurrence.
+3. Do not rely on `torch.compiler.disable` inside the fullgraph-compiled path.
 
 ### After readiness is achieved
 
@@ -219,8 +253,9 @@ Handling:
 ### Medium priority
 
 1. Investigate whether compile should be limited to decode-critical subgraphs.
-2. Decide whether the non-eager path should become the default or remain experimental.
-3. Re-check whether `fp32` can be partially relaxed once the execution path stabilizes.
+2. Decide whether compile support should move from `RWKV7Model` to a smaller decode-only submodule.
+3. Decide whether the non-eager path should become the default or remain experimental.
+4. Re-check whether `fp32` can be partially relaxed once the execution path stabilizes.
 
 ### Long-term performance work
 
@@ -280,6 +315,9 @@ Before calling a result successful, verify in logs:
 Useful files to keep inspecting:
 
 - [vllm_rwkv7_8041_probe.log](/tmp/vllm_rwkv7_8041_probe.log)
+- [vllm_rwkv7_8044_eager.log](/tmp/vllm_rwkv7_8044_eager.log)
+- [vllm_rwkv7_8045_debug.log](/tmp/vllm_rwkv7_8045_debug.log)
+- [vllm_rwkv7_8046_probe.log](/tmp/vllm_rwkv7_8046_probe.log)
 - [vllm_rwkv7_8037.log](/tmp/vllm_rwkv7_8037.log)
 - [rwkv7_bench_64_after_batch.json](/tmp/rwkv7_bench_64_after_batch.json)
 - [rwkv7_bench_128_after_batch.json](/tmp/rwkv7_bench_128_after_batch.json)
@@ -290,6 +328,6 @@ Continue from commit `d573675fa`.
 
 The next concrete experiment should be:
 
-1. warm-start the non-eager RWKV7 path again using the compile cache already written
-2. check whether `/health` comes up this time
-3. if it still does not, shrink compile coverage instead of keeping full-model compile enabled
+1. keep the eager baseline as the known-good correctness/perf control
+2. prototype a compile-friendly replacement for the RWKV7 prefill recurrence loop
+3. or move compile support to a smaller decode-only subgraph instead of full-model compile
