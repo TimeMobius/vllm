@@ -17,7 +17,6 @@ from vllm.config import (
     VllmConfig,
     set_current_vllm_config,
 )
-from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.distributed.parallel_state import (
     ensure_model_parallel_initialized,
@@ -218,6 +217,41 @@ def test_rwkv7_block_registers_static_forward_context():
                 vllm_config.compilation_config.static_forward_context[prefix]
                 is block
             )
+            assert (
+                vllm_config.compilation_config.static_forward_context[f"{prefix}.attn"]
+                is block.attn
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+def test_rwkv7_attention_custom_op_matches_direct_forward():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise the RWKV7 attention custom op.")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="nccl",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="nccl")
+        try:
+            block = RWKV7Block(config=config, layer_idx=0, prefix="model.layers.0")
+            _initialize_module_parameters(block)
+            block = block.to("cuda", torch.float32)
+            hidden_states = torch.randn(4, config.hidden_size, device="cuda")
+
+            direct = block.attn._forward(hidden_states, None, None, None)
+            with set_forward_context(None, vllm_config):
+                wrapped = block.attn(hidden_states, None, None, None)
+
+            for wrapped_tensor, direct_tensor in zip(wrapped, direct):
+                torch.testing.assert_close(wrapped_tensor, direct_tensor)
         finally:
             cleanup_dist_env_and_memory()
 
@@ -347,7 +381,7 @@ def test_rwkv7_mamba_state_copy_function_types():
     )
 
 
-def test_rwkv7_config_prefers_piecewise_cudagraph_without_forcing_eager():
+def test_rwkv7_config_defaults_to_eager_while_compile_path_is_experimental():
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(
             enforce_eager=False,
@@ -361,25 +395,13 @@ def test_rwkv7_config_prefers_piecewise_cudagraph_without_forcing_eager():
             mamba_block_size=None,
             block_size=16,
         ),
-        compilation_config=SimpleNamespace(
-            cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
-            cudagraph_copy_inputs=False,
-        ),
+        compilation_config=SimpleNamespace(),
         scheduler_config=SimpleNamespace(enable_chunked_prefill=True),
     )
 
     RWKV7ForCausalLMConfig.verify_and_update_config(vllm_config)
 
-    assert vllm_config.model_config.enforce_eager is False
-    assert vllm_config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
-    assert vllm_config.compilation_config.cudagraph_copy_inputs is True
-
-    vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.FULL_AND_PIECEWISE
-    vllm_config.compilation_config.cudagraph_copy_inputs = False
-    RWKV7ForCausalLMConfig.apply_post_optimization_level_defaults(vllm_config)
-
-    assert vllm_config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
-    assert vllm_config.compilation_config.cudagraph_copy_inputs is True
+    assert vllm_config.model_config.enforce_eager is True
 
 
 def test_rwkv7_block_uses_fp32_runtime_state_dtype():

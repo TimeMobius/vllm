@@ -667,26 +667,16 @@ class VoyageQwen3BidirectionalEmbedModelConfig(VerifyAndUpdateConfig):
 
 
 class RWKV7ForCausalLMConfig(MambaModelConfig):
-    @staticmethod
-    def _apply_compilation_preferences(vllm_config: "VllmConfig") -> None:
-        compilation_config = vllm_config.compilation_config
-        if compilation_config.cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE:
-            compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
-            logger.info(
-                "Using PIECEWISE CUDA graph mode for RWKV7 because its decode "
-                "path relies on dynamic state indices."
-            )
-        if not compilation_config.cudagraph_copy_inputs:
-            compilation_config.cudagraph_copy_inputs = True
-
     @classmethod
     def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
         super().verify_and_update_config(vllm_config)
-        cls._apply_compilation_preferences(vllm_config)
-
-    @classmethod
-    def apply_post_optimization_level_defaults(cls, vllm_config: "VllmConfig") -> None:
-        cls._apply_compilation_preferences(vllm_config)
+        model_config = vllm_config.model_config
+        if not model_config.enforce_eager:
+            model_config.enforce_eager = True
+            logger.info(
+                "Enabling eager execution for RWKV7 by default while its "
+                "non-eager custom-op path remains experimental."
+            )
 
 
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {

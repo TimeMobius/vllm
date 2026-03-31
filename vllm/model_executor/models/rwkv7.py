@@ -18,7 +18,7 @@ from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_world_size,
     model_parallel_is_initialized,
 )
-from vllm.forward_context import get_forward_context
+from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear,
@@ -41,6 +41,7 @@ from vllm.model_executor.models.interfaces import (
     SupportsPP,
 )
 from vllm.sequence import IntermediateTensors
+from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 
 from .utils import AutoWeightsLoader, PPMissingLayer, make_layers, maybe_prefix
@@ -89,6 +90,73 @@ def token_shift_with_cache(
         cached_state.dtype if cached_state is not None else hidden_states.dtype
     )
     return delta, final_state
+
+
+def _custom_op_optional_tensor(
+    tensor: torch.Tensor | None,
+    *,
+    like: torch.Tensor,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    if tensor is not None:
+        return tensor
+    return like.new_empty((0,), dtype=dtype or like.dtype)
+
+
+def _custom_op_tensor_or_none(tensor: torch.Tensor) -> torch.Tensor | None:
+    return None if tensor.numel() == 0 else tensor
+
+
+def rwkv7_attention(
+    hidden_states: torch.Tensor,
+    cached_shift_state: torch.Tensor,
+    recurrent_state: torch.Tensor,
+    v_first: torch.Tensor,
+    output: torch.Tensor,
+    final_shift_state: torch.Tensor,
+    final_recurrent_state: torch.Tensor,
+    v_first_out: torch.Tensor,
+    layer_name: str,
+) -> None:
+    forward_context = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    out, shift_state, recurrent, first_value = self._forward(
+        hidden_states,
+        _custom_op_tensor_or_none(cached_shift_state),
+        _custom_op_tensor_or_none(recurrent_state),
+        _custom_op_tensor_or_none(v_first),
+    )
+    output.copy_(out)
+    final_shift_state.copy_(shift_state.to(final_shift_state.dtype))
+    final_recurrent_state.copy_(recurrent.to(final_recurrent_state.dtype))
+    v_first_out.copy_(first_value.to(v_first_out.dtype))
+
+
+def rwkv7_attention_fake(
+    hidden_states: torch.Tensor,
+    cached_shift_state: torch.Tensor,
+    recurrent_state: torch.Tensor,
+    v_first: torch.Tensor,
+    output: torch.Tensor,
+    final_shift_state: torch.Tensor,
+    final_recurrent_state: torch.Tensor,
+    v_first_out: torch.Tensor,
+    layer_name: str,
+) -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="rwkv7_attention",
+    op_func=rwkv7_attention,
+    mutates_args=[
+        "output",
+        "final_shift_state",
+        "final_recurrent_state",
+        "v_first_out",
+    ],
+    fake_impl=rwkv7_attention_fake,
+)
 
 
 class RWKV7LoRA(nn.Module):
@@ -246,6 +314,7 @@ class RWKV7Attention(nn.Module):
     ) -> None:
         super().__init__()
         self.layer_idx = layer_idx
+        self.prefix = prefix
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_heads
         self.head_dim = config.head_dim
@@ -345,7 +414,12 @@ class RWKV7Attention(nn.Module):
             eps=config.norm_eps,
         )
 
-    def forward(
+        compilation_config = get_current_vllm_config().compilation_config
+        if prefix in compilation_config.static_forward_context:
+            raise ValueError(f"Duplicate layer name: {prefix}")
+        compilation_config.static_forward_context[prefix] = self
+
+    def _forward(
         self,
         hidden_states: torch.Tensor,
         cached_shift_state: torch.Tensor | None,
@@ -437,6 +511,56 @@ class RWKV7Attention(nn.Module):
         output = output.to(hidden_states.dtype)
         output, _ = self.o_proj(output)
         return output, final_shift_state, recurrent_state, v_first_out
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cached_shift_state: torch.Tensor | None,
+        recurrent_state: torch.Tensor | None,
+        v_first: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not is_forward_context_available() or not hidden_states.is_cuda:
+            return self._forward(
+                hidden_states,
+                cached_shift_state,
+                recurrent_state,
+                v_first,
+            )
+
+        output = hidden_states.new_empty(hidden_states.shape[0], self.hidden_size)
+        final_shift_state = hidden_states.new_empty(
+            self.hidden_size,
+            dtype=(
+                cached_shift_state.dtype
+                if cached_shift_state is not None
+                else hidden_states.dtype
+            ),
+        )
+        final_recurrent_state = hidden_states.new_empty(
+            self.local_num_heads,
+            self.head_dim,
+            self.head_v_dim,
+            dtype=RWKV7_RUNTIME_DTYPE,
+        )
+        v_first_out = hidden_states.new_empty(
+            hidden_states.shape[0], self.local_value_dim
+        )
+        torch.ops.vllm.rwkv7_attention(
+            hidden_states,
+            _custom_op_optional_tensor(cached_shift_state, like=hidden_states),
+            _custom_op_optional_tensor(
+                recurrent_state,
+                like=hidden_states,
+                dtype=RWKV7_RUNTIME_DTYPE,
+            ),
+            _custom_op_optional_tensor(v_first, like=hidden_states),
+            output,
+            final_shift_state,
+            final_recurrent_state,
+            v_first_out,
+            self.prefix,
+        )
+        return output, final_shift_state, final_recurrent_state, v_first_out
 
     def forward_decode_batch(
         self,

@@ -4,6 +4,25 @@
 
 结论是：**可行，而且比继续硬推“整模型 fullgraph compile”更合理。**
 
+## Progress Update (2026-03-31)
+
+- Phase 1 的第一步已经落地：
+  - `RWKV7Attention` 注册进了 `static_forward_context`
+  - 新增了 `torch.ops.vllm.rwkv7_attention(...)`
+  - 当前 recurrent 实现已经搬到 `RWKV7Attention._forward(...)`
+- 这一步确实解决了最初的 compile 卡点：
+  - `Dynamo bytecode transform time` 从约 `126.55s` 降到了约 `1.74s`
+  - compile range `(1, 2048)` 的图编译约 `8.89s`
+  - 总 `torch.compile` 时间约 `10.92s`
+- 但这一步还没有把 non-eager 变成“可上线”状态：
+  - 关闭 CUDA graphs 后，服务可以启动到 `/health`
+  - 但 `one-shot` 与 `step-by-step` 仍然不一致
+  - PIECEWISE CUDA graph capture 仍然会在 graph capture 阶段失败
+- 因此当前策略是：
+  - **保留这轮 custom-op 骨架**
+  - **默认配置回到 eager**
+  - **下一步继续调 compile correctness，而不是强推默认 non-eager**
+
 RWKV7 当前 compile 路径的核心问题，不是 cache 语义，也不是服务路径，而是：
 
 - [`RWKV7Attention.forward()`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L348) 在 prefill 路径里包含 Python 时间步循环
@@ -213,13 +232,21 @@ RWKV7 in vLLM:
 
 做法：
 
-1. 仿照 KDA，新增一个 RWKV7 custom op 包装
-2. `RWKV7Attention.forward()` 外壳里保留 projection
-3. recurrent 更新搬进 `_forward(...)`
-4. `torch.ops.vllm.rwkv7_attention(...)` 调 `_forward(...)`
-5. `_forward(...)` 通过 `forward_context.no_compile_layers[self.prefix]` 访问层实例和 cache
-6. prefill 先复用当前正确的 eager 数学实现
-7. decode 先复用当前正确的 batched decode 实现
+1. `[done]` 仿照 KDA，新增一个 RWKV7 custom op 包装
+2. `[partially done]` `RWKV7Attention.forward()` 已变成 compile-friendly shell，但当前 shell 仍然包着整段 attention，而不是只保留 projection
+3. `[done]` recurrent 更新搬进 `_forward(...)`
+4. `[done]` `torch.ops.vllm.rwkv7_attention(...)` 调 `_forward(...)`
+5. `[done]` `_forward(...)` 通过 `forward_context.no_compile_layers[self.prefix]` 访问层实例和 cache
+6. `[done]` prefill 先复用当前正确的 eager 数学实现
+7. `[done]` decode 先复用当前正确的 batched decode 实现
+
+### Immediate Next Steps
+
+1. 对比 eager vs compile-no-cudagraph 的 `one-shot` 逐 token 行为，确认错误是从哪个 layer/step 开始分叉
+2. 检查当前 custom op fake impl / mutates_args / buffer 返回方式，确认 compiled graph 没有错误地重排或缓存 state 输出
+3. 检查 `RWKV7Block.forward()` 里 prefill request 循环在 compile 下是否仍然存在错误假设
+4. 只在 correctness 重新成立之后，再回头试 PIECEWISE CUDA graph capture
+5. 在 correctness 成立之前，不要再次把 non-eager 设为默认
 
 这一步的核心收益是：
 

@@ -3,12 +3,43 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest code checkpoint: `d573675fa` (`Enable non-eager RWKV7 compile path`)
+- Latest committed checkpoint before this round: `e0d7871a7` (`Add RWKV7 KDA-style integration todo`)
 - Current service status:
   - No `vllm serve` process is running now.
   - No test ports are currently listening.
-  - The latest non-eager startup probe on port `8041` did not reach `/health`.
-  - It was terminated by the outer probe script after a long cold-start compile phase.
+  - The stable default path remains the eager baseline.
+  - The non-eager path is still experimental and should not be treated as correct by default.
+
+## Latest Update (2026-03-31)
+
+- Landed a first KDA-style compile boundary in [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py):
+  - registered `RWKV7Attention` in `static_forward_context`
+  - added `torch.ops.vllm.rwkv7_attention(...)`
+  - moved the existing recurrent math behind `RWKV7Attention._forward(...)`
+- Added unit coverage in [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py) for:
+  - attention registration in `static_forward_context`
+  - custom-op wrapper parity against direct `_forward(...)`
+- This change materially improved compile startup:
+  - previous bad case: Dynamo tracing the RWKV7 prefill token loop for about `126.55s`
+  - new case: `Dynamo bytecode transform time` about `1.74s`
+  - compile range `(1, 2048)` build time about `8.89s`
+  - total `torch.compile` time about `10.92s`
+- Compile without CUDA graphs is now able to boot:
+  - with `-cc '{"cudagraph_mode":"none"}'`
+  - `/health` reached in about `56s`
+  - `/v1/completions` returned successfully
+  - reference log: [vllm_rwkv7_8048_compile_no_cg.log](/tmp/vllm_rwkv7_8048_compile_no_cg.log)
+- However, correctness is still not acceptable under the non-eager path:
+  - on `RWKV7-Goose-World2.9-0.4B-HF`
+  - `one-shot max_tokens=8` and `step-by-step max_tokens=1` diverged for all three prompts
+    - `i am`
+    - `北京是`
+    - `The capital of France is`
+  - reference log: [vllm_rwkv7_non_eager_compare_8050.log](/tmp/vllm_rwkv7_non_eager_compare_8050.log)
+- CUDA graphs remain a separate blocker:
+  - PIECEWISE capture progressed past compile and warmup
+  - but engine startup still failed during CUDA graph capture around `7/51`
+- Because non-eager correctness is still failing, the model config was restored to the stable eager default.
 
 ## What Is Already Working
 
@@ -36,13 +67,14 @@
 - Unit and integration coverage in [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py):
   - block forward
   - static forward context registration
+  - attention custom-op wrapper parity
   - cache/state update behavior
   - batched decode equivalence
   - state copy function types
   - runtime state dtype
   - reference parity for full forward
   - reference parity for prefill + decode
-  - config behavior for non-eager path
+  - config behavior for the default eager fallback
 
 ## Stable Baseline
 
@@ -66,25 +98,15 @@ Reduce framework overhead by allowing RWKV7 to use:
 
 - `enforce_eager=False`
 - `torch.compile`
-- CUDA graphs in `PIECEWISE` mode
+- CUDA graphs when possible
 
 ### What was changed
 
 - Added `@support_torch_compile` to `RWKV7Model`.
-- Removed RWKV7's unconditional eager requirement.
-- Added a RWKV7-specific preference to force:
-  - `cudagraph_mode=PIECEWISE`
-  - `cudagraph_copy_inputs=True`
+- Added a first KDA-style custom-op boundary around `RWKV7Attention`.
 - Added a post-optimization-level hook because vLLM optimization defaults were overwriting the earlier RWKV7-specific cudagraph choice.
 
 ### What is confirmed
-
-From the latest probe log [vllm_rwkv7_8041_probe.log](/tmp/vllm_rwkv7_8041_probe.log):
-
-- `enforce_eager=False` is really taking effect.
-- The old warning "`torch.compile` is turned on, but the model does not support it" is gone.
-- Runtime `cudagraph_mode` is really `PIECEWISE`.
-- `torch.compile` actually starts compiling RWKV7.
 
 From the eager control run [vllm_rwkv7_8044_eager.log](/tmp/vllm_rwkv7_8044_eager.log):
 
@@ -94,22 +116,27 @@ From the eager control run [vllm_rwkv7_8044_eager.log](/tmp/vllm_rwkv7_8044_eage
 - This confirms the model/runtime logic itself is fine.
 - The main blocker is the compile path, not generic serving or model initialization.
 
+From the non-eager no-cudagraph run:
+
+- `torch.compile` starts and completes.
+- `Dynamo bytecode transform time` is now small enough to be practical.
+- service readiness is possible when CUDA graphs are disabled.
+- correctness is still wrong under that non-eager path.
+
 ### What is still not confirmed
 
-- Service readiness under the non-eager path
-- One-shot vs step-by-step correctness under the non-eager path
-- TPS under the non-eager path
+- a correctness-safe non-eager serving path
+- compile-path TPS after correctness is restored
+- whether CUDA graphs can be safely re-enabled after more refactor/kernel work
 
 ### Current blocker
 
-Cold-start compile cost is still too high.
+Compile startup is no longer the main blocker.
 
-Observed in the latest probe:
+The current blockers are:
 
-- model load: about `11s`
-- `Dynamo bytecode transform time`: about `126.55s`
-
-The service did not reach `/health` before the probe timeout window and was later terminated. So this path is not yet ready for normal use.
+- non-eager correctness mismatch even with CUDA graphs disabled
+- PIECEWISE CUDA graph capture still failing during engine initialization
 
 ### Additional findings from deeper debug
 
@@ -136,6 +163,8 @@ Result:
   - `torch._dynamo.exc.Unsupported: Skip inlining torch.compiler.disable()d function`
 
 This means the simple "graph break this function" approach is not viable for the current RWKV7 compile path.
+
+Later follow-up showed that the custom-op boundary solved the worst Dynamo trace issue, but did not by itself guarantee correctness under compile.
 
 ## Main Pitfalls Already Encountered
 
@@ -193,6 +222,11 @@ Handling:
 
 - Added a post-optimization-level hook and applied the RWKV7-specific cudagraph preference again after defaults are applied.
 
+Current state:
+
+- this hook still exists as part of the experiment history
+- but the default runtime was moved back to eager after non-eager correctness failed
+
 ### 6. RWKV7 was not recognized as torch.compile-capable
 
 Problem:
@@ -213,6 +247,11 @@ Handling:
 
 - Restrict RWKV7 to `PIECEWISE` CUDA graph mode for now.
 - Keep `cudagraph_copy_inputs=True`.
+
+Later finding:
+
+- even PIECEWISE capture is not yet stable
+- and non-eager correctness still fails before CUDA graphs are safe to revisit
 
 ### 8. WSL-specific performance warnings are expected noise
 
