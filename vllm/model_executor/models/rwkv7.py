@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Inference-only RWKV7 model."""
 
+import os
 from collections.abc import Iterable
 from itertools import islice
 
@@ -709,6 +710,8 @@ class RWKV7Block(nn.Module, MambaBase):
             torch.tensor([]),
             torch.tensor([]),
         )
+        self.debug_last_forward_summary: dict[str, int] | None = None
+        self.debug_last_store_stats: dict[str, float | int] | None = None
 
     @property
     def mamba_type(self) -> str:
@@ -778,6 +781,7 @@ class RWKV7Block(nn.Module, MambaBase):
             self.kv_cache[2].index_select(0, slot_ids),
         )
 
+    @torch.compiler.disable
     def _store_kv_state(
         self,
         slot_id: int,
@@ -785,6 +789,15 @@ class RWKV7Block(nn.Module, MambaBase):
         recurrent_state: torch.Tensor,
         ffn_shift_state: torch.Tensor,
     ) -> None:
+        if os.getenv("RWKV7_DEBUG_FAIL_ON_STORE") == "1":
+            raise RuntimeError("rwkv7 _store_kv_state called")
+        self.debug_last_store_stats = {
+            "store_type": 0,
+            "slot_or_count": int(slot_id),
+            "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
+            "recurrent_absmax": float(recurrent_state.abs().max().item()),
+            "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
+        }
         self.kv_cache[0][slot_id].copy_(
             attn_shift_state.to(self.kv_cache[0][slot_id].dtype)
         )
@@ -795,6 +808,7 @@ class RWKV7Block(nn.Module, MambaBase):
             ffn_shift_state.to(self.kv_cache[2][slot_id].dtype)
         )
 
+    @torch.compiler.disable
     def _store_kv_states(
         self,
         slot_ids: torch.Tensor,
@@ -802,6 +816,15 @@ class RWKV7Block(nn.Module, MambaBase):
         recurrent_state: torch.Tensor,
         ffn_shift_state: torch.Tensor,
     ) -> None:
+        if os.getenv("RWKV7_DEBUG_FAIL_ON_STORE") == "1":
+            raise RuntimeError("rwkv7 _store_kv_states called")
+        self.debug_last_store_stats = {
+            "store_type": 1,
+            "slot_or_count": int(slot_ids.numel()),
+            "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
+            "recurrent_absmax": float(recurrent_state.abs().max().item()),
+            "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
+        }
         self.kv_cache[0].index_copy_(
             0, slot_ids, attn_shift_state.to(self.kv_cache[0].dtype)
         )
@@ -848,6 +871,18 @@ class RWKV7Block(nn.Module, MambaBase):
         v_first: torch.Tensor | None,
         attn_metadata: LinearAttentionMetadata | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.debug_last_forward_summary = {
+            "attn_metadata_is_none": int(attn_metadata is None),
+            "num_decode_tokens": (
+                -1 if attn_metadata is None else int(attn_metadata.num_decode_tokens)
+            ),
+            "num_prefill_tokens": (
+                -1 if attn_metadata is None else int(attn_metadata.num_prefill_tokens)
+            ),
+            "num_prefills": (
+                -1 if attn_metadata is None else int(attn_metadata.num_prefills)
+            ),
+        }
         if attn_metadata is None:
             output, v_first_out, _, _, _ = self._run_sequence(
                 hidden_states, v_first, None, None, None

@@ -3,6 +3,7 @@ import gc
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -59,6 +60,13 @@ def clone_layer_states(model) -> list[dict]:
         rows.append(
             {
                 "layer_idx": layer_idx,
+                "layer_object_id": id(layer),
+                "debug_last_forward_summary": getattr(
+                    layer, "debug_last_forward_summary", None
+                ),
+                "debug_last_store_stats": getattr(
+                    layer, "debug_last_store_stats", None
+                ),
                 "states": [
                     summarize_state_tensor(cache) for cache in layer.kv_cache
                 ],
@@ -86,13 +94,67 @@ def summarize_state_tensor(tensor: torch.Tensor) -> dict:
 
 
 def get_model_from_engine(engine: LLMEngine):
+    return get_model_runner_from_engine(engine).model
+
+
+def get_model_runner_from_engine(engine: LLMEngine):
     model_executor = getattr(engine, "model_executor", None)
     if model_executor is None:
         raise RuntimeError(
             "LLMEngine is not running in-process; `model_executor` is unavailable. "
             "Check VLLM_ENABLE_V1_MULTIPROCESSING."
         )
-    return model_executor.driver_worker.worker.model_runner.model
+    return model_executor.driver_worker.worker.model_runner
+
+
+def clone_runner_kv_caches(model_runner) -> list[dict]:
+    rows = []
+    for layer_idx, layer_states in enumerate(model_runner.kv_caches):
+        rows.append(
+            {
+                "layer_idx": layer_idx,
+                "states": [
+                    summarize_state_tensor(state_tensor) for state_tensor in layer_states
+                ],
+            }
+        )
+    return rows
+
+
+def layer_name_to_index(layer_name: str) -> int:
+    matches = re.findall(r"\.(\d+)(?:\.|$)", layer_name)
+    if not matches:
+        raise ValueError(f"Unable to extract layer index from {layer_name!r}.")
+    return int(matches[-1])
+
+
+def clone_static_forward_context(model_runner) -> list[dict]:
+    rows = []
+    for layer_name, layer in sorted(
+        (
+            item
+            for item in model_runner.compilation_config.static_forward_context.items()
+            if hasattr(item[1], "debug_last_store_stats")
+        ),
+        key=lambda item: layer_name_to_index(item[0]),
+    ):
+        rows.append(
+            {
+                "layer_name": layer_name,
+                "layer_idx": layer_name_to_index(layer_name),
+                "layer_object_id": id(layer),
+                "debug_last_forward_summary": getattr(
+                    layer, "debug_last_forward_summary", None
+                ),
+                "debug_last_store_stats": getattr(
+                    layer, "debug_last_store_stats", None
+                ),
+                "states": [
+                    summarize_state_tensor(cache) for cache in layer.kv_cache
+                ],
+            }
+        )
+    return rows
 
 
 def make_sampling_params(max_tokens: int) -> SamplingParams:
@@ -191,6 +253,44 @@ def compare_state_snapshots(run_a: dict, run_b: dict) -> dict:
     }
 
 
+def compare_runner_cache_snapshots(run_a: dict, run_b: dict) -> dict | None:
+    caches_a = run_a.get("runner_kv_caches")
+    caches_b = run_b.get("runner_kv_caches")
+    if caches_a is None or caches_b is None:
+        return None
+
+    first_layer_with_diff = None
+    layers = []
+    for layer_a, layer_b in zip(caches_a, caches_b):
+        state_rows = []
+        has_diff = False
+        for state_idx, (state_a, state_b) in enumerate(
+            zip(layer_a["states"], layer_b["states"])
+        ):
+            match = state_a["sha256"] == state_b["sha256"]
+            state_rows.append(
+                {
+                    "state_idx": state_idx,
+                    "match": match,
+                    "absmax_a": state_a["absmax"],
+                    "absmax_b": state_b["absmax"],
+                    "mean_a": state_a["mean"],
+                    "mean_b": state_b["mean"],
+                    "l2_a": state_a["l2"],
+                    "l2_b": state_b["l2"],
+                }
+            )
+            has_diff = has_diff or not match
+        if first_layer_with_diff is None and has_diff:
+            first_layer_with_diff = layer_a["layer_idx"]
+        layers.append({"layer_idx": layer_a["layer_idx"], "states": state_rows})
+
+    return {
+        "first_layer_with_runner_cache_diff": first_layer_with_diff,
+        "layers": layers,
+    }
+
+
 def run_capture(
     *,
     model: str,
@@ -219,9 +319,11 @@ def run_capture(
     )
     engine = LLMEngine.from_engine_args(engine_args, enable_multiprocessing=False)
     model_obj = None
+    model_runner = None
     request = None
     try:
-        model_obj = get_model_from_engine(engine)
+        model_runner = get_model_runner_from_engine(engine)
+        model_obj = model_runner.model
         if prompt_token_ids is None:
             if prompt is None:
                 raise ValueError(
@@ -298,11 +400,14 @@ def run_capture(
             "text": choice.text,
             "num_cached_tokens": capture.num_cached_tokens,
             "states": clone_layer_states(model_obj),
+            "runner_kv_caches": clone_runner_kv_caches(model_runner),
+            "static_forward_context": clone_static_forward_context(model_runner),
             "engine_core_client": type(engine.engine_core).__name__,
         }
     finally:
         engine.engine_core.shutdown()
         del request
+        del model_runner
         del model_obj
         del engine
         cleanup_dist_env_and_memory()
@@ -311,6 +416,7 @@ def run_capture(
 
 def summarize(run_a: dict, run_b: dict) -> dict:
     state_summary = compare_state_snapshots(run_a, run_b)
+    runner_cache_summary = compare_runner_cache_snapshots(run_a, run_b)
     return {
         "prompt_token_ids_a": run_a.get("prompt_token_ids"),
         "prompt_token_ids_b": run_b.get("prompt_token_ids"),
@@ -325,6 +431,14 @@ def summarize(run_a: dict, run_b: dict) -> dict:
         "engine_core_client_b": run_b["engine_core_client"],
         "first_layer_with_state_diff": state_summary["first_layer_with_state_diff"],
         "layers": state_summary["layers"],
+        "first_layer_with_runner_cache_diff": (
+            None
+            if runner_cache_summary is None
+            else runner_cache_summary["first_layer_with_runner_cache_diff"]
+        ),
+        "runner_kv_caches": (
+            None if runner_cache_summary is None else runner_cache_summary["layers"]
+        ),
     }
 
 
@@ -340,6 +454,7 @@ def summarize_second_step_replay(base_run: dict, replay_run: dict) -> dict:
         )
 
     state_summary = compare_state_snapshots(base_run, replay_run)
+    runner_cache_summary = compare_runner_cache_snapshots(base_run, replay_run)
     expected_replay_prompt = list(base_run["prompt_token_ids"]) + [
         base_run["token_ids"][0]
     ]
@@ -368,6 +483,14 @@ def summarize_second_step_replay(base_run: dict, replay_run: dict) -> dict:
         "engine_core_client_replay": replay_run["engine_core_client"],
         "first_layer_with_state_diff": state_summary["first_layer_with_state_diff"],
         "layers": state_summary["layers"],
+        "first_layer_with_runner_cache_diff": (
+            None
+            if runner_cache_summary is None
+            else runner_cache_summary["first_layer_with_runner_cache_diff"]
+        ),
+        "runner_kv_caches": (
+            None if runner_cache_summary is None else runner_cache_summary["layers"]
+        ),
     }
 
 

@@ -3,7 +3,7 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest committed checkpoint before this round: `c29c30f49`
+- Latest committed checkpoint before this round: `c15f30216`
 - Current service status:
   - No `vllm serve` process is running now.
   - No test ports are currently listening.
@@ -86,6 +86,25 @@
     - [rwkv7_engine_step_2_base.json](/tmp/rwkv7_engine_step_2_base.json)
     - [rwkv7_engine_step_2_replay.json](/tmp/rwkv7_engine_step_2_replay.json)
     - [rwkv7_engine_step_2_compare.json](/tmp/rwkv7_engine_step_2_compare.json)
+- New root-cause finding from fresh compile debug:
+  - when compile cache is disabled via `VLLM_DISABLE_COMPILE_CACHE=1`
+  - and the probe captures `RWKV7Block.debug_last_forward_summary`
+  - the non-eager compile path still shows:
+    - `attn_metadata_is_none=1`
+    - `num_decode_tokens=-1`
+    - `num_prefill_tokens=-1`
+  - this happens even on the first unfinished request step for prompt `北京是`
+  - therefore `RWKV7Block.forward()` is taking the `attn_metadata is None` fallback path under compile
+  - and `_store_kv_state()` / `_store_kv_states()` never run
+  - as a consequence:
+    - layer-local `kv_cache` remains all-zero
+    - runner-owned `kv_caches` remains all-zero
+    - first token can still match, because prefill math runs within the same forward
+    - later decode steps diverge because the recurrent state was never committed into cache
+  - reference artifact:
+    - [rwkv7_engine_step_1_final_repro.json](/tmp/rwkv7_engine_step_1_final_repro.json)
+  - the current compile correctness bug is therefore no longer “unknown later-step divergence”
+  - it is specifically a metadata/stateful-path integration bug in the RWKV7 compile path
 
 ## What Is Already Working
 
@@ -181,10 +200,10 @@ Compile startup is no longer the main blocker.
 
 The current blockers are:
 
-- non-eager correctness mismatch even with CUDA graphs disabled
-- PIECEWISE CUDA graph capture still failing during engine initialization
-- token-controlled replay now suggests the mismatch is not on the first or second decode token for `北京是`
-- the next localization step should inspect the model-runner-owned cache backing store directly, or extend controlled replay to later decode steps / other divergent prompts
+- non-eager compile still routes RWKV7 blocks through `attn_metadata=None`
+- because of that, recurrent cache writeback never executes in the compiled path
+- PIECEWISE CUDA graph capture still fails during engine initialization
+- the next implementation step should fix the metadata/stateful boundary before spending more time on later-step replay localization
 
 ### Additional findings from deeper debug
 
@@ -348,13 +367,49 @@ Handling:
   - `/mnt/d/codes/RWKV7-Goose-World2.8-0.1B-HF`
   - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
 
+### 12. vLLM compile cache can hide model-code changes during debug
+
+Problem:
+
+- the torch.compile cache can be reused even after local RWKV7 model-code edits
+- this can make a new probe look like it exercised fresh instrumentation when it actually loaded an older compiled artifact
+
+Handling:
+
+- for compile-path debugging, run with:
+  - `VLLM_DISABLE_COMPILE_CACHE=1`
+- only trust instrumentation results after confirming the log says:
+  - `vLLM's torch.compile cache is disabled.`
+
+### 13. RWKV7 compile bug is currently “metadata missing”, not “backing cache mismatch”
+
+Problem:
+
+- earlier probe results only showed that layer-local and runner-level cache fingerprints stayed zero
+- that left two possibilities:
+  - cache writeback happened into some other backing store
+  - or the metadata-driven stateful path never ran
+
+Handling:
+
+- a fresh no-cache compile probe with layer-local forward/store summaries showed:
+  - `RWKV7Block.forward()` received `attn_metadata=None`
+  - `_store_kv_state()` and `_store_kv_states()` were never reached
+- this means the current bug is upstream of cache writeback:
+  - the compiled RWKV7 block is not seeing live attention metadata
+  - so it always falls back to the stateless sequence path
+
 ## Current TODO List
 
 ### Highest priority
 
-1. Verify whether the actual scheduler/model-runner cache backing store diverges even when the layer-local `kv_cache` fingerprint stays zero.
-2. Extend token-id-controlled replay beyond the second decode step, especially on prompts that still diverge in end-to-end one-shot vs step-by-step tests.
-3. Keep the default runtime on eager until the compile path is both correct and measurable.
+1. Replace the current RWKV7 compile boundary so the block sees live `LinearAttentionMetadata` under non-eager execution.
+2. Re-run the first unfinished-step probe with `VLLM_DISABLE_COMPILE_CACHE=1` and confirm:
+   - `attn_metadata_is_none=0`
+   - `_store_kv_state()` / `_store_kv_states()` run
+   - runner-level cache summaries become non-zero
+3. Only after that, return to later-step replay / divergent-prompt checks.
+4. Keep the default runtime on eager until the compile path is both correct and measurable.
 
 ### After readiness is achieved
 
@@ -452,10 +507,11 @@ Useful files to keep inspecting:
 
 ## Recommended Next Action
 
-Continue from commit `d573675fa`.
+Continue from commit `c15f30216`.
 
 The next concrete experiment should be:
 
 1. keep the eager baseline as the known-good correctness/perf control
-2. inspect the actual model-runner-owned cache backing store on the matched second-step replay pair
-3. then extend controlled replay to later decode steps before changing the compile architecture again
+2. move RWKV7 metadata/stateful dispatch out of the current fullgraph-sensitive path
+3. use `VLLM_DISABLE_COMPILE_CACHE=1` and rerun [rwkv7_engine_step_1_final_repro.json](/tmp/rwkv7_engine_step_1_final_repro.json)-style probes until `attn_metadata_is_none` flips to `0`
+4. only then resume later-step replay and end-to-end divergence checks

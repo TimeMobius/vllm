@@ -243,6 +243,62 @@ Implementation:
 - [rwkv7.py#L690](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L690)
 - [rwkv7.py#L747](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L747)
 
+### 4.8 Root Cause Of The Current Non-Eager Correctness Bug
+
+Fresh compile debugging with `VLLM_DISABLE_COMPILE_CACHE=1` identified the current
+non-eager correctness bug more precisely.
+
+The key finding is:
+
+- under the compiled RWKV7 path, `RWKV7Block.forward()` receives
+  `attn_metadata=None`
+- therefore the block takes the fallback sequence path:
+  - `_run_sequence(hidden_states, v_first, None, None, None)`
+- and never reaches:
+  - `_store_kv_state()`
+  - `_store_kv_states()`
+
+This was confirmed with local debug summaries captured by:
+
+- [tmp_rwkv7_engine_first_step_compare.py](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
+- artifact:
+  - [rwkv7_engine_step_1_final_repro.json](/tmp/rwkv7_engine_step_1_final_repro.json)
+
+Observed properties in that artifact:
+
+- the request is still unfinished after the first captured generation step
+- `RWKV7Block.debug_last_forward_summary` reports:
+  - `attn_metadata_is_none=1`
+  - `num_decode_tokens=-1`
+  - `num_prefill_tokens=-1`
+- `debug_last_store_stats` is still unset
+- layer-local cache summaries remain zero
+- runner-level cache summaries remain zero
+
+This explains the previously confusing behavior:
+
+- the first generated token can still match between:
+  - `max_tokens=1`
+  - `max_tokens=8`
+- because prompt-time recurrent math still runs inside the same forward pass
+- but the recurrent state is never committed into vLLM's cache
+- so later decode steps eventually diverge
+
+The current compile bug is therefore not best described as:
+
+- an unknown later-step cache corruption
+
+It is better described as:
+
+- a metadata/stateful-path integration failure in the RWKV7 compile boundary
+
+An additional debugging pitfall was also confirmed:
+
+- vLLM's torch.compile cache can reuse older compiled artifacts even after local
+  RWKV7 model-code edits
+- compile-path debugging should therefore be run with:
+  - `VLLM_DISABLE_COMPILE_CACHE=1`
+
 ## 5. Validation Strategy
 
 The validation process used four layers of testing.
