@@ -382,7 +382,7 @@ def test_rwkv7_mamba_state_copy_function_types():
     )
 
 
-def test_rwkv7_config_defaults_to_eager_when_cudagraphs_are_enabled():
+def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_enabled():
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(
             enforce_eager=False,
@@ -402,7 +402,7 @@ def test_rwkv7_config_defaults_to_eager_when_cudagraphs_are_enabled():
 
     RWKV7ForCausalLMConfig.verify_and_update_config(vllm_config)
 
-    assert vllm_config.model_config.enforce_eager is True
+    assert vllm_config.model_config.enforce_eager is False
 
 
 def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_disabled():

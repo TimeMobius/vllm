@@ -18,10 +18,11 @@
     - runtime `forward_context.attn_metadata` 实际存在
     - 但 compiled `RWKV7Block.forward()` 没有在真实请求时走到 metadata-aware cache path
     - whole-block custom op 把这条 runtime stateful path 拉回来了
-- 配置策略也做了收口：
-  - 默认仍保持 eager 控制组
-  - 但当 `cudagraph_mode=none` 时，`RWKV7ForCausalLMConfig` 不再强制 `enforce_eager=True`
-  - 也就是说，RWKV7 现在已经可以通过真实入口 opt-in 到 compile/no-cg，而不再依赖 probe monkeypatch
+- 配置策略现在已经正式放开：
+  - `RWKV7ForCausalLMConfig` 不再强制 eager fallback
+  - RWKV7 现在已经可以通过真实入口直接跑：
+    - 默认 PIECEWISE CUDA 图
+    - `cudagraph_mode=none`
 - probe / 回归工具链同步更新：
   - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py) 已移除 compile monkeypatch
   - [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) 现在支持：
@@ -40,9 +41,28 @@
     - 日志：[vllm_rwkv7_compare_real_compile_no_cg.log](/tmp/vllm_rwkv7_compare_real_compile_no_cg.log)
     - `i am`、`北京是`、`The capital of France is`
     - one-shot `max_tokens=8` 与 step-by-step `max_tokens=1` 全部一致
-- 当前剩余 blocker 已经收缩为：
-  - PIECEWISE CUDA graph capture 仍未修好
-  - compile/no-cg correctness 已经不再是 blocker
+- 默认 PIECEWISE correctness：
+  - 日志：[vllm_rwkv7_piecewise_final.log](/tmp/vllm_rwkv7_piecewise_final.log)
+  - `i am`、`北京是`、`The capital of France is`
+  - one-shot `max_tokens=8` 与 step-by-step `max_tokens=1` 全部一致
+- `0.1B` 本地 checkpoint 也已补测：
+  - 默认 PIECEWISE：
+    - [vllm_rwkv7_piecewise_0p1b_final.log](/tmp/vllm_rwkv7_piecewise_0p1b_final.log)
+  - compile/no-cg：
+    - [vllm_rwkv7_compile_no_cg_0p1b_final.log](/tmp/vllm_rwkv7_compile_no_cg_0p1b_final.log)
+  - `i am`、`北京是`、`The capital of France is`
+  - one-shot `max_tokens=8` 与 step-by-step `max_tokens=1` 全部一致
+- 当前 compile correctness blocker 已经清零
+- PIECEWISE 最终修复点：
+  - 把 `vllm::rwkv7_block_forward` 加进了默认 `splitting_ops`
+  - 让 RWKV7 的 whole-block stateful boundary 不会被错误冻进单个 piecewise capture 区域
+- 另一个 graph-capture 直接坑：
+  - `_store_kv_state()` / `_store_kv_states()` 里的 debug `.item()` 会导致：
+    - `CUDA error: operation not permitted when stream is capturing`
+  - 现在详细 stats 只在：
+    - `RWKV7_DEBUG_STORE_STATS=1`
+    - 且当前 stream 不在 capture
+    时才会启用
 
 - Phase 1 的第一步已经落地：
   - `RWKV7Attention` 注册进了 `static_forward_context`
@@ -52,14 +72,14 @@
   - `Dynamo bytecode transform time` 从约 `126.55s` 降到了约 `1.74s`
   - compile range `(1, 2048)` 的图编译约 `8.89s`
   - 总 `torch.compile` 时间约 `10.92s`
-- 但这一步还没有把 non-eager 变成“可上线”状态：
-  - 关闭 CUDA graphs 后，服务可以启动到 `/health`
-  - 但 `one-shot` 与 `step-by-step` 仍然不一致
-  - PIECEWISE CUDA graph capture 仍然会在 graph capture 阶段失败
-- 因此当前策略是：
-  - **保留这轮 custom-op 骨架**
-  - **默认配置回到 eager**
-  - **下一步继续调 compile correctness，而不是强推默认 non-eager**
+- 这段中间结论后来已经被后续修复覆盖：
+  - whole-block custom op 把 runtime metadata/stateful dispatch 拉回到了 live path
+  - capture 期间的 debug `.item()` 被收敛成仅在非 capture 下启用
+  - `vllm::rwkv7_block_forward` 加入默认 `splitting_ops`
+  - 所以现在的最终状态已经不是“能启动但不正确”，而是：
+    - 默认 PIECEWISE 可用
+    - `cudagraph_mode=none` 可用
+    - 两条 compile 路径都能通过真实服务正确性回归
 - 新增了一个 engine-step probe：
   - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
   - 现在支持：
@@ -353,18 +373,21 @@ RWKV7 in vLLM:
 
 ### Immediate Next Steps
 
-1. 检查真正的 model-runner-owned cache backing store，而不是只看 `model.model.layers[*].kv_cache`
-2. 把 token-id-controlled replay 扩到第三步甚至更后面的 decode step
-3. 在 `i am` / `The capital of France is` 上重复受控 replay，而不只看 `北京是`
-4. 复查当前 custom op fake impl / `mutates_args` / output buffer 语义，确认 compiled graph 没有错误重排 state 输出
-5. 复查 `RWKV7Block.forward()` 里 prefill request 循环和 `_get_kv_state(...)` 在 compile 下是否仍有隐藏的 data-dependent 假设
-6. 只在 correctness 重新成立之后，再回头试 PIECEWISE CUDA graph capture
-7. 在 correctness 成立之前，不要再次把 non-eager 设为默认
+1. 补 compile 路径的吞吐 benchmark：
+   - eager vs 默认 PIECEWISE vs `cudagraph_mode=none`
+2. 补 compile 路径的并发正确性与吞吐：
+   - concurrent 3
+   - concurrent 8
+3. 扩大服务回归覆盖：
+   - 更长输出
+   - prefix caching
+   - mixed prompt lengths
+4. 评估是否能在保持正确性的前提下放宽部分 `fp32` 路径
 
-这一步的核心收益是：
+当前这套 KDA-style / whole-block compile boundary 的核心收益是：
 
 - compile 图不再直接吞下 RWKV7 prefill 的 Python 时间步循环
-- 先把“服务能不能在非 eager 模式起起来”这个问题解决
+- compile 服务路径已经能真正跑通并保持 token 级一致性
 
 ### Phase 2: Kernelization / Varlen Optimization
 
@@ -389,108 +412,64 @@ RWKV7 in vLLM:
 
 ## Step-by-Step TODO
 
-### Phase 0. Freeze Baseline
+### Phase 0. Freeze Validation Baseline
 
-- [ ] 记录当前 eager 基线为控制组
-- [ ] 保留一组固定 prompts:
+- [x] 固定 correctness prompts：
   - `i am`
   - `北京是`
   - `The capital of France is`
-- [ ] 保留一组固定 benchmark 口径:
-  - single request TPS
-  - concurrent decode TPS
+- [x] 固定回归口径：
   - one-shot vs step-by-step correctness
+  - compile/no-cg
+  - 默认 PIECEWISE
 
-### Phase 1. Build RWKV7 Custom-Op Boundary
+### Phase 1. Build RWKV7 Compile Boundary
 
-- [ ] 在 [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py) 中新增 RWKV7 custom op wrapper
-- [ ] 参考 [`kda.py`](/home/liu/vllm/vllm/model_executor/layers/kda.py) 的 `direct_register_custom_op(...)` 模式
-- [ ] 设计 `rwkv7_attention(...)` 的入参
-  - q/r/w/k/v/a/g 或投影后的张量
-  - 输出 buffer
-  - `layer_name`
-- [ ] 添加 fake impl，满足编译期 shape 推断
-- [ ] 让 `RWKV7Attention.forward()` 改成：
-  - 只做 projection / reshape / buffer allocation
-  - 调 `torch.ops.vllm.rwkv7_attention(...)`
-  - 不直接写 Python recurrence
+- [x] 新增 RWKV7 custom-op boundary
+- [x] 保留 attention-level custom op 骨架：
+  - `torch.ops.vllm.rwkv7_attention(...)`
+- [x] 新增 whole-block runtime boundary：
+  - `torch.ops.vllm.rwkv7_block_forward(...)`
+- [x] 把 runtime metadata/stateful dispatch 移到 live block runtime helper
 
-### Phase 2. Move Stateful Logic Behind `_forward`
+### Phase 2. Restore Compile Correctness
 
-- [ ] 新增 `RWKV7Attention._forward(...)`
-- [ ] 在 `_forward(...)` 中通过 `get_forward_context()` 获取 metadata
-- [ ] 通过 `forward_context.no_compile_layers[layer_name]` 取回层实例
-- [ ] 在 `_forward(...)` 中处理：
-  - cache 读取
-  - state 写回
-  - prefill / decode 分流
-- [ ] 保持当前数学逻辑完全一致，先不做 kernel 优化
+- [x] fresh compile probe 定位 `attn_metadata=None`
+- [x] second-step token-id-controlled replay 跑通
+- [x] compile/no-cg correctness 恢复
+- [x] default PIECEWISE correctness 恢复
+- [x] 把 `vllm::rwkv7_block_forward` 加入默认 `splitting_ops`
+- [x] 修复 graph capture 期间 debug `.item()` 崩溃
 
-### Phase 3. Preserve Current Decode Batching
+### Phase 3. Service Regression Validation
 
-- [ ] 保留现有 `forward_decode_batch()` 路径
-- [ ] 在 custom-op 后端里继续复用 batched decode 更新
-- [ ] 确认并发 decode 行为不回退成串行
-
-### Phase 4. Re-Validate Non-Eager Startup
-
-- [ ] 再次测试：
-  - `enforce_eager=False`
-  - `cudagraph_mode=PIECEWISE`
-  - `cudagraph_copy_inputs=True`
-- [ ] 确认日志里：
-  - 不再卡在 Dynamo 展开 RWKV7Attention prefill Python 循环
-  - `/health` 能起来
-  - `/v1/completions` 能返回
-
-### Phase 5. Correctness Regression
-
-- [x] 跑单测：
+- [x] 单测：
   - [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py)
-- [ ] 跑服务正确性：
-  - `0.1B` compile/no-cg one-shot vs step-by-step
-- [x] 跑服务正确性：
-  - `0.4B` compile/no-cg one-shot vs step-by-step
-  - prompts:
-    - `i am`
-    - `北京是`
-    - `The capital of France is`
-- [ ] 跑并发正确性：
-  - concurrent 3 / 8
-  - 输出是否稳定匹配 baseline
+- [x] `0.4B` compile/no-cg one-shot vs step-by-step
+- [x] `0.4B` 默认 PIECEWISE one-shot vs step-by-step
+- [x] `0.1B` compile/no-cg one-shot vs step-by-step
+- [x] `0.1B` 默认 PIECEWISE one-shot vs step-by-step
 
-### Phase 6. Varlen Prefill Optimization
+### Phase 4. Next Performance Work
+
+- [ ] eager vs 默认 PIECEWISE vs `cudagraph_mode=none` 吞吐对比
+- [ ] compile 路径并发正确性与吞吐：
+  - concurrent 3
+  - concurrent 8
+- [ ] prefix caching / mixed prompt lengths 覆盖
+
+### Phase 5. Kernelization / Varlen Optimization
 
 - [ ] 借鉴 Mamba/KDA 的 metadata 使用方式
 - [ ] 用 `query_start_loc` 做 packed / varlen prefill
-- [ ] 先做 RWKV7 prefill backend 的 varlen 版本
-- [ ] 对照 FLA 的 `chunk_rwkv7` 接口和状态形状
-- [ ] 再决定是否需要独立 Triton/CUDA kernel
+- [ ] 对照 FLA 的 `chunk_rwkv7` / `fused_mul_recurrent_rwkv7`
+- [ ] 评估是否需要独立 Triton/CUDA kernel
 
-### Phase 7. Decode Kernel Optimization
+### Phase 6. Precision / Policy Cleanup
 
-- [ ] 评估当前 batched decode 是否已足够
-- [ ] 对照 FLA 的 `fused_mul_recurrent_rwkv7`
-- [ ] 若仍慢，给 recurrent update 做 fused kernel
-- [ ] 目标是减少 Python/launch overhead，而不是再改 cache 语义
-
-### Phase 7.5. Helper Op Cleanup
-
-- [ ] 评估是否需要把以下子步骤逐步 kernel 化
-  - `addcmul` mixing
-  - `k` update
-  - output correction
-- [ ] 对照 FLA 的：
-  - `fused_addcmul_rwkv7`
-  - `fused_k_rwkv7`
-  - `gate_output_correction`
-
-### Phase 8. Revisit Default Runtime Policy
-
-- [x] 允许在 `cudagraph_mode=none` 时 opt-in 到真实 compile 路径
-- [ ] 只有当非 eager 路径稳定后，才考虑把它作为默认
-- [ ] 在那之前，eager 基线仍然是唯一的稳定控制组
-- [ ] 非 eager 应视为实验路径，不应替代当前稳定实现
+- [ ] 评估哪些路径能从 `fp32` 回到更轻量 dtype
+- [ ] 评估 compile-enabled 路径是否可以作为默认推荐
+- [ ] 做更广 prompt/model sweep 后再决定最终默认策略
 
 ## Files Most Likely To Change
 
@@ -555,8 +534,8 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 重新测试 `cudagraph_mode=PIECEWISE`
-- [ ] 直接定位 CUDA graph capture 失败点
-- [ ] 判断 whole-block custom op 是否已经足够支撑 graph capture，还是还需要进一步拆分/静态 shape 收敛
+- [ ] 做 eager / 默认 PIECEWISE / `cudagraph_mode=none` 的吞吐对比
+- [ ] 跑 compile 路径的并发 3 / 8 correctness + TPS
+- [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
 
-compile/no-cg 已经从“能启动”推进到了“真实服务 correctness 对齐”；现在最值得攻的就是 CUDA graph 这条剩余主线。
+compile 路径已经不是“能不能跑通”的问题，而是“性能和覆盖还能推进多少”。这一轮最值得攻的是 benchmark 和更广 stress coverage。

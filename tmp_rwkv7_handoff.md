@@ -3,13 +3,15 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest committed checkpoint before this round: `a5bbd9b7976b97f6a7810c631c2ead979d6c635c`
+- Latest committed checkpoint before this round: `f94fd358bedcc9eaa9cd9d7c72a4a295b2d553ff`
 - Current service status:
   - No `vllm serve` process is running now.
   - No test ports are currently listening.
-  - The stable default path remains eager when CUDA graphs are enabled.
-  - The real compile path now works when `cudagraph_mode=none`.
-  - PIECEWISE CUDA graph capture is still experimental and should not be treated as correct yet.
+  - RWKV7 compile now works on both:
+    - default PIECEWISE CUDA graphs
+    - `cudagraph_mode=none`
+  - No experimental environment variable is required anymore.
+  - The main remaining work is performance/cleanup, not basic compile correctness.
 
 ## Latest Update (2026-03-31)
 
@@ -22,9 +24,9 @@
   - runtime `forward_context.attn_metadata` did exist
   - the real bug was that compiled `RWKV7Block.forward()` did not execute the metadata-aware cache load/store path during request runtime
   - moving the stateful boundary to a whole-block custom op fixed that integration bug
-- RWKV7 config policy is now narrower and safer:
-  - when `cudagraph_mode != none`, RWKV7 still falls back to eager by default
-  - when `cudagraph_mode=none`, `RWKV7ForCausalLMConfig` now allows the real compile path without monkeypatching config classes
+- RWKV7 config policy is now fully reopened:
+  - `RWKV7ForCausalLMConfig` no longer forces eager as a default fallback
+  - real compile is now allowed for both default PIECEWISE and `cudagraph_mode=none`
 - The engine-step probe is now a real-entrypoint probe:
   - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py) no longer monkeypatches RWKV7 config
 - The service compare tool is now reusable for local checkpoints:
@@ -49,8 +51,30 @@
     - `北京是`: one-shot == step-by-step
     - `The capital of France is`: one-shot == step-by-step
 - Current remaining blocker:
-  - compile correctness under `cudagraph_mode=none` is no longer the main problem
-  - the next unresolved path is PIECEWISE CUDA graph capture
+  - the old compile/no-cg correctness blocker is resolved
+  - the old PIECEWISE CUDA graph blocker is also resolved
+  - next work is around performance and broader coverage
+- Final CUDA-graph capture fix:
+  - temporary RWKV7 store-debug stats used `.item()` on CUDA tensors during cache writeback
+  - this caused `CUDA error: operation not permitted when stream is capturing`
+  - detailed tensor stats are now only collected when `RWKV7_DEBUG_STORE_STATS=1`
+    and the stream is not being captured
+- Final PIECEWISE correctness fix:
+  - `vllm::rwkv7_block_forward` was added to the default `splitting_ops` set in
+    [compilation.py](/home/liu/vllm/vllm/config/compilation.py)
+  - this keeps the RWKV7 stateful block boundary out of a single frozen piecewise capture region
+  - after that change, real `vllm serve` PIECEWISE one-shot vs step-by-step parity recovered
+- Final real-entrypoint validation logs:
+  - PIECEWISE:
+    - [vllm_rwkv7_piecewise_final.log](/tmp/vllm_rwkv7_piecewise_final.log)
+    - [vllm_rwkv7_piecewise_0p1b_final.log](/tmp/vllm_rwkv7_piecewise_0p1b_final.log)
+  - compile/no-cg:
+    - [vllm_rwkv7_compile_no_cg_final.log](/tmp/vllm_rwkv7_compile_no_cg_final.log)
+    - [vllm_rwkv7_compile_no_cg_0p1b_final.log](/tmp/vllm_rwkv7_compile_no_cg_0p1b_final.log)
+  - the `0.4B` and `0.1B` local checkpoints both show:
+    - `i am`: one-shot == step-by-step
+    - `北京是`: one-shot == step-by-step
+    - `The capital of France is`: one-shot == step-by-step
 - New pitfall to remember:
   - nested-shell JSON quoting for `-cc '{"cudagraph_mode":"none"}'` is easy to break
   - prefer either:
@@ -174,6 +198,16 @@
   - `i am`
   - `北京是`
   - `The capital of France is`
+- `one-shot max_tokens=8` and `step-by-step max_tokens=1` also now match on RWKV7 `0.4B` under the default PIECEWISE CUDA-graph service path for:
+  - `i am`
+  - `北京是`
+  - `The capital of France is`
+- `one-shot max_tokens=8` and `step-by-step max_tokens=1` also now match on RWKV7 `0.1B` under both:
+  - default PIECEWISE CUDA graphs
+  - compile with `cudagraph_mode=none`
+  - `i am`
+  - `北京是`
+  - `The capital of France is`
 - Decode-path batching across concurrent requests is implemented and validated.
 - Concurrent decode requests no longer serialize one-by-one inside `RWKV7Block`.
 
@@ -189,17 +223,19 @@
   - runtime state dtype
   - reference parity for full forward
   - reference parity for prefill + decode
-  - config behavior for the default eager fallback
+  - config behavior for compile-enable defaults
 
 ## Stable Baseline
 
-The conservative known-good serving baseline is still the eager path.
+There are now three known-good serving baselines for RWKV7:
 
-There is now a second known-good opt-in path for RWKV7:
-
-- compile enabled
-- `cudagraph_mode=none`
-- `async_scheduling=False`
+- eager
+- default PIECEWISE CUDA graphs
+- compile with `cudagraph_mode=none`
+- all validated with `async_scheduling=False`
+- compile correctness has been revalidated on local:
+  - `RWKV7-Goose-World2.8-0.1B-HF`
+  - `RWKV7-Goose-World2.9-0.4B-HF`
 
 What is known-good there:
 
@@ -209,7 +245,8 @@ What is known-good there:
 - `0.4B` single-request TPS on RTX 3050 6GB: about `32 TPS`
 - `0.4B` concurrent 8 total TPS: about `207 TPS`
 
-This baseline is functionally correct, but slower than expected for a `0.4B` model.
+These baselines are functionally correct. The remaining question is mainly
+performance headroom, especially for prefill and longer-run compile throughput.
 
 ## Non-Eager Experiment Status
 
@@ -247,8 +284,8 @@ From the non-eager no-cudagraph run:
 ### What is still not confirmed
 
 - compile-path TPS after correctness is restored
-- whether CUDA graphs can be safely re-enabled after more refactor/kernel work
-- broader prompt/model sweep beyond the current `0.4B` validation set
+- broader prompt/model sweep beyond the current `0.1B` / `0.4B` validation set
+- more stress coverage on concurrency / prefix caching
 
 ### Current blocker
 
@@ -256,9 +293,9 @@ Compile startup is no longer the main blocker.
 
 The current blockers are:
 
-- PIECEWISE CUDA graph capture still fails during engine initialization
-- compile/no-cg performance has not yet been benchmarked after correctness recovery
-- the next implementation step should move from metadata/state correctness to CUDA-graph compatibility
+- no known compile correctness blocker is open on the validated path
+- compile/no-cg and PIECEWISE performance have not yet been benchmarked after correctness recovery
+- the next implementation step should move from correctness to performance/coverage
 
 ### Additional findings from deeper debug
 
@@ -346,8 +383,9 @@ Handling:
 
 Current state:
 
-- this hook still exists as part of the experiment history
-- but the default runtime was moved back to eager after non-eager correctness failed
+- this was part of the earlier experiment history
+- current RWKV7 config no longer forces eager fallback
+- default PIECEWISE and `cudagraph_mode=none` have both been validated again
 
 ### 6. RWKV7 was not recognized as torch.compile-capable
 
@@ -372,8 +410,13 @@ Handling:
 
 Later finding:
 
-- even PIECEWISE capture is not yet stable
-- and non-eager correctness still fails before CUDA graphs are safe to revisit
+- the crash was not a fundamental PIECEWISE limitation
+- the final fixes were:
+  - keep debug `.item()` stats out of capture
+  - add `vllm::rwkv7_block_forward` to default `splitting_ops`
+- current validated path is:
+  - default PIECEWISE CUDA graphs
+  - `cudagraph_copy_inputs` not required for the passing regression runs
 
 ### 8. WSL-specific performance warnings are expected noise
 
@@ -450,23 +493,34 @@ Handling:
 - a fresh no-cache compile probe with layer-local forward/store summaries showed:
   - `RWKV7Block.forward()` received `attn_metadata=None`
   - `_store_kv_state()` and `_store_kv_states()` were never reached
-- this means the current bug is upstream of cache writeback:
-  - the compiled RWKV7 block is not seeing live attention metadata
-  - so it always falls back to the stateless sequence path
+- this isolated the first compile correctness bug as upstream of cache writeback:
+  - the compiled RWKV7 block was not seeing live attention metadata
+  - so it always fell back to the stateless sequence path
+- later fixes:
+  - move block-local runtime dispatch behind `torch.ops.vllm.rwkv7_block_forward(...)`
+  - add `vllm::rwkv7_block_forward` to `splitting_ops`
+- current state:
+  - compile/no-cg correctness is restored
+  - default PIECEWISE correctness is also restored
 
 ## Current TODO List
 
 ### Highest priority
 
-1. Replace the current RWKV7 compile boundary so the block sees live `LinearAttentionMetadata` under non-eager execution.
-2. Re-run the first unfinished-step probe with `VLLM_DISABLE_COMPILE_CACHE=1` and confirm:
-   - `attn_metadata_is_none=0`
-   - `_store_kv_state()` / `_store_kv_states()` run
-   - runner-level cache summaries become non-zero
-3. Only after that, return to later-step replay / divergent-prompt checks.
-4. Keep the default runtime on eager until the compile path is both correct and measurable.
+1. Benchmark compile throughput now that correctness is restored:
+   - default PIECEWISE
+   - `cudagraph_mode=none`
+   - compare against eager
+2. Re-run concurrency correctness and throughput on the restored compile path:
+   - concurrent 3
+   - concurrent 8
+3. Extend service validation beyond the current prompt set if needed:
+   - longer outputs
+   - prefix caching
+   - mixed prompt lengths
+4. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
 
-### After readiness is achieved
+### After correctness recovery
 
 1. Re-run `/health` and a single `/v1/completions` smoke test.
 2. Re-run one-shot vs step-by-step correctness on:
@@ -476,7 +530,7 @@ Handling:
 3. Re-run throughput benchmarks:
    - single request TPS
    - concurrent 8 total TPS
-4. Compare eager baseline vs non-eager path on:
+4. Compare eager baseline vs compile path on:
    - cold start time
    - warm start time
    - correctness
@@ -486,7 +540,7 @@ Handling:
 
 1. Investigate whether compile should be limited to decode-critical subgraphs.
 2. Decide whether compile support should move from `RWKV7Model` to a smaller decode-only submodule.
-3. Decide whether the non-eager path should become the default or remain experimental.
+3. Decide whether the compile-enabled path should remain conservative or become the default recommendation for RWKV7.
 4. Re-check whether `fp32` can be partially relaxed once the execution path stabilizes.
 
 ### Long-term performance work

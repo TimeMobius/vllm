@@ -670,17 +670,6 @@ class RWKV7ForCausalLMConfig(MambaModelConfig):
     @classmethod
     def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
         super().verify_and_update_config(vllm_config)
-        model_config = vllm_config.model_config
-        if (
-            not model_config.enforce_eager
-            and vllm_config.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
-        ):
-            model_config.enforce_eager = True
-            logger.info(
-                "Enabling eager execution for RWKV7 unless cudagraph_mode is "
-                "set to NONE, because the non-eager CUDA graph path remains "
-                "experimental."
-            )
 
 
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {

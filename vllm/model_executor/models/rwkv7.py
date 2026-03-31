@@ -93,6 +93,14 @@ def token_shift_with_cache(
     return delta, final_state
 
 
+def _rwkv7_can_collect_tensor_debug_stats(tensor: torch.Tensor) -> bool:
+    if os.getenv("RWKV7_DEBUG_STORE_STATS") != "1":
+        return False
+    if tensor.device.type != "cuda":
+        return True
+    return not torch.cuda.is_current_stream_capturing()
+
+
 def _custom_op_optional_tensor(
     tensor: torch.Tensor | None,
     *,
@@ -853,10 +861,15 @@ class RWKV7Block(nn.Module, MambaBase):
         self.debug_last_store_stats = {
             "store_type": 0,
             "slot_or_count": int(slot_id),
-            "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
-            "recurrent_absmax": float(recurrent_state.abs().max().item()),
-            "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
         }
+        if _rwkv7_can_collect_tensor_debug_stats(attn_shift_state):
+            self.debug_last_store_stats.update(
+                {
+                    "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
+                    "recurrent_absmax": float(recurrent_state.abs().max().item()),
+                    "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
+                }
+            )
         self.kv_cache[0][slot_id].copy_(
             attn_shift_state.to(self.kv_cache[0][slot_id].dtype)
         )
@@ -880,10 +893,15 @@ class RWKV7Block(nn.Module, MambaBase):
         self.debug_last_store_stats = {
             "store_type": 1,
             "slot_or_count": int(slot_ids.numel()),
-            "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
-            "recurrent_absmax": float(recurrent_state.abs().max().item()),
-            "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
         }
+        if _rwkv7_can_collect_tensor_debug_stats(attn_shift_state):
+            self.debug_last_store_stats.update(
+                {
+                    "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
+                    "recurrent_absmax": float(recurrent_state.abs().max().item()),
+                    "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
+                }
+            )
         self.kv_cache[0].index_copy_(
             0, slot_ids, attn_shift_state.to(self.kv_cache[0].dtype)
         )

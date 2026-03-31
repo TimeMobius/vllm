@@ -267,6 +267,7 @@ def run_capture(
     capture_generated_tokens: int,
     async_scheduling: bool,
     request_source: str,
+    compilation_config: dict | None,
 ) -> dict:
     if capture_generated_tokens <= 0:
         raise ValueError("--capture-generated-tokens must be positive.")
@@ -275,15 +276,17 @@ def run_capture(
             "--capture-generated-tokens cannot exceed --max-tokens."
         )
 
-    engine_args = EngineArgs(
+    engine_args_kwargs = dict(
         model=model,
         trust_remote_code=True,
         gpu_memory_utilization=0.8,
         max_model_len=2048,
         disable_log_stats=True,
         async_scheduling=async_scheduling,
-        compilation_config={"cudagraph_mode": "none"},
     )
+    if compilation_config is not None:
+        engine_args_kwargs["compilation_config"] = compilation_config
+    engine_args = EngineArgs(**engine_args_kwargs)
     engine = LLMEngine.from_engine_args(engine_args, enable_multiprocessing=False)
     model_obj = None
     model_runner = None
@@ -469,6 +472,13 @@ def main() -> int:
     parser.add_argument("--append-generated-prefix-from-run-json", default=None)
     parser.add_argument("--generated-prefix-len", type=int, default=1)
     parser.add_argument("--async-scheduling", action="store_true")
+    parser.add_argument(
+        "--cudagraph-mode",
+        choices=["default", "none"],
+        default="none",
+    )
+    parser.add_argument("--cudagraph-copy-inputs", action="store_true")
+    parser.add_argument("--disable-compile-cache", action="store_true")
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--capture-generated-tokens", type=int, default=1)
     parser.add_argument("--run-json-a", default=None)
@@ -541,6 +551,17 @@ def main() -> int:
             "A text --prompt is required unless prompt token ids are provided."
         )
 
+    if args.disable_compile_cache:
+        os.environ["VLLM_DISABLE_COMPILE_CACHE"] = "1"
+
+    compilation_config = None
+    if args.cudagraph_mode == "none" or args.cudagraph_copy_inputs:
+        compilation_config = {}
+        if args.cudagraph_mode == "none":
+            compilation_config["cudagraph_mode"] = "none"
+        if args.cudagraph_copy_inputs:
+            compilation_config["cudagraph_copy_inputs"] = True
+
     payload = {
         "model": args.model,
         "prompt": prompt,
@@ -553,6 +574,7 @@ def main() -> int:
             capture_generated_tokens=args.capture_generated_tokens,
             async_scheduling=args.async_scheduling,
             request_source=request_source,
+            compilation_config=compilation_config,
         ),
     }
 

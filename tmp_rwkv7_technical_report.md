@@ -92,7 +92,10 @@ Implemented:
 
 Notes:
 
-- The current model config forces `enforce_eager=True` because RWKV7 support currently uses eager recurrent updates.
+- RWKV7 no longer forces `enforce_eager=True`.
+- The config now allows the normal compile-enabled runtime path, including:
+  - default PIECEWISE CUDA graphs
+  - `cudagraph_mode=none`
 
 ### 3.2 New RWKV7 vLLM Runtime Model
 
@@ -243,18 +246,18 @@ Implementation:
 - [rwkv7.py#L690](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L690)
 - [rwkv7.py#L747](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L747)
 
-### 4.8 Root Cause Of The Current Non-Eager Correctness Bug
+### 4.8 Resolved Compile Correctness Bug And Final PIECEWISE Fix
 
-Fresh compile debugging with `VLLM_DISABLE_COMPILE_CACHE=1` identified the current
-non-eager correctness bug more precisely.
+Fresh compile debugging with `VLLM_DISABLE_COMPILE_CACHE=1` identified the first
+real compile correctness bug precisely.
 
-The key finding is:
+The first key finding was:
 
-- under the compiled RWKV7 path, `RWKV7Block.forward()` receives
+- under the compiled RWKV7 path, `RWKV7Block.forward()` received
   `attn_metadata=None`
-- therefore the block takes the fallback sequence path:
+- therefore the block took the fallback sequence path:
   - `_run_sequence(hidden_states, v_first, None, None, None)`
-- and never reaches:
+- and never reached:
   - `_store_kv_state()`
   - `_store_kv_states()`
 
@@ -264,33 +267,33 @@ This was confirmed with local debug summaries captured by:
 - artifact:
   - [rwkv7_engine_step_1_final_repro.json](/tmp/rwkv7_engine_step_1_final_repro.json)
 
-Observed properties in that artifact:
+That explained the previously confusing behavior:
 
-- the request is still unfinished after the first captured generation step
-- `RWKV7Block.debug_last_forward_summary` reports:
-  - `attn_metadata_is_none=1`
-  - `num_decode_tokens=-1`
-  - `num_prefill_tokens=-1`
-- `debug_last_store_stats` is still unset
-- layer-local cache summaries remain zero
-- runner-level cache summaries remain zero
+- the first generated token could still match
+- but the recurrent state was never committed into vLLM's cache
+- so later decode steps eventually diverged
 
-This explains the previously confusing behavior:
+The fix for that first correctness bug was:
 
-- the first generated token can still match between:
-  - `max_tokens=1`
-  - `max_tokens=8`
-- because prompt-time recurrent math still runs inside the same forward pass
-- but the recurrent state is never committed into vLLM's cache
-- so later decode steps eventually diverge
+- move the block-level runtime stateful dispatch behind:
+  - `torch.ops.vllm.rwkv7_block_forward(...)`
 
-The current compile bug is therefore not best described as:
+That restored live metadata-aware cache load/store behavior on the compile path.
 
-- an unknown later-step cache corruption
+The remaining PIECEWISE CUDA-graph work then exposed two more concrete issues:
 
-It is better described as:
+- debug instrumentation in `_store_kv_state()` / `_store_kv_states()` called
+  `.item()` on CUDA tensors during graph capture
+- `vllm::rwkv7_block_forward` was not yet included in the default
+  `splitting_ops`, so the stateful runtime boundary could still be captured too
+  coarsely
 
-- a metadata/stateful-path integration failure in the RWKV7 compile boundary
+The final fixes were:
+
+- gate detailed store-debug stats so they only run when:
+  - `RWKV7_DEBUG_STORE_STATS=1`
+  - and the current stream is not being captured
+- add `vllm::rwkv7_block_forward` to the default `splitting_ops` list
 
 An additional debugging pitfall was also confirmed:
 
@@ -369,7 +372,7 @@ Metrics:
 Command result:
 
 - `pytest -q tests/model_executor/test_rwkv7.py`
-- final result: `8 passed`
+- final result: `9 passed, 2 skipped`
 
 ### 6.2 Correctness Conclusions
 
@@ -378,7 +381,9 @@ Confirmed:
 - RWKV7 full forward math is aligned with the reference implementation.
 - RWKV7 direct incremental prefill/decode is aligned.
 - Service-path `one-shot` multi-token decode matches `step-by-step`.
-- Both `0.1B` and `0.4B` checkpoints pass correctness checks under the current runtime.
+- Both `0.1B` and `0.4B` checkpoints pass correctness checks under:
+  - default PIECEWISE CUDA graphs
+  - `cudagraph_mode=none`
 
 Validated prompts:
 
@@ -438,30 +443,31 @@ RWKV7 no longer needs an unconditional eager-only policy.
 
 After adding the whole-block custom-op boundary in
 [rwkv7.py](/home/liu/vllm/vllm/model_executor/models/rwkv7.py), the model now
-supports a real compile serving path when CUDA graphs are explicitly disabled:
+supports real compile serving paths for both:
 
 - `enforce_eager=False`
+- default PIECEWISE CUDA graphs
 - `cudagraph_mode=none`
 
 The config policy in
 [config.py](/home/liu/vllm/vllm/model_executor/models/config.py) is now:
 
-- keep the conservative eager fallback when CUDA graphs are enabled
-- allow the real compile path when `cudagraph_mode=none`
+- do not force eager fallback for RWKV7
+- allow the normal compile-enabled runtime path to proceed
 
-This preserves the stable default while removing the need for local
-monkeypatching to exercise compile.
+This removes the need for local monkeypatching to exercise compile.
 
 What is now confirmed:
 
 - in-proc engine compile/no-cg works
 - real `vllm serve` compile/no-cg works
-- `one-shot` vs `step-by-step` matches again on the tested `0.4B` prompt set
+- real `vllm serve` default PIECEWISE works
+- `one-shot` vs `step-by-step` matches on the tested `0.1B` and `0.4B` prompt sets
 
 What is still open:
 
-- PIECEWISE CUDA graph capture
-- compile/no-cg performance benchmarking after correctness recovery
+- compile throughput benchmarking after correctness recovery
+- broader stress coverage on concurrency, prefix caching, and longer outputs
 
 ### 8.2 Relax FP32 Runtime
 
@@ -494,7 +500,7 @@ Not yet fully implemented or stress-tested:
 - hybrid RWKV7 with transformer attention
 - per-layer varying `value_dim`
 - broader prefix caching stress coverage
-- PIECEWISE CUDA graph runtime
+- broader PIECEWISE stress and performance coverage
 
 ### 8.6 Compile Correctness Localization Addendum
 
@@ -552,12 +558,31 @@ After that fix:
   - `北京是`
   - `The capital of France is`
 
+The final PIECEWISE-specific fixes were:
+
+- keep store-debug `.item()` stats out of CUDA graph capture
+- add `vllm::rwkv7_block_forward` to default `splitting_ops`
+
+After those fixes:
+
+- real `vllm serve` default PIECEWISE one-shot vs step-by-step also matched on:
+  - `i am`
+  - `北京是`
+  - `The capital of France is`
+- the same prompt set also matched on the local `0.1B` checkpoint for:
+  - default PIECEWISE
+  - `cudagraph_mode=none`
+
 Reference artifacts from the corrected real-entrypoint validation:
 
 - [rwkv7_engine_step_2_base_real_compile.json](/tmp/rwkv7_engine_step_2_base_real_compile.json)
 - [rwkv7_engine_step_2_replay_real_compile.json](/tmp/rwkv7_engine_step_2_replay_real_compile.json)
 - [rwkv7_engine_step_2_compare_real_compile.json](/tmp/rwkv7_engine_step_2_compare_real_compile.json)
 - [vllm_rwkv7_compare_real_compile_no_cg.log](/tmp/vllm_rwkv7_compare_real_compile_no_cg.log)
+- [vllm_rwkv7_piecewise_final.log](/tmp/vllm_rwkv7_piecewise_final.log)
+- [vllm_rwkv7_compile_no_cg_final.log](/tmp/vllm_rwkv7_compile_no_cg_final.log)
+- [vllm_rwkv7_piecewise_0p1b_final.log](/tmp/vllm_rwkv7_piecewise_0p1b_final.log)
+- [vllm_rwkv7_compile_no_cg_0p1b_final.log](/tmp/vllm_rwkv7_compile_no_cg_0p1b_final.log)
 
 ## 9. Version Checkpoints
 
@@ -567,6 +592,8 @@ Important commits on this branch:
 - `89fc82ea3` Handle single coalesced RWKV cache group
 - `61db3ff93` Batch RWKV7 decode updates across requests
 - `c29c30f49` Add engine-step probe and first-step compile debugging notes
+- `a5bbd9b797` Localize compile-path metadata/state bug
+- `f94fd358b` Restore real compile serving for RWKV7
 
 Current branch:
 

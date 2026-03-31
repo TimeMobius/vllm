@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -74,7 +75,10 @@ def main() -> int:
     parser.add_argument("--dtype", default="auto")
     parser.add_argument("--max-num-batched-tokens", type=int, default=None)
     parser.add_argument("--enable-prefix-caching", action="store_true")
+    parser.add_argument("--no-enable-chunked-prefill", action="store_true")
     parser.add_argument("--compile-no-cg", action="store_true")
+    parser.add_argument("--cudagraph-copy-inputs", action="store_true")
+    parser.add_argument("--disable-compile-cache", action="store_true")
     parser.add_argument("--compilation-config", default=None)
     parser.add_argument(
         "--log", default="/tmp/vllm_rwkv7_compare.log", help="server log path"
@@ -102,17 +106,32 @@ def main() -> int:
     ]
     if args.compile_no_cg:
         cmd.append("-cc.cudagraph_mode=none")
+    if args.cudagraph_copy_inputs:
+        cmd.append("-cc.cudagraph_copy_inputs=true")
     if args.compilation_config is not None:
         cmd.extend(["-cc", args.compilation_config])
     if args.no_async_scheduling:
         cmd.append("--no-async-scheduling")
+    if args.no_enable_chunked_prefill:
+        cmd.append("--no-enable-chunked-prefill")
     if args.max_num_batched_tokens is not None:
         cmd.extend(["--max-num-batched-tokens", str(args.max_num_batched_tokens)])
     if args.enable_prefix_caching:
         cmd.append("--enable-prefix-caching")
 
     with log_path.open("w", encoding="utf-8") as logf:
-        proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
+        env = None
+        if args.disable_compile_cache:
+            env = os.environ.copy()
+            if args.disable_compile_cache:
+                env["VLLM_DISABLE_COMPILE_CACHE"] = "1"
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
         try:
             deadline = time.time() + 360
             while time.time() < deadline:
