@@ -3,7 +3,7 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest committed checkpoint before this round: `e0d7871a7` (`Add RWKV7 KDA-style integration todo`)
+- Latest committed checkpoint before this round: `60d5bdf36` (`Prototype`)
 - Current service status:
   - No `vllm serve` process is running now.
   - No test ports are currently listening.
@@ -40,6 +40,27 @@
   - PIECEWISE capture progressed past compile and warmup
   - but engine startup still failed during CUDA graph capture around `7/51`
 - Because non-eager correctness is still failing, the model config was restored to the stable eager default.
+- Added a reusable engine-step probe:
+  - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
+  - supports:
+    - single-run capture via `--max-tokens`
+    - offline comparison via `--run-json-a` and `--run-json-b`
+- New first-step result on `RWKV7-Goose-World2.9-0.4B-HF`:
+  - prompt: `北京是`
+  - mode: compile enabled, `cudagraph_mode=none`, `async_scheduling=False`
+  - `max_tokens=1` and `max_tokens=8` produced the same first generated token:
+    - token id `10250`
+    - text `一`
+  - current probe also reports no layer-level state fingerprint difference on the first step
+  - reference artifacts:
+    - [rwkv7_engine_step_1.json](/tmp/rwkv7_engine_step_1.json)
+    - [rwkv7_engine_step_8.json](/tmp/rwkv7_engine_step_8.json)
+    - [rwkv7_engine_step_compare_beijing_sync.json](/tmp/rwkv7_engine_step_compare_beijing_sync.json)
+- Caveat on that state result:
+  - the layer-local `model.model.layers[*].kv_cache` fingerprint remains all-zero in this probe
+  - so the useful strong conclusion is:
+    - first generated token matches
+    - the non-eager mismatch likely occurs after the first decode step, or in a deeper cache path not exposed by those layer-local tensors
 
 ## What Is Already Working
 
@@ -137,6 +158,8 @@ The current blockers are:
 
 - non-eager correctness mismatch even with CUDA graphs disabled
 - PIECEWISE CUDA graph capture still failing during engine initialization
+- first-step probe suggests the mismatch is not on the very first decode token
+- the next localization step should compare the second decode step with token-id-controlled replay, or inspect the model-runner-owned cache backing store directly
 
 ### Additional findings from deeper debug
 
@@ -265,13 +288,36 @@ Handling:
 - These are real but not the core correctness issue.
 - Keep them in mind when interpreting latency.
 
+### 9. In-proc engine introspection requires forcing true single-process mode
+
+Problem:
+
+- `LLMEngine.from_engine_args(..., enable_multiprocessing=False)` is not enough if `VLLM_ENABLE_V1_MULTIPROCESSING` is still true in the environment.
+- In that case `engine.model_executor` is unavailable and internal inspection fails.
+
+Handling:
+
+- set `VLLM_ENABLE_V1_MULTIPROCESSING=0` before importing `LLMEngine`
+- use `engine.engine_core.shutdown()` rather than a nonexistent `engine.shutdown()`
+
+### 10. Re-initializing multiple in-proc engines in one Python process is unreliable here
+
+Problem:
+
+- on this WSL + RTX 3050 setup, launching a second in-proc engine in the same Python process could still fail at startup with very low free GPU memory, even after explicit cleanup
+
+Handling:
+
+- run per-step probes as separate Python processes
+- save each run to disk and compare them offline
+
 ## Current TODO List
 
 ### Highest priority
 
-1. Make the non-eager path actually reach ready state.
-2. Avoid letting Dynamo trace RWKV7 prefill token-by-token Python recurrence.
-3. Do not rely on `torch.compiler.disable` inside the fullgraph-compiled path.
+1. Compare the second decode step under compile/no-cudagraph using token-id-controlled replay.
+2. Verify whether the actual scheduler/model-runner cache backing store diverges even when the layer-local `kv_cache` fingerprint stays zero.
+3. Keep the default runtime on eager until the compile path is both correct and measurable.
 
 ### After readiness is achieved
 
@@ -358,6 +404,9 @@ Useful files to keep inspecting:
 - [vllm_rwkv7_8045_debug.log](/tmp/vllm_rwkv7_8045_debug.log)
 - [vllm_rwkv7_8046_probe.log](/tmp/vllm_rwkv7_8046_probe.log)
 - [vllm_rwkv7_8037.log](/tmp/vllm_rwkv7_8037.log)
+- [rwkv7_engine_step_1.json](/tmp/rwkv7_engine_step_1.json)
+- [rwkv7_engine_step_8.json](/tmp/rwkv7_engine_step_8.json)
+- [rwkv7_engine_step_compare_beijing_sync.json](/tmp/rwkv7_engine_step_compare_beijing_sync.json)
 - [rwkv7_bench_64_after_batch.json](/tmp/rwkv7_bench_64_after_batch.json)
 - [rwkv7_bench_128_after_batch.json](/tmp/rwkv7_bench_128_after_batch.json)
 

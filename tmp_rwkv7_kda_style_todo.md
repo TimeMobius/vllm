@@ -22,6 +22,21 @@
   - **保留这轮 custom-op 骨架**
   - **默认配置回到 eager**
   - **下一步继续调 compile correctness，而不是强推默认 non-eager**
+- 新增了一个 engine-step probe：
+  - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
+  - 能分别抓取 compile/no-cudagraph 下的单步结果，再离线比较
+- 当前 probe 的新结论：
+  - 在 `RWKV7-Goose-World2.9-0.4B-HF` 上
+  - prompt `北京是`
+  - `async_scheduling=False`
+  - `max_tokens=1` 和 `max_tokens=8` 的第一个生成 token 一致：
+    - token id `10250`
+    - text `一`
+  - 当前 probe 看到的 layer-level state fingerprint 也没有第一步差异
+  - 但 layer-local `kv_cache` 在这个 probe 里保持全零，所以这个 state 结果只能当粗粒度信号
+  - 目前更可靠的判断是：
+    - compile mismatch 不在第一个 decode step
+    - 更可能发生在后续 step，或者发生在 model-runner/scheduler 拥有但未暴露给 layer-local `kv_cache` 的 cache 路径
 
 RWKV7 当前 compile 路径的核心问题，不是 cache 语义，也不是服务路径，而是：
 
@@ -242,11 +257,12 @@ RWKV7 in vLLM:
 
 ### Immediate Next Steps
 
-1. 对比 eager vs compile-no-cudagraph 的 `one-shot` 逐 token 行为，确认错误是从哪个 layer/step 开始分叉
-2. 检查当前 custom op fake impl / mutates_args / buffer 返回方式，确认 compiled graph 没有错误地重排或缓存 state 输出
-3. 检查 `RWKV7Block.forward()` 里 prefill request 循环在 compile 下是否仍然存在错误假设
-4. 只在 correctness 重新成立之后，再回头试 PIECEWISE CUDA graph capture
-5. 在 correctness 成立之前，不要再次把 non-eager 设为默认
+1. 用 `prompt_token_ids` 做 token-id-controlled replay，比对第二个 decode step
+2. 检查真正的 model-runner-owned cache backing store，而不是只看 `model.model.layers[*].kv_cache`
+3. 复查当前 custom op fake impl / mutates_args / output buffer 语义，确认 compiled graph 没有错误重排 state 输出
+4. 复查 `RWKV7Block.forward()` 里 prefill request 循环和 `_get_kv_state(...)` 在 compile 下是否仍有隐藏的 data-dependent 假设
+5. 只在 correctness 重新成立之后，再回头试 PIECEWISE CUDA graph capture
+6. 在 correctness 成立之前，不要再次把 non-eager 设为默认
 
 这一步的核心收益是：
 
