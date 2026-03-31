@@ -3,14 +3,60 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest committed checkpoint before this round: `c15f30216`
+- Latest committed checkpoint before this round: `a5bbd9b7976b97f6a7810c631c2ead979d6c635c`
 - Current service status:
   - No `vllm serve` process is running now.
   - No test ports are currently listening.
-  - The stable default path remains the eager baseline.
-  - The non-eager path is still experimental and should not be treated as correct by default.
+  - The stable default path remains eager when CUDA graphs are enabled.
+  - The real compile path now works when `cudagraph_mode=none`.
+  - PIECEWISE CUDA graph capture is still experimental and should not be treated as correct yet.
 
 ## Latest Update (2026-03-31)
+
+- Compile/no-cudagraph has now been validated through the real RWKV7 entrypoints:
+  - `RWKV7Block.forward()` gained a whole-block custom-op boundary via `torch.ops.vllm.rwkv7_block_forward(...)`
+  - the block-level metadata/stateful dispatch moved into `RWKV7Block._forward_runtime(...)`
+  - layer-local `kv_cache` and runner-level `kv_caches` now receive real writeback under compile/no-cg
+- Root cause is now understood more precisely:
+  - the earlier statement "compile path globally receives `attn_metadata=None`" was too strong
+  - runtime `forward_context.attn_metadata` did exist
+  - the real bug was that compiled `RWKV7Block.forward()` did not execute the metadata-aware cache load/store path during request runtime
+  - moving the stateful boundary to a whole-block custom op fixed that integration bug
+- RWKV7 config policy is now narrower and safer:
+  - when `cudagraph_mode != none`, RWKV7 still falls back to eager by default
+  - when `cudagraph_mode=none`, `RWKV7ForCausalLMConfig` now allows the real compile path without monkeypatching config classes
+- The engine-step probe is now a real-entrypoint probe:
+  - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py) no longer monkeypatches RWKV7 config
+- The service compare tool is now reusable for local checkpoints:
+  - [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) now supports `--model` and `--compile-no-cg`
+- Fresh compile/no-cg validation on `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`:
+  - engine replay artifacts:
+    - [rwkv7_engine_step_2_base_real_compile.json](/tmp/rwkv7_engine_step_2_base_real_compile.json)
+    - [rwkv7_engine_step_2_replay_real_compile.json](/tmp/rwkv7_engine_step_2_replay_real_compile.json)
+    - [rwkv7_engine_step_2_compare_real_compile.json](/tmp/rwkv7_engine_step_2_compare_real_compile.json)
+  - result:
+    - prompt `北京是`
+    - base generated tokens: `[10250, 10283]`
+    - replay prompt token ids: `[10902, 10362, 13091, 10250]`
+    - replay generated token: `10283`
+    - second-step replay matches
+- Real `vllm serve` correctness is now also back on the compile/no-cg path:
+  - log: [vllm_rwkv7_compare_real_compile_no_cg.log](/tmp/vllm_rwkv7_compare_real_compile_no_cg.log)
+  - command shape:
+    - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --compile-no-cg --no-async-scheduling`
+  - result:
+    - `i am`: one-shot == step-by-step
+    - `北京是`: one-shot == step-by-step
+    - `The capital of France is`: one-shot == step-by-step
+- Current remaining blocker:
+  - compile correctness under `cudagraph_mode=none` is no longer the main problem
+  - the next unresolved path is PIECEWISE CUDA graph capture
+- New pitfall to remember:
+  - nested-shell JSON quoting for `-cc '{"cudagraph_mode":"none"}'` is easy to break
+  - prefer either:
+    - `-cc.cudagraph_mode=none`
+    - or [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) with `--compile-no-cg`
+- Historical debugging trail below this point predates the whole-block custom-op fix and is kept mainly as chronology.
 
 - Landed a first KDA-style compile boundary in [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py):
   - registered `RWKV7Attention` in `static_forward_context`
@@ -124,6 +170,10 @@
 ### Service behavior
 
 - `one-shot max_tokens=N` and `step-by-step max_tokens=1` were validated to match on RWKV7 `0.1B` and `0.4B` under the stable eager baseline.
+- `one-shot max_tokens=8` and `step-by-step max_tokens=1` now also match on RWKV7 `0.4B` under the real compile/no-cg service path for:
+  - `i am`
+  - `北京是`
+  - `The capital of France is`
 - Decode-path batching across concurrent requests is implemented and validated.
 - Concurrent decode requests no longer serialize one-by-one inside `RWKV7Block`.
 
@@ -143,7 +193,13 @@
 
 ## Stable Baseline
 
-The current known-good serving baseline is still the eager path before the non-eager experiment.
+The conservative known-good serving baseline is still the eager path.
+
+There is now a second known-good opt-in path for RWKV7:
+
+- compile enabled
+- `cudagraph_mode=none`
+- `async_scheduling=False`
 
 What is known-good there:
 
@@ -186,13 +242,13 @@ From the non-eager no-cudagraph run:
 - `torch.compile` starts and completes.
 - `Dynamo bytecode transform time` is now small enough to be practical.
 - service readiness is possible when CUDA graphs are disabled.
-- correctness is still wrong under that non-eager path.
+- correctness is now restored for the validated `0.4B` prompts under the real service path.
 
 ### What is still not confirmed
 
-- a correctness-safe non-eager serving path
 - compile-path TPS after correctness is restored
 - whether CUDA graphs can be safely re-enabled after more refactor/kernel work
+- broader prompt/model sweep beyond the current `0.4B` validation set
 
 ### Current blocker
 
@@ -200,10 +256,9 @@ Compile startup is no longer the main blocker.
 
 The current blockers are:
 
-- non-eager compile still routes RWKV7 blocks through `attn_metadata=None`
-- because of that, recurrent cache writeback never executes in the compiled path
 - PIECEWISE CUDA graph capture still fails during engine initialization
-- the next implementation step should fix the metadata/stateful boundary before spending more time on later-step replay localization
+- compile/no-cg performance has not yet been benchmarked after correctness recovery
+- the next implementation step should move from metadata/state correctness to CUDA-graph compatibility
 
 ### Additional findings from deeper debug
 

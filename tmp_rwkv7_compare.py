@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 BASE = "http://127.0.0.1:8000"
-MODEL = "RWKV/RWKV7-Goose-World2.8-0.1B-HF"
+DEFAULT_MODEL = "RWKV/RWKV7-Goose-World2.8-0.1B-HF"
 PROMPTS = ["i am", "北京是", "The capital of France is"]
 
 
@@ -30,15 +30,15 @@ def is_healthy() -> bool:
         return False
 
 
-def tokenize(prompt: str) -> list[int]:
-    return post("/tokenize", {"model": MODEL, "prompt": prompt})["tokens"]
+def tokenize(model: str, prompt: str) -> list[int]:
+    return post("/tokenize", {"model": model, "prompt": prompt})["tokens"]
 
 
-def complete_with_ids(prompt_ids: list[int], max_tokens: int) -> list[int]:
+def complete_with_ids(model: str, prompt_ids: list[int], max_tokens: int) -> list[int]:
     obj = post(
         "/v1/completions",
         {
-            "model": MODEL,
+            "model": model,
             "prompt": prompt_ids,
             "max_tokens": max_tokens,
             "temperature": 0.0,
@@ -50,16 +50,16 @@ def complete_with_ids(prompt_ids: list[int], max_tokens: int) -> list[int]:
     return obj["choices"][0]["token_ids"]
 
 
-def run_compare() -> list[tuple[str, list[int], list[int], bool]]:
+def run_compare(model: str) -> list[tuple[str, list[int], list[int], bool]]:
     rows: list[tuple[str, list[int], list[int], bool]] = []
     for prompt in PROMPTS:
-        prompt_ids = tokenize(prompt)
-        one_shot_ids = complete_with_ids(prompt_ids, 8)
+        prompt_ids = tokenize(model, prompt)
+        one_shot_ids = complete_with_ids(model, prompt_ids, 8)
 
         cur_ids = list(prompt_ids)
         step_ids: list[int] = []
         for _ in range(8):
-            next_ids = complete_with_ids(cur_ids, 1)
+            next_ids = complete_with_ids(model, cur_ids, 1)
             step_ids.extend(next_ids)
             cur_ids.extend(next_ids)
 
@@ -69,10 +69,13 @@ def run_compare() -> list[tuple[str, list[int], list[int], bool]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--no-async-scheduling", action="store_true")
     parser.add_argument("--dtype", default="auto")
     parser.add_argument("--max-num-batched-tokens", type=int, default=None)
     parser.add_argument("--enable-prefix-caching", action="store_true")
+    parser.add_argument("--compile-no-cg", action="store_true")
+    parser.add_argument("--compilation-config", default=None)
     parser.add_argument(
         "--log", default="/tmp/vllm_rwkv7_compare.log", help="server log path"
     )
@@ -86,7 +89,7 @@ def main() -> int:
     cmd = [
         "vllm",
         "serve",
-        MODEL,
+        args.model,
         "--trust-remote-code",
         "--gpu-memory-utilization",
         "0.8",
@@ -97,6 +100,10 @@ def main() -> int:
         "--port",
         "8000",
     ]
+    if args.compile_no_cg:
+        cmd.append("-cc.cudagraph_mode=none")
+    if args.compilation_config is not None:
+        cmd.extend(["-cc", args.compilation_config])
     if args.no_async_scheduling:
         cmd.append("--no-async-scheduling")
     if args.max_num_batched_tokens is not None:
@@ -119,7 +126,7 @@ def main() -> int:
                 print("server not ready before timeout")
                 return 3
 
-            rows = run_compare()
+            rows = run_compare(args.model)
             for prompt, one_ids, step_ids, ok in rows:
                 print(f"prompt={prompt!r}")
                 print(f"  one_shot={one_ids}")

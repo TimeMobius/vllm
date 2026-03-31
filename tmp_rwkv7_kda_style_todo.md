@@ -6,6 +6,44 @@
 
 ## Progress Update (2026-03-31)
 
+- 同一天的后续推进已经把 compile/no-cudagraph 路径真正打通：
+  - 新增了 whole-block custom op：
+    - `torch.ops.vllm.rwkv7_block_forward(...)`
+  - `RWKV7Block.forward()` 在 compile 路径下不再依赖可能被 trace 固化的 Python metadata 分支
+  - runtime metadata/stateful dispatch 迁移到了 `RWKV7Block._forward_runtime(...)`
+  - layer-local `kv_cache` 和 runner-level `kv_caches` 现在都会在 compile/no-cg 路径里被真正写回
+- 根因结论也修正了：
+  - 之前“`attn_metadata` 在 compile 路径里全局缺失”的说法不够准确
+  - 更准确的根因是：
+    - runtime `forward_context.attn_metadata` 实际存在
+    - 但 compiled `RWKV7Block.forward()` 没有在真实请求时走到 metadata-aware cache path
+    - whole-block custom op 把这条 runtime stateful path 拉回来了
+- 配置策略也做了收口：
+  - 默认仍保持 eager 控制组
+  - 但当 `cudagraph_mode=none` 时，`RWKV7ForCausalLMConfig` 不再强制 `enforce_eager=True`
+  - 也就是说，RWKV7 现在已经可以通过真实入口 opt-in 到 compile/no-cg，而不再依赖 probe monkeypatch
+- probe / 回归工具链同步更新：
+  - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py) 已移除 compile monkeypatch
+  - [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) 现在支持：
+    - `--model`
+    - `--compile-no-cg`
+- 最新验证结果：
+  - 单测：
+    - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - 结果：`9 passed, 2 skipped`
+  - engine real compile replay：
+    - base: [rwkv7_engine_step_2_base_real_compile.json](/tmp/rwkv7_engine_step_2_base_real_compile.json)
+    - replay: [rwkv7_engine_step_2_replay_real_compile.json](/tmp/rwkv7_engine_step_2_replay_real_compile.json)
+    - compare: [rwkv7_engine_step_2_compare_real_compile.json](/tmp/rwkv7_engine_step_2_compare_real_compile.json)
+    - 结论：`北京是` 的第二个 decode token 仍然完全一致
+  - `vllm serve` real compile/no-cg correctness：
+    - 日志：[vllm_rwkv7_compare_real_compile_no_cg.log](/tmp/vllm_rwkv7_compare_real_compile_no_cg.log)
+    - `i am`、`北京是`、`The capital of France is`
+    - one-shot `max_tokens=8` 与 step-by-step `max_tokens=1` 全部一致
+- 当前剩余 blocker 已经收缩为：
+  - PIECEWISE CUDA graph capture 仍未修好
+  - compile/no-cg correctness 已经不再是 blocker
+
 - Phase 1 的第一步已经落地：
   - `RWKV7Attention` 注册进了 `static_forward_context`
   - 新增了 `torch.ops.vllm.rwkv7_attention(...)`
@@ -407,12 +445,16 @@ RWKV7 in vLLM:
 
 ### Phase 5. Correctness Regression
 
-- [ ] 跑单测：
+- [x] 跑单测：
   - [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py)
 - [ ] 跑服务正确性：
-  - one-shot vs step-by-step
-  - `0.1B`
-  - `0.4B`
+  - `0.1B` compile/no-cg one-shot vs step-by-step
+- [x] 跑服务正确性：
+  - `0.4B` compile/no-cg one-shot vs step-by-step
+  - prompts:
+    - `i am`
+    - `北京是`
+    - `The capital of France is`
 - [ ] 跑并发正确性：
   - concurrent 3 / 8
   - 输出是否稳定匹配 baseline
@@ -445,6 +487,7 @@ RWKV7 in vLLM:
 
 ### Phase 8. Revisit Default Runtime Policy
 
+- [x] 允许在 `cudagraph_mode=none` 时 opt-in 到真实 compile 路径
 - [ ] 只有当非 eager 路径稳定后，才考虑把它作为默认
 - [ ] 在那之前，eager 基线仍然是唯一的稳定控制组
 - [ ] 非 eager 应视为实验路径，不应替代当前稳定实现
@@ -455,6 +498,7 @@ RWKV7 in vLLM:
 
 - [rwkv7.py](/home/liu/vllm/vllm/model_executor/models/rwkv7.py)
 - [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py)
+- [config.py](/home/liu/vllm/vllm/model_executor/models/config.py)
 
 ### Likely new or adjacent files
 
@@ -511,8 +555,8 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 实现 RWKV7 custom op wrapper
-- [ ] 把当前 `RWKV7Attention.forward()` 的 recurrence 从 compile 图里剥出来
-- [ ] 先追求“non-eager path can boot”
+- [ ] 重新测试 `cudagraph_mode=PIECEWISE`
+- [ ] 直接定位 CUDA graph capture 失败点
+- [ ] 判断 whole-block custom op 是否已经足够支撑 graph capture，还是还需要进一步拆分/静态 shape 收敛
 
-这一步是整个 KDA-style 路线的第一块里程碑。
+compile/no-cg 已经从“能启动”推进到了“真实服务 correctness 对齐”；现在最值得攻的就是 CUDA graph 这条剩余主线。

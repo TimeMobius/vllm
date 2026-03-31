@@ -121,6 +121,29 @@ def rwkv7_attention(
 ) -> None:
     forward_context = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
+    attn_metadata = forward_context.attn_metadata
+    block_layer_name = layer_name.removesuffix(".attn")
+    metadata_summary = {
+        "attn_metadata_is_none": int(attn_metadata is None),
+        "has_attn_key": 0,
+        "has_block_key": 0,
+        "block_num_decode_tokens": -1,
+        "block_num_prefill_tokens": -1,
+        "block_num_prefills": -1,
+    }
+    if isinstance(attn_metadata, dict):
+        metadata_summary["has_attn_key"] = int(layer_name in attn_metadata)
+        metadata_summary["has_block_key"] = int(block_layer_name in attn_metadata)
+        block_metadata = attn_metadata.get(block_layer_name)
+        if isinstance(block_metadata, LinearAttentionMetadata):
+            metadata_summary["block_num_decode_tokens"] = int(
+                block_metadata.num_decode_tokens
+            )
+            metadata_summary["block_num_prefill_tokens"] = int(
+                block_metadata.num_prefill_tokens
+            )
+            metadata_summary["block_num_prefills"] = int(block_metadata.num_prefills)
+    self.debug_last_runtime_metadata_summary = metadata_summary
     out, shift_state, recurrent, first_value = self._forward(
         hidden_states,
         _custom_op_tensor_or_none(cached_shift_state),
@@ -157,6 +180,41 @@ direct_register_custom_op(
         "v_first_out",
     ],
     fake_impl=rwkv7_attention_fake,
+)
+
+
+def rwkv7_block_forward(
+    hidden_states: torch.Tensor,
+    v_first: torch.Tensor,
+    output: torch.Tensor,
+    v_first_out: torch.Tensor,
+    layer_name: str,
+) -> None:
+    forward_context = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    self._forward_runtime(
+        hidden_states,
+        _custom_op_tensor_or_none(v_first),
+        output,
+        v_first_out,
+    )
+
+
+def rwkv7_block_forward_fake(
+    hidden_states: torch.Tensor,
+    v_first: torch.Tensor,
+    output: torch.Tensor,
+    v_first_out: torch.Tensor,
+    layer_name: str,
+) -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="rwkv7_block_forward",
+    op_func=rwkv7_block_forward,
+    mutates_args=["output", "v_first_out"],
+    fake_impl=rwkv7_block_forward_fake,
 )
 
 
@@ -419,6 +477,7 @@ class RWKV7Attention(nn.Module):
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
+        self.debug_last_runtime_metadata_summary: dict[str, int] | None = None
 
     def _forward(
         self,
@@ -865,12 +924,25 @@ class RWKV7Block(nn.Module, MambaBase):
         hidden_states = hidden_states + ffn_out
         return hidden_states, v_first_out, attn_shift_state, recurrent_state, ffn_shift_state
 
-    def forward(
+    def _forward_runtime(
         self,
         hidden_states: torch.Tensor,
         v_first: torch.Tensor | None,
+        output: torch.Tensor,
+        v_first_out: torch.Tensor,
         attn_metadata: LinearAttentionMetadata | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> None:
+        if attn_metadata is None and is_forward_context_available():
+            forward_context = get_forward_context()
+            runtime_attn_metadata = forward_context.attn_metadata
+            if runtime_attn_metadata is not None:
+                assert isinstance(runtime_attn_metadata, dict)
+                maybe_metadata = runtime_attn_metadata.get(self.prefix)
+                assert maybe_metadata is None or isinstance(
+                    maybe_metadata, LinearAttentionMetadata
+                )
+                attn_metadata = maybe_metadata
+
         self.debug_last_forward_summary = {
             "attn_metadata_is_none": int(attn_metadata is None),
             "num_decode_tokens": (
@@ -883,11 +955,14 @@ class RWKV7Block(nn.Module, MambaBase):
                 -1 if attn_metadata is None else int(attn_metadata.num_prefills)
             ),
         }
+
         if attn_metadata is None:
-            output, v_first_out, _, _, _ = self._run_sequence(
+            out, vf_out, _, _, _ = self._run_sequence(
                 hidden_states, v_first, None, None, None
             )
-            return output, v_first_out
+            output[: out.shape[0]] = out
+            v_first_out[: vf_out.shape[0]] = vf_out
+            return
 
         num_actual_tokens = (
             attn_metadata.num_decode_tokens + attn_metadata.num_prefill_tokens
@@ -896,12 +971,8 @@ class RWKV7Block(nn.Module, MambaBase):
         if v_first is not None:
             v_first = v_first[:num_actual_tokens]
 
-        output = torch.empty_like(hidden_states)
-        v_first_out = torch.empty(
-            (num_actual_tokens, self.local_value_dim),
-            dtype=hidden_states.dtype,
-            device=hidden_states.device,
-        )
+        output_slice = output[:num_actual_tokens]
+        v_first_slice = v_first_out[:num_actual_tokens]
         state_indices = attn_metadata.state_indices_tensor
 
         if attn_metadata.num_decode_tokens > 0:
@@ -914,8 +985,8 @@ class RWKV7Block(nn.Module, MambaBase):
                 None if v_first is None else v_first[: attn_metadata.num_decode_tokens],
                 *states,
             )
-            output[: attn_metadata.num_decode_tokens] = out
-            v_first_out[: attn_metadata.num_decode_tokens] = vf_out
+            output_slice[: attn_metadata.num_decode_tokens] = out
+            v_first_slice[: attn_metadata.num_decode_tokens] = vf_out
             self._store_kv_states(decode_slot_ids, attn_shift, recurrent, ffn_shift)
 
         decode_offset = attn_metadata.num_decode_tokens
@@ -932,10 +1003,38 @@ class RWKV7Block(nn.Module, MambaBase):
                 None if v_first is None else v_first[start:end],
                 *states,
             )
-            output[start:end] = out
-            v_first_out[start:end] = vf_out
+            output_slice[start:end] = out
+            v_first_slice[start:end] = vf_out
             self._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
 
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        v_first: torch.Tensor | None,
+        attn_metadata: LinearAttentionMetadata | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        output = torch.empty_like(hidden_states)
+        v_first_out = torch.empty(
+            (hidden_states.shape[0], self.local_value_dim),
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+        if is_forward_context_available() and hidden_states.is_cuda:
+            torch.ops.vllm.rwkv7_block_forward(
+                hidden_states,
+                _custom_op_optional_tensor(v_first, like=hidden_states),
+                output,
+                v_first_out,
+                self.prefix,
+            )
+        else:
+            self._forward_runtime(
+                hidden_states,
+                v_first,
+                output,
+                v_first_out,
+                attn_metadata=attn_metadata,
+            )
         return output, v_first_out
 
 

@@ -432,22 +432,36 @@ This means the current implementation is not merely runnable; it is functionally
 
 ## 8. Remaining Optimization Opportunities
 
-### 8.1 Remove Forced Eager Mode
+### 8.1 RWKV7 Compile Runtime Policy
 
-Current RWKV7 support is forced into eager execution:
+RWKV7 no longer needs an unconditional eager-only policy.
 
-- [config.py#L664](/home/liu/vllm/vllm/model_executor/models/config.py#L664)
+After adding the whole-block custom-op boundary in
+[rwkv7.py](/home/liu/vllm/vllm/model_executor/models/rwkv7.py), the model now
+supports a real compile serving path when CUDA graphs are explicitly disabled:
 
-This currently disables:
+- `enforce_eager=False`
+- `cudagraph_mode=none`
 
-- `torch.compile`
-- `CUDAGraph`
+The config policy in
+[config.py](/home/liu/vllm/vllm/model_executor/models/config.py) is now:
 
-Short-term optimization target:
+- keep the conservative eager fallback when CUDA graphs are enabled
+- allow the real compile path when `cudagraph_mode=none`
 
-- make decode-only RWKV7 graph-friendly
-- attempt non-eager decode runtime first
-- evaluate CUDAGraph on stable decode shapes
+This preserves the stable default while removing the need for local
+monkeypatching to exercise compile.
+
+What is now confirmed:
+
+- in-proc engine compile/no-cg works
+- real `vllm serve` compile/no-cg works
+- `one-shot` vs `step-by-step` matches again on the tested `0.4B` prompt set
+
+What is still open:
+
+- PIECEWISE CUDA graph capture
+- compile/no-cg performance benchmarking after correctness recovery
 
 ### 8.2 Relax FP32 Runtime
 
@@ -480,7 +494,7 @@ Not yet fully implemented or stress-tested:
 - hybrid RWKV7 with transformer attention
 - per-layer varying `value_dim`
 - broader prefix caching stress coverage
-- non-eager compiled runtime
+- PIECEWISE CUDA graph runtime
 
 ### 8.6 Compile Correctness Localization Addendum
 
@@ -517,19 +531,33 @@ the following was observed on prompt `北京是`:
   - replay generated token was `10283`
   - replay text was `个`
 
-This narrows the known divergence:
+That localization work was enough to identify the actual bug:
 
-- it is not on the first decode step
-- it is not on the second decode step for this prompt
+- runtime metadata existed
+- but the compiled `RWKV7Block.forward()` path was not executing the
+  metadata-aware cache load/store branch during live requests
+- so recurrent state never got committed back into cache
 
-However, the current layer-local `model.model.layers[*].kv_cache` snapshot
-still stays all-zero in this probe, so these results do not yet prove that the
-real model-runner-owned backing cache is correct. The next high-value
-localization step is therefore:
+The fix was to move the block-level stateful dispatch behind a whole-block
+custom op, so the runtime path can always read live `forward_context`
+metadata/state regardless of compile specialization.
 
-- inspect `GPUModelRunner.kv_caches` (or the equivalent backing store) on the
-  matched second-step pair
-- or extend token-id-controlled replay to later decode steps / other prompts
+After that fix:
+
+- layer-local `kv_cache` stopped staying all-zero in compile/no-cg
+- runner-level backing cache also became non-zero
+- second-step token-controlled replay still matched
+- real `vllm serve` one-shot vs step-by-step matched again on:
+  - `i am`
+  - `北京是`
+  - `The capital of France is`
+
+Reference artifacts from the corrected real-entrypoint validation:
+
+- [rwkv7_engine_step_2_base_real_compile.json](/tmp/rwkv7_engine_step_2_base_real_compile.json)
+- [rwkv7_engine_step_2_replay_real_compile.json](/tmp/rwkv7_engine_step_2_replay_real_compile.json)
+- [rwkv7_engine_step_2_compare_real_compile.json](/tmp/rwkv7_engine_step_2_compare_real_compile.json)
+- [vllm_rwkv7_compare_real_compile_no_cg.log](/tmp/vllm_rwkv7_compare_real_compile_no_cg.log)
 
 ## 9. Version Checkpoints
 

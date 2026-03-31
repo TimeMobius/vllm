@@ -11,47 +11,11 @@ os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 
 import torch
 
-from vllm.config.compilation import CUDAGraphMode, CompilationMode
 from vllm.distributed.parallel_state import cleanup_dist_env_and_memory
 from vllm.engine.arg_utils import EngineArgs
-from vllm.model_executor.models.config import MambaModelConfig, RWKV7ForCausalLMConfig
 from vllm.sampling_params import SamplingParams
 from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.llm_engine import LLMEngine
-
-
-def patch_rwkv7_compile_config():
-    orig_verify = RWKV7ForCausalLMConfig.verify_and_update_config
-    orig_post = getattr(
-        RWKV7ForCausalLMConfig,
-        "apply_post_optimization_level_defaults",
-        None,
-    )
-
-    @classmethod
-    def patched_verify(cls, vllm_config):
-        MambaModelConfig.verify_and_update_config(vllm_config)
-        vllm_config.model_config.enforce_eager = False
-        vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE
-        vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
-        vllm_config.compilation_config.cudagraph_copy_inputs = False
-
-    @classmethod
-    def patched_post(cls, vllm_config):
-        vllm_config.model_config.enforce_eager = False
-        vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE
-        vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
-        vllm_config.compilation_config.cudagraph_copy_inputs = False
-
-    RWKV7ForCausalLMConfig.verify_and_update_config = patched_verify
-    RWKV7ForCausalLMConfig.apply_post_optimization_level_defaults = patched_post
-    return orig_verify, orig_post
-
-
-def restore_rwkv7_compile_config(orig_verify, orig_post) -> None:
-    RWKV7ForCausalLMConfig.verify_and_update_config = orig_verify
-    if orig_post is not None:
-        RWKV7ForCausalLMConfig.apply_post_optimization_level_defaults = orig_post
 
 
 def clone_layer_states(model) -> list[dict]:
@@ -66,6 +30,9 @@ def clone_layer_states(model) -> list[dict]:
                 ),
                 "debug_last_store_stats": getattr(
                     layer, "debug_last_store_stats", None
+                ),
+                "attn_debug_last_runtime_metadata_summary": getattr(
+                    layer.attn, "debug_last_runtime_metadata_summary", None
                 ),
                 "states": [
                     summarize_state_tensor(cache) for cache in layer.kv_cache
@@ -574,24 +541,20 @@ def main() -> int:
             "A text --prompt is required unless prompt token ids are provided."
         )
 
-    orig_verify, orig_post = patch_rwkv7_compile_config()
-    try:
-        payload = {
-            "model": args.model,
-            "prompt": prompt,
-            "async_scheduling": args.async_scheduling,
-            "run": run_capture(
-                model=args.model,
-                prompt=prompt,
-                prompt_token_ids=prompt_token_ids,
-                max_tokens=args.max_tokens,
-                capture_generated_tokens=args.capture_generated_tokens,
-                async_scheduling=args.async_scheduling,
-                request_source=request_source,
-            ),
-        }
-    finally:
-        restore_rwkv7_compile_config(orig_verify, orig_post)
+    payload = {
+        "model": args.model,
+        "prompt": prompt,
+        "async_scheduling": args.async_scheduling,
+        "run": run_capture(
+            model=args.model,
+            prompt=prompt,
+            prompt_token_ids=prompt_token_ids,
+            max_tokens=args.max_tokens,
+            capture_generated_tokens=args.capture_generated_tokens,
+            async_scheduling=args.async_scheduling,
+            request_source=request_source,
+        ),
+    }
 
     out_path = Path(args.out)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))

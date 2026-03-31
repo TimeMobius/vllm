@@ -17,6 +17,7 @@ from vllm.config import (
     VllmConfig,
     set_current_vllm_config,
 )
+from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.distributed.parallel_state import (
     ensure_model_parallel_initialized,
@@ -381,7 +382,7 @@ def test_rwkv7_mamba_state_copy_function_types():
     )
 
 
-def test_rwkv7_config_defaults_to_eager_while_compile_path_is_experimental():
+def test_rwkv7_config_defaults_to_eager_when_cudagraphs_are_enabled():
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(
             enforce_eager=False,
@@ -395,13 +396,36 @@ def test_rwkv7_config_defaults_to_eager_while_compile_path_is_experimental():
             mamba_block_size=None,
             block_size=16,
         ),
-        compilation_config=SimpleNamespace(),
+        compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.PIECEWISE),
         scheduler_config=SimpleNamespace(enable_chunked_prefill=True),
     )
 
     RWKV7ForCausalLMConfig.verify_and_update_config(vllm_config)
 
     assert vllm_config.model_config.enforce_eager is True
+
+
+def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_disabled():
+    vllm_config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            enforce_eager=False,
+            supports_mamba_prefix_caching=False,
+            architecture="RWKV7ForCausalLM",
+            max_model_len=2048,
+        ),
+        cache_config=SimpleNamespace(
+            enable_prefix_caching=False,
+            mamba_cache_mode="none",
+            mamba_block_size=None,
+            block_size=16,
+        ),
+        compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.NONE),
+        scheduler_config=SimpleNamespace(enable_chunked_prefill=True),
+    )
+
+    RWKV7ForCausalLMConfig.verify_and_update_config(vllm_config)
+
+    assert vllm_config.model_config.enforce_eager is False
 
 
 def test_rwkv7_block_uses_fp32_runtime_state_dtype():
