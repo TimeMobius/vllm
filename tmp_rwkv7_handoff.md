@@ -3,7 +3,7 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest committed checkpoint before this round: `60d5bdf36` (`Prototype`)
+- Latest committed checkpoint before this round: `c29c30f49`
 - Current service status:
   - No `vllm serve` process is running now.
   - No test ports are currently listening.
@@ -43,7 +43,9 @@
 - Added a reusable engine-step probe:
   - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
   - supports:
-    - single-run capture via `--max-tokens`
+    - single-run capture via `--max-tokens` + `--capture-generated-tokens`
+    - token-id-controlled replay via `--prompt-token-ids`
+    - replay prompt construction via `--append-generated-prefix-from-run-json`
     - offline comparison via `--run-json-a` and `--run-json-b`
 - New first-step result on `RWKV7-Goose-World2.9-0.4B-HF`:
   - prompt: `北京是`
@@ -61,6 +63,29 @@
   - so the useful strong conclusion is:
     - first generated token matches
     - the non-eager mismatch likely occurs after the first decode step, or in a deeper cache path not exposed by those layer-local tensors
+- New second-step replay result on the local 0.4B checkpoint:
+  - model path: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+  - prompt: `北京是`
+  - mode: compile enabled, `cudagraph_mode=none`, `async_scheduling=False`
+  - base run:
+    - `max_tokens=2`
+    - `capture_generated_tokens=2`
+    - prompt token ids: `[10902, 10362, 13091]`
+    - generated token ids: `[10250, 10283]`
+    - generated text: `一个`
+  - controlled replay run:
+    - prompt token ids: `[10902, 10362, 13091, 10250]`
+    - `max_tokens=1`
+    - `capture_generated_tokens=1`
+    - generated token id: `10283`
+    - generated text: `个`
+  - conclusion:
+    - the second decode token also matches under token-id-controlled replay
+    - the current compile mismatch is therefore not on the first or second decode step for this prompt
+  - reference artifacts:
+    - [rwkv7_engine_step_2_base.json](/tmp/rwkv7_engine_step_2_base.json)
+    - [rwkv7_engine_step_2_replay.json](/tmp/rwkv7_engine_step_2_replay.json)
+    - [rwkv7_engine_step_2_compare.json](/tmp/rwkv7_engine_step_2_compare.json)
 
 ## What Is Already Working
 
@@ -158,8 +183,8 @@ The current blockers are:
 
 - non-eager correctness mismatch even with CUDA graphs disabled
 - PIECEWISE CUDA graph capture still failing during engine initialization
-- first-step probe suggests the mismatch is not on the very first decode token
-- the next localization step should compare the second decode step with token-id-controlled replay, or inspect the model-runner-owned cache backing store directly
+- token-controlled replay now suggests the mismatch is not on the first or second decode token for `北京是`
+- the next localization step should inspect the model-runner-owned cache backing store directly, or extend controlled replay to later decode steps / other divergent prompts
 
 ### Additional findings from deeper debug
 
@@ -311,12 +336,24 @@ Handling:
 - run per-step probes as separate Python processes
 - save each run to disk and compare them offline
 
+### 11. Use local checkpoint paths for the 0.4B probe
+
+Problem:
+
+- using `RWKV7-Goose-World2.9-0.4B-HF` as a model id can fall back to Hugging Face resolution and fail with `401` / repo-not-found in this environment
+
+Handling:
+
+- use local paths instead:
+  - `/mnt/d/codes/RWKV7-Goose-World2.8-0.1B-HF`
+  - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+
 ## Current TODO List
 
 ### Highest priority
 
-1. Compare the second decode step under compile/no-cudagraph using token-id-controlled replay.
-2. Verify whether the actual scheduler/model-runner cache backing store diverges even when the layer-local `kv_cache` fingerprint stays zero.
+1. Verify whether the actual scheduler/model-runner cache backing store diverges even when the layer-local `kv_cache` fingerprint stays zero.
+2. Extend token-id-controlled replay beyond the second decode step, especially on prompts that still diverge in end-to-end one-shot vs step-by-step tests.
 3. Keep the default runtime on eager until the compile path is both correct and measurable.
 
 ### After readiness is achieved
@@ -407,6 +444,9 @@ Useful files to keep inspecting:
 - [rwkv7_engine_step_1.json](/tmp/rwkv7_engine_step_1.json)
 - [rwkv7_engine_step_8.json](/tmp/rwkv7_engine_step_8.json)
 - [rwkv7_engine_step_compare_beijing_sync.json](/tmp/rwkv7_engine_step_compare_beijing_sync.json)
+- [rwkv7_engine_step_2_base.json](/tmp/rwkv7_engine_step_2_base.json)
+- [rwkv7_engine_step_2_replay.json](/tmp/rwkv7_engine_step_2_replay.json)
+- [rwkv7_engine_step_2_compare.json](/tmp/rwkv7_engine_step_2_compare.json)
 - [rwkv7_bench_64_after_batch.json](/tmp/rwkv7_bench_64_after_batch.json)
 - [rwkv7_bench_128_after_batch.json](/tmp/rwkv7_bench_128_after_batch.json)
 
@@ -417,5 +457,5 @@ Continue from commit `d573675fa`.
 The next concrete experiment should be:
 
 1. keep the eager baseline as the known-good correctness/perf control
-2. prototype a compile-friendly replacement for the RWKV7 prefill recurrence loop
-3. or move compile support to a smaller decode-only subgraph instead of full-model compile
+2. inspect the actual model-runner-owned cache backing store on the matched second-step replay pair
+3. then extend controlled replay to later decode steps before changing the compile architecture again

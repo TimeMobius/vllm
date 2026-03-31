@@ -1,8 +1,9 @@
-import os
 import argparse
 import gc
 import hashlib
 import json
+import os
+import time
 from pathlib import Path
 
 os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
@@ -14,6 +15,7 @@ from vllm.distributed.parallel_state import cleanup_dist_env_and_memory
 from vllm.engine.arg_utils import EngineArgs
 from vllm.model_executor.models.config import MambaModelConfig, RWKV7ForCausalLMConfig
 from vllm.sampling_params import SamplingParams
+from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.llm_engine import LLMEngine
 
 
@@ -93,58 +95,71 @@ def get_model_from_engine(engine: LLMEngine):
     return model_executor.driver_worker.worker.model_runner.model
 
 
-def run_first_step(
+def make_sampling_params(max_tokens: int) -> SamplingParams:
+    return SamplingParams(
+        temperature=0.0,
+        top_p=1.0,
+        max_tokens=max_tokens,
+        seed=0,
+        detokenize=True,
+        skip_special_tokens=False,
+        spaces_between_special_tokens=False,
+    )
+
+
+def make_prompt_request(
+    engine: LLMEngine,
     *,
-    model: str,
+    request_id: str,
     prompt: str,
     max_tokens: int,
-    async_scheduling: bool,
-) -> dict:
-    engine_args = EngineArgs(
-        model=model,
-        trust_remote_code=True,
-        gpu_memory_utilization=0.8,
-        max_model_len=2048,
-        disable_log_stats=True,
-        async_scheduling=async_scheduling,
-        compilation_config={"cudagraph_mode": "none"},
+) -> EngineCoreRequest:
+    request = engine.input_processor.process_inputs(
+        request_id,
+        prompt,
+        make_sampling_params(max_tokens),
+        supported_tasks=engine.get_supported_tasks(),
+        arrival_time=time.time(),
     )
-    engine = LLMEngine.from_engine_args(engine_args, enable_multiprocessing=False)
-    model_obj = None
-    try:
-        model_obj = get_model_from_engine(engine)
-        params = SamplingParams(
-            temperature=0.0,
-            top_p=1.0,
-            max_tokens=max_tokens,
-            seed=0,
-            detokenize=True,
-            skip_special_tokens=False,
-            spaces_between_special_tokens=False,
-        )
-        engine.add_request("rwkv7-debug", prompt, params)
-        outputs = engine.step()
-        if not outputs:
-            raise RuntimeError("engine.step() returned no outputs")
-        req_out = outputs[0]
-        choice = req_out.outputs[0]
-        return {
-            "max_tokens": max_tokens,
-            "token_ids": list(choice.token_ids),
-            "text": choice.text,
-            "num_cached_tokens": req_out.num_cached_tokens,
-            "states": clone_layer_states(model_obj),
-            "engine_core_client": type(engine.engine_core).__name__,
-        }
-    finally:
-        engine.engine_core.shutdown()
-        del model_obj
-        del engine
-        cleanup_dist_env_and_memory()
-        gc.collect()
+    if request.prompt_token_ids is None:
+        raise RuntimeError("Prompt preprocessing did not produce prompt_token_ids.")
+    return request
 
 
-def summarize(run_a: dict, run_b: dict) -> dict:
+def make_prompt_token_id_request(
+    *,
+    request_id: str,
+    prompt_token_ids: list[int],
+    max_tokens: int,
+) -> EngineCoreRequest:
+    return EngineCoreRequest(
+        request_id=request_id,
+        prompt_token_ids=list(prompt_token_ids),
+        mm_features=None,
+        sampling_params=make_sampling_params(max_tokens),
+        pooling_params=None,
+        arrival_time=time.time(),
+        lora_request=None,
+        cache_salt=None,
+        data_parallel_rank=None,
+    )
+
+
+def parse_prompt_token_ids_arg(raw: str) -> list[int]:
+    value = json.loads(raw)
+    if not isinstance(value, list) or not all(isinstance(token, int) for token in value):
+        raise ValueError("--prompt-token-ids must be a JSON list of integers.")
+    return value
+
+
+def load_run_payload(path: str) -> dict:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if "run" not in payload:
+        raise ValueError(f"{path} does not contain a top-level 'run' payload.")
+    return payload
+
+
+def compare_state_snapshots(run_a: dict, run_b: dict) -> dict:
     first_layer_with_diff = None
     layers = []
     for layer_a, layer_b in zip(run_a["states"], run_b["states"]):
@@ -171,6 +186,134 @@ def summarize(run_a: dict, run_b: dict) -> dict:
             first_layer_with_diff = layer_a["layer_idx"]
         layers.append({"layer_idx": layer_a["layer_idx"], "states": state_rows})
     return {
+        "first_layer_with_state_diff": first_layer_with_diff,
+        "layers": layers,
+    }
+
+
+def run_capture(
+    *,
+    model: str,
+    prompt: str | None,
+    prompt_token_ids: list[int] | None,
+    max_tokens: int,
+    capture_generated_tokens: int,
+    async_scheduling: bool,
+    request_source: str,
+) -> dict:
+    if capture_generated_tokens <= 0:
+        raise ValueError("--capture-generated-tokens must be positive.")
+    if capture_generated_tokens > max_tokens:
+        raise ValueError(
+            "--capture-generated-tokens cannot exceed --max-tokens."
+        )
+
+    engine_args = EngineArgs(
+        model=model,
+        trust_remote_code=True,
+        gpu_memory_utilization=0.8,
+        max_model_len=2048,
+        disable_log_stats=True,
+        async_scheduling=async_scheduling,
+        compilation_config={"cudagraph_mode": "none"},
+    )
+    engine = LLMEngine.from_engine_args(engine_args, enable_multiprocessing=False)
+    model_obj = None
+    request = None
+    try:
+        model_obj = get_model_from_engine(engine)
+        if prompt_token_ids is None:
+            if prompt is None:
+                raise ValueError(
+                    "A text prompt is required unless prompt_token_ids are supplied."
+                )
+            request = make_prompt_request(
+                engine,
+                request_id="rwkv7-debug",
+                prompt=prompt,
+                max_tokens=max_tokens,
+            )
+        else:
+            request = make_prompt_token_id_request(
+                request_id="rwkv7-debug",
+                prompt_token_ids=prompt_token_ids,
+                max_tokens=max_tokens,
+            )
+
+        effective_prompt_token_ids = list(request.prompt_token_ids or [])
+        engine.add_request(
+            request.request_id,
+            request,
+            request.params,
+            prompt_text=prompt,
+        )
+
+        capture = None
+        trace = []
+        step_calls = 0
+        while engine.has_unfinished_requests():
+            step_calls += 1
+            outputs = engine.step()
+            if not outputs:
+                continue
+
+            req_out = outputs[0]
+            if not req_out.outputs:
+                continue
+            choice = req_out.outputs[0]
+            trace.append(
+                {
+                    "step_call": step_calls,
+                    "finished": req_out.finished,
+                    "num_cached_tokens": req_out.num_cached_tokens,
+                    "token_ids": list(choice.token_ids),
+                    "text": choice.text,
+                }
+            )
+            if len(choice.token_ids) >= capture_generated_tokens:
+                capture = req_out
+                break
+            if req_out.finished:
+                capture = req_out
+                break
+
+        if capture is None:
+            raise RuntimeError("Request produced no capturable outputs.")
+
+        choice = capture.outputs[0]
+        if len(choice.token_ids) < capture_generated_tokens:
+            raise RuntimeError(
+                "Request finished before reaching "
+                f"{capture_generated_tokens} generated tokens."
+            )
+        return {
+            "request_source": request_source,
+            "prompt": prompt,
+            "prompt_token_ids": effective_prompt_token_ids,
+            "max_tokens": max_tokens,
+            "capture_generated_tokens": capture_generated_tokens,
+            "step_calls": step_calls,
+            "trace": trace,
+            "token_ids": list(choice.token_ids),
+            "text": choice.text,
+            "num_cached_tokens": capture.num_cached_tokens,
+            "states": clone_layer_states(model_obj),
+            "engine_core_client": type(engine.engine_core).__name__,
+        }
+    finally:
+        engine.engine_core.shutdown()
+        del request
+        del model_obj
+        del engine
+        cleanup_dist_env_and_memory()
+        gc.collect()
+
+
+def summarize(run_a: dict, run_b: dict) -> dict:
+    state_summary = compare_state_snapshots(run_a, run_b)
+    return {
+        "prompt_token_ids_a": run_a.get("prompt_token_ids"),
+        "prompt_token_ids_b": run_b.get("prompt_token_ids"),
         "token_ids_a": run_a["token_ids"],
         "token_ids_b": run_b["token_ids"],
         "text_a": run_a["text"],
@@ -180,19 +323,67 @@ def summarize(run_a: dict, run_b: dict) -> dict:
         "num_cached_tokens_b": run_b["num_cached_tokens"],
         "engine_core_client_a": run_a["engine_core_client"],
         "engine_core_client_b": run_b["engine_core_client"],
-        "first_layer_with_state_diff": first_layer_with_diff,
-        "layers": layers,
+        "first_layer_with_state_diff": state_summary["first_layer_with_state_diff"],
+        "layers": state_summary["layers"],
+    }
+
+
+def summarize_second_step_replay(base_run: dict, replay_run: dict) -> dict:
+    if len(base_run["token_ids"]) < 2:
+        raise ValueError(
+            "The base run must capture at least two generated tokens for "
+            "second-step replay comparison."
+        )
+    if len(replay_run["token_ids"]) < 1:
+        raise ValueError(
+            "The replay run must capture at least one generated token."
+        )
+
+    state_summary = compare_state_snapshots(base_run, replay_run)
+    expected_replay_prompt = list(base_run["prompt_token_ids"]) + [
+        base_run["token_ids"][0]
+    ]
+    return {
+        "base_prompt_token_ids": base_run["prompt_token_ids"],
+        "replay_prompt_token_ids": replay_run["prompt_token_ids"],
+        "expected_replay_prompt_token_ids": expected_replay_prompt,
+        "replay_prompt_matches_expected": (
+            replay_run["prompt_token_ids"] == expected_replay_prompt
+        ),
+        "base_first_generated_token_id": base_run["token_ids"][0],
+        "base_second_generated_token_id": base_run["token_ids"][1],
+        "replay_generated_token_id": replay_run["token_ids"][0],
+        "base_token_ids": base_run["token_ids"],
+        "replay_token_ids": replay_run["token_ids"],
+        "base_text": base_run["text"],
+        "replay_text": replay_run["text"],
+        "second_token_match": (
+            base_run["token_ids"][1] == replay_run["token_ids"][0]
+        ),
+        "base_step_calls": base_run["step_calls"],
+        "replay_step_calls": replay_run["step_calls"],
+        "base_num_cached_tokens": base_run["num_cached_tokens"],
+        "replay_num_cached_tokens": replay_run["num_cached_tokens"],
+        "engine_core_client_base": base_run["engine_core_client"],
+        "engine_core_client_replay": replay_run["engine_core_client"],
+        "first_layer_with_state_diff": state_summary["first_layer_with_state_diff"],
+        "layers": state_summary["layers"],
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--prompt", default="北京是")
+    parser.add_argument("--prompt", default=None)
+    parser.add_argument("--prompt-token-ids", default=None)
+    parser.add_argument("--append-generated-prefix-from-run-json", default=None)
+    parser.add_argument("--generated-prefix-len", type=int, default=1)
     parser.add_argument("--async-scheduling", action="store_true")
     parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument("--capture-generated-tokens", type=int, default=1)
     parser.add_argument("--run-json-a", default=None)
     parser.add_argument("--run-json-b", default=None)
+    parser.add_argument("--compare-second-step", action="store_true")
     parser.add_argument(
         "--out", default="/tmp/rwkv7_engine_first_step_compare.json"
     )
@@ -201,13 +392,19 @@ def main() -> int:
     if args.run_json_a is not None or args.run_json_b is not None:
         if args.run_json_a is None or args.run_json_b is None:
             raise ValueError("Both --run-json-a and --run-json-b must be provided.")
-        run_a = json.loads(Path(args.run_json_a).read_text(encoding="utf-8"))["run"]
-        run_b = json.loads(Path(args.run_json_b).read_text(encoding="utf-8"))["run"]
+        payload_a = load_run_payload(args.run_json_a)
+        payload_b = load_run_payload(args.run_json_b)
+        run_a = payload_a["run"]
+        run_b = payload_b["run"]
         payload = {
             "model": args.model,
-            "prompt": args.prompt,
+            "prompt": args.prompt or payload_a.get("prompt") or payload_b.get("prompt"),
             "async_scheduling": args.async_scheduling,
-            "summary": summarize(run_a, run_b),
+            "summary": (
+                summarize_second_step_replay(run_a, run_b)
+                if args.compare_second_step
+                else summarize(run_a, run_b)
+            ),
         }
         out_path = Path(args.out)
         out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -215,63 +412,85 @@ def main() -> int:
         print(f"wrote {out_path}")
         return 0
 
+    prompt_token_ids = None
+    request_source = "prompt"
+    prompt = args.prompt
+    if args.prompt_token_ids is not None and args.append_generated_prefix_from_run_json is not None:
+        raise ValueError(
+            "--prompt-token-ids and --append-generated-prefix-from-run-json "
+            "cannot be used together."
+        )
+
+    if args.prompt_token_ids is not None:
+        prompt_token_ids = parse_prompt_token_ids_arg(args.prompt_token_ids)
+        request_source = "prompt_token_ids"
+    elif args.append_generated_prefix_from_run_json is not None:
+        replay_payload = load_run_payload(args.append_generated_prefix_from_run_json)
+        replay_run = replay_payload["run"]
+        if args.generated_prefix_len < 0:
+            raise ValueError("--generated-prefix-len must be non-negative.")
+        if args.generated_prefix_len > len(replay_run["token_ids"]):
+            raise ValueError(
+                "--generated-prefix-len exceeds the number of generated tokens "
+                "stored in the source run JSON."
+            )
+        prompt_token_ids = list(replay_run["prompt_token_ids"]) + list(
+            replay_run["token_ids"][: args.generated_prefix_len]
+        )
+        prompt = prompt or replay_payload.get("prompt")
+        request_source = "append_generated_prefix_from_run_json"
+
+    if args.max_tokens is None:
+        raise ValueError(
+            "--max-tokens is required for single-run capture. "
+            "Use separate run JSONs plus --run-json-a/--run-json-b for comparison."
+        )
+
+    if prompt_token_ids is None and prompt is None:
+        raise ValueError(
+            "A text --prompt is required unless prompt token ids are provided."
+        )
+
     orig_verify, orig_post = patch_rwkv7_compile_config()
     try:
-        if args.max_tokens is not None:
-            payload = {
-                "model": args.model,
-                "prompt": args.prompt,
-                "async_scheduling": args.async_scheduling,
-                "run": run_first_step(
-                    model=args.model,
-                    prompt=args.prompt,
-                    max_tokens=args.max_tokens,
-                    async_scheduling=args.async_scheduling,
-                ),
-            }
-        else:
-            run_1 = run_first_step(
+        payload = {
+            "model": args.model,
+            "prompt": prompt,
+            "async_scheduling": args.async_scheduling,
+            "run": run_capture(
                 model=args.model,
-                prompt=args.prompt,
-                max_tokens=1,
+                prompt=prompt,
+                prompt_token_ids=prompt_token_ids,
+                max_tokens=args.max_tokens,
+                capture_generated_tokens=args.capture_generated_tokens,
                 async_scheduling=args.async_scheduling,
-            )
-            run_8 = run_first_step(
-                model=args.model,
-                prompt=args.prompt,
-                max_tokens=8,
-                async_scheduling=args.async_scheduling,
-            )
-            payload = {
-                "model": args.model,
-                "prompt": args.prompt,
-                "async_scheduling": args.async_scheduling,
-                "summary": summarize(run_1, run_8),
-            }
+                request_source=request_source,
+            ),
+        }
     finally:
         restore_rwkv7_compile_config(orig_verify, orig_post)
 
     out_path = Path(args.out)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    if args.max_tokens is None:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(
-            json.dumps(
-                {
-                    "model": args.model,
-                    "prompt": args.prompt,
-                    "async_scheduling": args.async_scheduling,
-                    "max_tokens": args.max_tokens,
-                    "token_ids": payload["run"]["token_ids"],
-                    "text": payload["run"]["text"],
-                    "num_cached_tokens": payload["run"]["num_cached_tokens"],
-                    "engine_core_client": payload["run"]["engine_core_client"],
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
+    print(
+        json.dumps(
+            {
+                "model": args.model,
+                "prompt": prompt,
+                "async_scheduling": args.async_scheduling,
+                "request_source": payload["run"]["request_source"],
+                "max_tokens": args.max_tokens,
+                "capture_generated_tokens": args.capture_generated_tokens,
+                "prompt_token_ids": payload["run"]["prompt_token_ids"],
+                "token_ids": payload["run"]["token_ids"],
+                "text": payload["run"]["text"],
+                "num_cached_tokens": payload["run"]["num_cached_tokens"],
+                "engine_core_client": payload["run"]["engine_core_client"],
+            },
+            ensure_ascii=False,
+            indent=2,
         )
+    )
     print(f"wrote {out_path}")
     return 0
 

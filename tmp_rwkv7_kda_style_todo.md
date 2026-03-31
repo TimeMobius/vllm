@@ -24,7 +24,11 @@
   - **下一步继续调 compile correctness，而不是强推默认 non-eager**
 - 新增了一个 engine-step probe：
   - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
-  - 能分别抓取 compile/no-cudagraph 下的单步结果，再离线比较
+  - 现在支持：
+    - `--capture-generated-tokens` 抓任意 decode step 的快照
+    - `--prompt-token-ids` 做受控 token-id prompt
+    - `--append-generated-prefix-from-run-json` 从上一次 run JSON 直接拼 replay prompt
+    - `--compare-second-step` 做 base/replay 的离线第二步对比
 - 当前 probe 的新结论：
   - 在 `RWKV7-Goose-World2.9-0.4B-HF` 上
   - prompt `北京是`
@@ -37,6 +41,27 @@
   - 目前更可靠的判断是：
     - compile mismatch 不在第一个 decode step
     - 更可能发生在后续 step，或者发生在 model-runner/scheduler 拥有但未暴露给 layer-local `kv_cache` 的 cache 路径
+- 第二步 replay 的新结论：
+  - 在本地 checkpoint `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF` 上
+  - base run：
+    - prompt token ids: `[10902, 10362, 13091]`
+    - `max_tokens=2`
+    - `capture_generated_tokens=2`
+    - generated token ids: `[10250, 10283]`
+    - text: `一个`
+  - controlled replay run：
+    - prompt token ids: `[10902, 10362, 13091, 10250]`
+    - `max_tokens=1`
+    - `capture_generated_tokens=1`
+    - generated token id: `10283`
+    - text: `个`
+  - 结论：
+    - 第二个 decode token 也没有分叉
+    - 因而当前 non-eager mismatch 至少不在 `北京是` 这个 case 的前两个 decode step
+  - 参考结果：
+    - [rwkv7_engine_step_2_base.json](/tmp/rwkv7_engine_step_2_base.json)
+    - [rwkv7_engine_step_2_replay.json](/tmp/rwkv7_engine_step_2_replay.json)
+    - [rwkv7_engine_step_2_compare.json](/tmp/rwkv7_engine_step_2_compare.json)
 
 RWKV7 当前 compile 路径的核心问题，不是 cache 语义，也不是服务路径，而是：
 
@@ -257,12 +282,13 @@ RWKV7 in vLLM:
 
 ### Immediate Next Steps
 
-1. 用 `prompt_token_ids` 做 token-id-controlled replay，比对第二个 decode step
-2. 检查真正的 model-runner-owned cache backing store，而不是只看 `model.model.layers[*].kv_cache`
-3. 复查当前 custom op fake impl / mutates_args / output buffer 语义，确认 compiled graph 没有错误重排 state 输出
-4. 复查 `RWKV7Block.forward()` 里 prefill request 循环和 `_get_kv_state(...)` 在 compile 下是否仍有隐藏的 data-dependent 假设
-5. 只在 correctness 重新成立之后，再回头试 PIECEWISE CUDA graph capture
-6. 在 correctness 成立之前，不要再次把 non-eager 设为默认
+1. 检查真正的 model-runner-owned cache backing store，而不是只看 `model.model.layers[*].kv_cache`
+2. 把 token-id-controlled replay 扩到第三步甚至更后面的 decode step
+3. 在 `i am` / `The capital of France is` 上重复受控 replay，而不只看 `北京是`
+4. 复查当前 custom op fake impl / `mutates_args` / output buffer 语义，确认 compiled graph 没有错误重排 state 输出
+5. 复查 `RWKV7Block.forward()` 里 prefill request 循环和 `_get_kv_state(...)` 在 compile 下是否仍有隐藏的 data-dependent 假设
+6. 只在 correctness 重新成立之后，再回头试 PIECEWISE CUDA graph capture
+7. 在 correctness 成立之前，不要再次把 non-eager 设为默认
 
 这一步的核心收益是：
 
