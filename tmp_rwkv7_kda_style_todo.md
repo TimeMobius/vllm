@@ -63,6 +63,15 @@
     - `RWKV7_DEBUG_STORE_STATS=1`
     - 且当前 stream 不在 capture
     时才会启用
+- 新 benchmark 结论：
+  - 显式 `cudagraph_mode=piecewise` 已经开始在真实服务吞吐上超过 eager
+  - `cudagraph_mode=none` 仍然主要是 correctness/debug 路径，不是最快路径
+  - 当前通用 Mamba 默认 `FULL_AND_PIECEWISE` 对 RWKV7 仍然不安全
+    - benchmark 下会复现 `indexSelectSmallIndex` / device-side assert
+  - 因此 RWKV7 现在新增了 post-optimization-level 覆写：
+    - 默认把 `FULL_AND_PIECEWISE` 收紧回 `PIECEWISE`
+  - 但还有一个新尾巴：
+    - `no-cg` 在 `max_tokens=128`、concurrency `8` 下仍出现一轮 serial-baseline mismatch
 
 - Phase 1 的第一步已经落地：
   - `RWKV7Attention` 注册进了 `static_forward_context`
@@ -452,10 +461,11 @@ RWKV7 in vLLM:
 
 ### Phase 4. Next Performance Work
 
-- [ ] eager vs 默认 PIECEWISE vs `cudagraph_mode=none` 吞吐对比
-- [ ] compile 路径并发正确性与吞吐：
-  - concurrent 3
-  - concurrent 8
+- [x] eager vs 默认 PIECEWISE / 显式 PIECEWISE / `cudagraph_mode=none` 首轮吞吐对比
+- [ ] 把 benchmark 扩成更稳定的多轮统计，减少单次波动
+- [ ] 继续查 `no-cg` 的长输出高并发分叉：
+  - `max_tokens=128`
+  - concurrency `8`
 - [ ] prefix caching / mixed prompt lengths 覆盖
 
 ### Phase 5. Kernelization / Varlen Optimization
@@ -469,6 +479,8 @@ RWKV7 in vLLM:
 
 - [ ] 评估哪些路径能从 `fp32` 回到更轻量 dtype
 - [ ] 评估 compile-enabled 路径是否可以作为默认推荐
+- [x] RWKV7 默认 compile cudagraph 策略收紧到 `PIECEWISE`
+- [ ] FULL decode graph 是否还有必要单独支持，还是直接长期禁用
 - [ ] 做更广 prompt/model sweep 后再决定最终默认策略
 
 ## Files Most Likely To Change
@@ -534,8 +546,11 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 做 eager / 默认 PIECEWISE / `cudagraph_mode=none` 的吞吐对比
-- [ ] 跑 compile 路径的并发 3 / 8 correctness + TPS
+- [ ] 直接盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
+- [ ] 把 default/PIECEWISE benchmark 做成更稳定的多轮统计
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
 
-compile 路径已经不是“能不能跑通”的问题，而是“性能和覆盖还能推进多少”。这一轮最值得攻的是 benchmark 和更广 stress coverage。
+compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
+- 纯 `PIECEWISE` 已经是可用且有性能收益的主线
+- `FULL_AND_PIECEWISE` 仍然不安全
+- `no-cg` 仍有长输出高并发尾巴要清

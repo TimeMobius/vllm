@@ -671,6 +671,18 @@ class RWKV7ForCausalLMConfig(MambaModelConfig):
     def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
         super().verify_and_update_config(vllm_config)
 
+    @staticmethod
+    def apply_post_optimization_level_defaults(
+        vllm_config: "VllmConfig",
+    ) -> None:
+        compilation_config = vllm_config.compilation_config
+        if compilation_config.cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE:
+            logger.info(
+                "Overriding RWKV7 cudagraph mode from FULL_AND_PIECEWISE "
+                "to PIECEWISE to avoid unsafe full decode graph capture."
+            )
+            compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
+
 
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "ColBERTJinaRobertaModel": JinaRobertaModelConfig,

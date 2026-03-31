@@ -75,11 +75,50 @@
     - `i am`: one-shot == step-by-step
     - `北京是`: one-shot == step-by-step
     - `The capital of France is`: one-shot == step-by-step
+- New benchmark finding from the local `0.4B` checkpoint:
+  - [`tmp_rwkv7_long_benchmark.py`](/home/liu/vllm/tmp_rwkv7_long_benchmark.py) now supports:
+    - `--enforce-eager`
+    - `--cudagraph-mode`
+    - `--compile-no-cg`
+    - `--disable-compile-cache`
+  - explicit `PIECEWISE` is now the first compile path that shows real runtime throughput wins over eager on this machine
+  - `cudagraph_mode=none` is still mainly a correctness/debug path, not the fast path
+- New default compile-mode pitfall:
+  - inheriting plain `MambaModelConfig` defaults left RWKV7 on `FULL_AND_PIECEWISE`
+  - that mode still hit the old unsafe full decode-graph failure under benchmark load:
+    - `indexSelectSmallIndex ... Assertion srcIndex < srcSelectDimSize failed`
+    - followed by `CUDA error: device-side assert triggered`
+  - RWKV7 now overrides that default back to `PIECEWISE` in
+    [config.py](/home/liu/vllm/vllm/model_executor/models/config.py)
+- Current benchmark snapshot on `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`:
+  - logs / json:
+    - eager 64: [rwkv7_bench_eager_64.json](/tmp/rwkv7_bench_eager_64.json)
+    - no-cg 64: [rwkv7_bench_no_cg_64.json](/tmp/rwkv7_bench_no_cg_64.json)
+    - piecewise 64: [rwkv7_bench_piecewise_explicit_64.json](/tmp/rwkv7_bench_piecewise_explicit_64.json)
+    - eager 128: [rwkv7_bench_eager_128.json](/tmp/rwkv7_bench_eager_128.json)
+    - no-cg 128: [rwkv7_bench_no_cg_128.json](/tmp/rwkv7_bench_no_cg_128.json)
+    - piecewise 128: [rwkv7_bench_piecewise_explicit_128.json](/tmp/rwkv7_bench_piecewise_explicit_128.json)
+  - `max_tokens=64`, aggregate TPS, concurrency `1/2/4/8`:
+    - eager: `29.7 / 57.9 / 116.5 / 195.0`
+    - no-cg: `26.8 / 53.0 / 105.5 / 184.3`
+    - piecewise: `27.1 / 59.6 / 120.4 / 197.7`
+  - `max_tokens=128`, aggregate TPS, concurrency `1/2/4/8`:
+    - eager: `17.1 / 22.8 / 44.0 / 92.9`
+    - no-cg: `19.5 / 22.7 / 44.0 / 85.7`
+    - piecewise: `29.9 / 55.3 / 105.6 / 201.8`
+  - caveat:
+    - `no-cg` at `max_tokens=128`, concurrency `8` had serial-baseline mismatch in one round
+    - piecewise `64/128` stayed aligned with serial baseline in these runs
+- Cold-start tradeoff is now clear:
+  - eager init engine: about `9.2s`
+  - no-cg init engine: about `13.8s`
+  - piecewise init engine: about `94-97s`
+  - so piecewise currently buys runtime throughput at the cost of much slower startup
 - New pitfall to remember:
   - nested-shell JSON quoting for `-cc '{"cudagraph_mode":"none"}'` is easy to break
   - prefer either:
     - `-cc.cudagraph_mode=none`
-    - or [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) with `--compile-no-cg`
+    - or [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) / [`tmp_rwkv7_long_benchmark.py`](/home/liu/vllm/tmp_rwkv7_long_benchmark.py)
 - Historical debugging trail below this point predates the whole-block custom-op fix and is kept mainly as chronology.
 
 - Landed a first KDA-style compile boundary in [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py):
@@ -293,9 +332,12 @@ Compile startup is no longer the main blocker.
 
 The current blockers are:
 
-- no known compile correctness blocker is open on the validated path
-- compile/no-cg and PIECEWISE performance have not yet been benchmarked after correctness recovery
-- the next implementation step should move from correctness to performance/coverage
+- no known basic compile correctness blocker is open on the validated short-prompt path
+- FULL decode-graph behavior is still unsafe for RWKV7 and should stay disabled
+- `cudagraph_mode=none` still shows a longer-output / high-concurrency mismatch (`128` tokens, concurrency `8`)
+- the next implementation step should move from "can it run" to:
+  - piecewise performance characterization
+  - no-cg long-output concurrency debugging
 
 ### Additional findings from deeper debug
 

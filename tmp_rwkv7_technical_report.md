@@ -584,6 +584,80 @@ Reference artifacts from the corrected real-entrypoint validation:
 - [vllm_rwkv7_piecewise_0p1b_final.log](/tmp/vllm_rwkv7_piecewise_0p1b_final.log)
 - [vllm_rwkv7_compile_no_cg_0p1b_final.log](/tmp/vllm_rwkv7_compile_no_cg_0p1b_final.log)
 
+### 8.7 Performance And Default-Mode Addendum
+
+The next benchmark pass showed that RWKV7's runtime picture is more nuanced
+than "compile on" versus "compile off".
+
+First, inheriting plain `MambaModelConfig` defaults left RWKV7 on:
+
+- `cudagraph_mode=FULL_AND_PIECEWISE`
+
+That mode is still unsafe for RWKV7 under benchmark load. On the local 0.4B
+checkpoint it reproduced:
+
+- `indexSelectSmallIndex ... Assertion srcIndex < srcSelectDimSize failed`
+- followed by `CUDA error: device-side assert triggered`
+
+The fix was to add an RWKV7-specific post-optimization override in
+[config.py](/home/liu/vllm/vllm/model_executor/models/config.py):
+
+- if the inherited default is `FULL_AND_PIECEWISE`
+- override it to `PIECEWISE`
+
+This keeps the passing whole-block piecewise path while avoiding the still-unsafe
+full decode-graph path.
+
+Second, the throughput results are now split by compile mode:
+
+- eager
+- `cudagraph_mode=none`
+- `cudagraph_mode=piecewise`
+
+On `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`, with
+`async_scheduling=False`, the local benchmark artifacts are:
+
+- [rwkv7_bench_eager_64.json](/tmp/rwkv7_bench_eager_64.json)
+- [rwkv7_bench_no_cg_64.json](/tmp/rwkv7_bench_no_cg_64.json)
+- [rwkv7_bench_piecewise_explicit_64.json](/tmp/rwkv7_bench_piecewise_explicit_64.json)
+- [rwkv7_bench_eager_128.json](/tmp/rwkv7_bench_eager_128.json)
+- [rwkv7_bench_no_cg_128.json](/tmp/rwkv7_bench_no_cg_128.json)
+- [rwkv7_bench_piecewise_explicit_128.json](/tmp/rwkv7_bench_piecewise_explicit_128.json)
+
+Aggregate TPS snapshots:
+
+- `max_tokens=64`, concurrency `1/2/4/8`
+  - eager: `29.7 / 57.9 / 116.5 / 195.0`
+  - no-cg: `26.8 / 53.0 / 105.5 / 184.3`
+  - piecewise: `27.1 / 59.6 / 120.4 / 197.7`
+- `max_tokens=128`, concurrency `1/2/4/8`
+  - eager: `17.1 / 22.8 / 44.0 / 92.9`
+  - no-cg: `19.5 / 22.7 / 44.0 / 85.7`
+  - piecewise: `29.9 / 55.3 / 105.6 / 201.8`
+
+Interpretation:
+
+- pure PIECEWISE is now the first compile path that clearly improves runtime
+  throughput over eager on this machine
+- `cudagraph_mode=none` remains useful for correctness localization and
+  debugging, but it is not the fast path
+- cold-start cost is much higher for piecewise capture
+  - eager init engine: about `9.2s`
+  - no-cg init engine: about `13.8s`
+  - piecewise init engine: about `94-97s`
+
+One more caveat remains:
+
+- `cudagraph_mode=none` at `max_tokens=128`, concurrency `8` produced a
+  serial-baseline mismatch in one benchmark round
+- the piecewise `64/128` benchmark runs stayed aligned with the serial baseline
+
+So the current recommendation is:
+
+- keep RWKV7 default compile mode on PIECEWISE
+- avoid FULL decode graphs for now
+- continue debugging the no-cg long-output concurrency tail separately
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

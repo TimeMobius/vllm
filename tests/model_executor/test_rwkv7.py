@@ -428,6 +428,18 @@ def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_disabled():
     assert vllm_config.model_config.enforce_eager is False
 
 
+def test_rwkv7_post_optimization_defaults_choose_piecewise():
+    vllm_config = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE
+        )
+    )
+
+    RWKV7ForCausalLMConfig.apply_post_optimization_level_defaults(vllm_config)
+
+    assert vllm_config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
+
+
 def test_rwkv7_block_uses_fp32_runtime_state_dtype():
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))

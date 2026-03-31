@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -142,7 +143,18 @@ def main() -> int:
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--no-async-scheduling", action="store_true")
+    parser.add_argument("--no-enable-chunked-prefill", action="store_true")
+    parser.add_argument(
+        "--cudagraph-mode",
+        choices=["default", "none", "piecewise", "full", "full_and_piecewise"],
+        default="default",
+    )
+    parser.add_argument("--compile-no-cg", action="store_true")
+    parser.add_argument("--cudagraph-copy-inputs", action="store_true")
+    parser.add_argument("--disable-compile-cache", action="store_true")
+    parser.add_argument("--compilation-config", default=None)
     parser.add_argument(
         "--concurrency-levels",
         type=int,
@@ -188,11 +200,33 @@ def main() -> int:
         "--port",
         str(args.port),
     ]
+    if args.enforce_eager:
+        cmd.append("--enforce-eager")
+    if args.compile_no_cg:
+        cmd.append("-cc.cudagraph_mode=none")
+    elif args.cudagraph_mode != "default":
+        cmd.append(f"-cc.cudagraph_mode={args.cudagraph_mode}")
+    if args.cudagraph_copy_inputs:
+        cmd.append("-cc.cudagraph_copy_inputs=true")
+    if args.compilation_config is not None:
+        cmd.extend(["-cc", args.compilation_config])
     if args.no_async_scheduling:
         cmd.append("--no-async-scheduling")
+    if args.no_enable_chunked_prefill:
+        cmd.append("--no-enable-chunked-prefill")
 
     with log_path.open("w", encoding="utf-8") as logf:
-        proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
+        env = None
+        if args.disable_compile_cache:
+            env = os.environ.copy()
+            env["VLLM_DISABLE_COMPILE_CACHE"] = "1"
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
         try:
             deadline = time.time() + 600
             while time.time() < deadline:
@@ -292,6 +326,11 @@ def main() -> int:
                     {
                         "model": args.model,
                         "dtype": args.dtype,
+                        "enforce_eager": args.enforce_eager,
+                        "cudagraph_mode": args.cudagraph_mode,
+                        "compile_no_cg": args.compile_no_cg,
+                        "cudagraph_copy_inputs": args.cudagraph_copy_inputs,
+                        "disable_compile_cache": args.disable_compile_cache,
                         "max_tokens": args.max_tokens,
                         "rounds": args.rounds,
                         "warmup": args.warmup,
