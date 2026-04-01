@@ -64,14 +64,19 @@
     - 且当前 stream 不在 capture
     时才会启用
 - 新 benchmark 结论：
-  - 显式 `cudagraph_mode=piecewise` 已经开始在真实服务吞吐上超过 eager
   - `cudagraph_mode=none` 仍然主要是 correctness/debug 路径，不是最快路径
   - 当前通用 Mamba 默认 `FULL_AND_PIECEWISE` 对 RWKV7 仍然不安全
     - benchmark 下会复现 `indexSelectSmallIndex` / device-side assert
   - 因此 RWKV7 现在新增了 post-optimization-level 覆写：
     - 默认把 `FULL_AND_PIECEWISE` 收紧回 `PIECEWISE`
-  - 但还有一个新尾巴：
-    - `no-cg` 在 `max_tokens=128`、concurrency `8` 下仍出现一轮 serial-baseline mismatch
+  - 当前 `0.4B` clean rerun 更准确的结论是：
+    - `PIECEWISE` 和 eager 在短输出 mixed-prompt benchmark 上处于同一量级
+    - `PIECEWISE` 没有稳定、显著地跑赢 eager
+    - 长输入 `1024` / `1984` token benchmark 也没有看到稳定 clear win
+  - 现阶段 `compile + PIECEWISE` 的主要价值更偏：
+    - compile correctness
+    - 默认策略安全性
+    - 而不是已经明确领先 eager 的吞吐
 
 - Phase 1 的第一步已经落地：
   - `RWKV7Attention` 注册进了 `static_forward_context`
@@ -462,10 +467,16 @@ RWKV7 in vLLM:
 ### Phase 4. Next Performance Work
 
 - [x] eager vs 默认 PIECEWISE / 显式 PIECEWISE / `cudagraph_mode=none` 首轮吞吐对比
+- [x] `0.4B` 长输入 benchmark：
+  - prompt len `1024`
+  - prompt len `1984`
+  - concurrency `1/4/8`
+  - eager vs `PIECEWISE`
 - [ ] 把 benchmark 扩成更稳定的多轮统计，减少单次波动
 - [ ] 继续查 `no-cg` 的长输出高并发分叉：
   - `max_tokens=128`
   - concurrency `8`
+- [ ] 做 TTFT / prefill-only benchmark，把长 prefill 和 decode 开销分开看
 - [ ] prefix caching / mixed prompt lengths 覆盖
 
 ### Phase 5. Kernelization / Varlen Optimization
@@ -546,11 +557,13 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 直接盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
+- [ ] 做 TTFT / prefill-only benchmark，确认 `PIECEWISE` 在长 prefill 下到底有没有独立收益
 - [ ] 把 default/PIECEWISE benchmark 做成更稳定的多轮统计
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
+- [ ] 继续盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
 
 compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
-- 纯 `PIECEWISE` 已经是可用且有性能收益的主线
+- 纯 `PIECEWISE` 已经是可用且正确的主线
 - `FULL_AND_PIECEWISE` 仍然不安全
+- `PIECEWISE` 在当前 `0.4B` benchmark 上还不是稳定的吞吐优势路径
 - `no-cg` 仍有长输出高并发尾巴要清

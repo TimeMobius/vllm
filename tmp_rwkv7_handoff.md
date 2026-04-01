@@ -81,7 +81,8 @@
     - `--cudagraph-mode`
     - `--compile-no-cg`
     - `--disable-compile-cache`
-  - explicit `PIECEWISE` is now the first compile path that shows real runtime throughput wins over eager on this machine
+  - the earlier quick conclusion that explicit `PIECEWISE` clearly beat eager has
+    been superseded by the later clean reruns below
   - `cudagraph_mode=none` is still mainly a correctness/debug path, not the fast path
 - New default compile-mode pitfall:
   - inheriting plain `MambaModelConfig` defaults left RWKV7 on `FULL_AND_PIECEWISE`
@@ -90,30 +91,52 @@
     - followed by `CUDA error: device-side assert triggered`
   - RWKV7 now overrides that default back to `PIECEWISE` in
     [config.py](/home/liu/vllm/vllm/model_executor/models/config.py)
-- Current benchmark snapshot on `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`:
-  - logs / json:
-    - eager 64: [rwkv7_bench_eager_64.json](/tmp/rwkv7_bench_eager_64.json)
-    - no-cg 64: [rwkv7_bench_no_cg_64.json](/tmp/rwkv7_bench_no_cg_64.json)
-    - piecewise 64: [rwkv7_bench_piecewise_explicit_64.json](/tmp/rwkv7_bench_piecewise_explicit_64.json)
-    - eager 128: [rwkv7_bench_eager_128.json](/tmp/rwkv7_bench_eager_128.json)
-    - no-cg 128: [rwkv7_bench_no_cg_128.json](/tmp/rwkv7_bench_no_cg_128.json)
-    - piecewise 128: [rwkv7_bench_piecewise_explicit_128.json](/tmp/rwkv7_bench_piecewise_explicit_128.json)
-  - `max_tokens=64`, aggregate TPS, concurrency `1/2/4/8`:
-    - eager: `29.7 / 57.9 / 116.5 / 195.0`
-    - no-cg: `26.8 / 53.0 / 105.5 / 184.3`
-    - piecewise: `27.1 / 59.6 / 120.4 / 197.7`
-  - `max_tokens=128`, aggregate TPS, concurrency `1/2/4/8`:
-    - eager: `17.1 / 22.8 / 44.0 / 92.9`
-    - no-cg: `19.5 / 22.7 / 44.0 / 85.7`
-    - piecewise: `29.9 / 55.3 / 105.6 / 201.8`
+- Current benchmark snapshot on `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+  supersedes the earlier quick throughput snapshot:
+  - short-output mixed-prompt clean rerun:
+    - eager 64: [rwkv7_bench_0p4b_eager_64.json](/tmp/rwkv7_bench_0p4b_eager_64.json)
+    - piecewise 64: [rwkv7_bench_0p4b_piecewise_64.json](/tmp/rwkv7_bench_0p4b_piecewise_64.json)
+    - eager 128: [rwkv7_bench_0p4b_eager_128.json](/tmp/rwkv7_bench_0p4b_eager_128.json)
+    - piecewise 128: [rwkv7_bench_0p4b_piecewise_128.json](/tmp/rwkv7_bench_0p4b_piecewise_128.json)
+    - `max_tokens=64`, aggregate TPS, concurrency `1/2/4/8`:
+      - eager: `28.122 / 54.669 / 104.712 / 191.801`
+      - piecewise: `27.566 / 54.985 / 103.009 / 186.164`
+    - `max_tokens=128`, aggregate TPS, concurrency `1/2/4/8`:
+      - eager: `27.642 / 48.780 / 110.584 / 203.157`
+      - piecewise: `27.856 / 45.786 / 103.951 / 193.628`
+  - long-input exact-token rerun:
+    - script: [/tmp/rwkv7_exact_long_input_bench.py](/tmp/rwkv7_exact_long_input_bench.py)
+    - eager 1024 + 64 decode: [rwkv7_long_input_eager_1024.json](/tmp/rwkv7_long_input_eager_1024.json)
+    - piecewise 1024 + 64 decode: [rwkv7_long_input_piecewise_1024.json](/tmp/rwkv7_long_input_piecewise_1024.json)
+    - eager 1984 + 64 decode: [rwkv7_long_input_eager_1984.json](/tmp/rwkv7_long_input_eager_1984.json)
+    - piecewise 1984 + 64 decode: [rwkv7_long_input_piecewise_1984.json](/tmp/rwkv7_long_input_piecewise_1984.json)
+    - prompt length `1024`, aggregate TPS, concurrency `1/4/8`:
+      - eager: `11.830 / 14.974 / 15.850`
+      - piecewise: `10.146 / 13.967 / 16.376`
+    - prompt length `1984`, aggregate TPS, concurrency `1/4/8`:
+      - eager: `7.237 / 9.431 / 10.046`
+      - piecewise: `7.863 / 9.449 / 9.529`
+  - interpretation:
+    - on the local `0.4B` checkpoint, `PIECEWISE` and eager are now in the same
+      runtime band rather than showing a stable clear win for `PIECEWISE`
+    - short-output mixed-prompt runs keep `PIECEWISE` close to eager, but not
+      consistently faster
+    - long-input prefill-heavy runs also stay close:
+      - `1024`-token prompt: `PIECEWISE` trails at concurrency `1/4`, edges ahead at `8`
+      - `1984`-token prompt: `PIECEWISE` leads slightly at `1`, ties at `4`, trails at `8`
+    - current value of `compile + PIECEWISE` is therefore:
+      - correctness-capable compile serving
+      - default-safe compile mode for RWKV7
+      - but not yet a stable throughput win over eager on this machine
   - caveat:
-    - `no-cg` at `max_tokens=128`, concurrency `8` had serial-baseline mismatch in one round
-    - piecewise `64/128` stayed aligned with serial baseline in these runs
+    - `no-cg` remains mainly a correctness/debug path and was not part of this
+      consolidated rerun
 - Cold-start tradeoff is now clear:
   - eager init engine: about `9.2s`
   - no-cg init engine: about `13.8s`
   - piecewise init engine: about `94-97s`
-  - so piecewise currently buys runtime throughput at the cost of much slower startup
+  - so piecewise currently buys compile availability and correctness at the cost
+    of much slower startup
 - New pitfall to remember:
   - nested-shell JSON quoting for `-cc '{"cudagraph_mode":"none"}'` is easy to break
   - prefer either:

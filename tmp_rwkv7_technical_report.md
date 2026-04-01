@@ -586,8 +586,8 @@ Reference artifacts from the corrected real-entrypoint validation:
 
 ### 8.7 Performance And Default-Mode Addendum
 
-The next benchmark pass showed that RWKV7's runtime picture is more nuanced
-than "compile on" versus "compile off".
+The throughput picture is now more nuanced than the earlier quick benchmark
+snapshot suggested.
 
 First, inheriting plain `MambaModelConfig` defaults left RWKV7 on:
 
@@ -608,55 +608,89 @@ The fix was to add an RWKV7-specific post-optimization override in
 This keeps the passing whole-block piecewise path while avoiding the still-unsafe
 full decode-graph path.
 
-Second, the throughput results are now split by compile mode:
+Second, the earlier quick performance snapshot was replaced by a clean rerun on
+the local 0.4B checkpoint. The historical eager-only table in section `6.3`
+remains useful as chronology, but current eager-versus-piecewise conclusions
+should use the consolidated reruns below.
 
-- eager
-- `cudagraph_mode=none`
-- `cudagraph_mode=piecewise`
+### 8.7.1 Short-Output Mixed-Prompt Rerun
 
 On `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`, with
-`async_scheduling=False`, the local benchmark artifacts are:
+`async_scheduling=False`, the clean short-output artifacts are:
 
-- [rwkv7_bench_eager_64.json](/tmp/rwkv7_bench_eager_64.json)
-- [rwkv7_bench_no_cg_64.json](/tmp/rwkv7_bench_no_cg_64.json)
-- [rwkv7_bench_piecewise_explicit_64.json](/tmp/rwkv7_bench_piecewise_explicit_64.json)
-- [rwkv7_bench_eager_128.json](/tmp/rwkv7_bench_eager_128.json)
-- [rwkv7_bench_no_cg_128.json](/tmp/rwkv7_bench_no_cg_128.json)
-- [rwkv7_bench_piecewise_explicit_128.json](/tmp/rwkv7_bench_piecewise_explicit_128.json)
+- [rwkv7_bench_0p4b_eager_64.json](/tmp/rwkv7_bench_0p4b_eager_64.json)
+- [rwkv7_bench_0p4b_piecewise_64.json](/tmp/rwkv7_bench_0p4b_piecewise_64.json)
+- [rwkv7_bench_0p4b_eager_128.json](/tmp/rwkv7_bench_0p4b_eager_128.json)
+- [rwkv7_bench_0p4b_piecewise_128.json](/tmp/rwkv7_bench_0p4b_piecewise_128.json)
 
 Aggregate TPS snapshots:
 
-- `max_tokens=64`, concurrency `1/2/4/8`
-  - eager: `29.7 / 57.9 / 116.5 / 195.0`
-  - no-cg: `26.8 / 53.0 / 105.5 / 184.3`
-  - piecewise: `27.1 / 59.6 / 120.4 / 197.7`
-- `max_tokens=128`, concurrency `1/2/4/8`
-  - eager: `17.1 / 22.8 / 44.0 / 92.9`
-  - no-cg: `19.5 / 22.7 / 44.0 / 85.7`
-  - piecewise: `29.9 / 55.3 / 105.6 / 201.8`
+| mode | `max_tokens=64`, c=`1/2/4/8` | `max_tokens=128`, c=`1/2/4/8` |
+|---|---|---|
+| eager | `28.122 / 54.669 / 104.712 / 191.801` | `27.642 / 48.780 / 110.584 / 203.157` |
+| piecewise | `27.566 / 54.985 / 103.009 / 186.164` | `27.856 / 45.786 / 103.951 / 193.628` |
 
-Interpretation:
+All rows matched the serial baseline.
 
-- pure PIECEWISE is now the first compile path that clearly improves runtime
-  throughput over eager on this machine
+### 8.7.2 Long-Input Exact-Token Rerun
+
+To separate short-output decode behavior from long-prefill behavior, an exact
+token-count benchmark was added:
+
+- script: [/tmp/rwkv7_exact_long_input_bench.py](/tmp/rwkv7_exact_long_input_bench.py)
+
+The model has `max_position_embeddings=2048`, so the second long-input case was
+run as:
+
+- prompt length `1984`
+- `max_tokens=64`
+
+to stay just below the context cap while still exercising decode.
+
+Artifacts:
+
+- [rwkv7_long_input_eager_1024.json](/tmp/rwkv7_long_input_eager_1024.json)
+- [rwkv7_long_input_piecewise_1024.json](/tmp/rwkv7_long_input_piecewise_1024.json)
+- [rwkv7_long_input_eager_1984.json](/tmp/rwkv7_long_input_eager_1984.json)
+- [rwkv7_long_input_piecewise_1984.json](/tmp/rwkv7_long_input_piecewise_1984.json)
+
+Aggregate TPS snapshots:
+
+| prompt len + decode | mode | c=`1/4/8` |
+|---|---|---|
+| `1024 + 64` | eager | `11.830 / 14.974 / 15.850` |
+| `1024 + 64` | piecewise | `10.146 / 13.967 / 16.376` |
+| `1984 + 64` | eager | `7.237 / 9.431 / 10.046` |
+| `1984 + 64` | piecewise | `7.863 / 9.449 / 9.529` |
+
+All rows again matched the serial baseline.
+
+### 8.7.3 Current Interpretation
+
+The combined picture on the local `0.4B` checkpoint is:
+
 - `cudagraph_mode=none` remains useful for correctness localization and
-  debugging, but it is not the fast path
-- cold-start cost is much higher for piecewise capture
+  debugging, but it is not the main performance path
+- `PIECEWISE` and eager now sit in roughly the same runtime band on this
+  machine, rather than `PIECEWISE` showing a stable clear win
+- short-output mixed-prompt runs keep `PIECEWISE` close to eager, but not
+  consistently faster
+- long-input prefill-heavy runs also stay close:
+  - `1024`-token prompt: `PIECEWISE` trails at concurrency `1/4`, edges ahead at `8`
+  - `1984`-token prompt: `PIECEWISE` leads slightly at `1`, ties at `4`, trails at `8`
+- cold-start cost is still much higher for piecewise capture
   - eager init engine: about `9.2s`
   - no-cg init engine: about `13.8s`
   - piecewise init engine: about `94-97s`
 
-One more caveat remains:
-
-- `cudagraph_mode=none` at `max_tokens=128`, concurrency `8` produced a
-  serial-baseline mismatch in one benchmark round
-- the piecewise `64/128` benchmark runs stayed aligned with the serial baseline
-
 So the current recommendation is:
 
-- keep RWKV7 default compile mode on PIECEWISE
+- keep RWKV7 default compile mode on `PIECEWISE`
 - avoid FULL decode graphs for now
-- continue debugging the no-cg long-output concurrency tail separately
+- treat `compile + PIECEWISE` as the correctness-capable compile path, not yet
+  as a stable throughput win over eager on this machine
+- measure TTFT / prefill-only and deeper kernelization next if performance is
+  the main remaining goal
 
 ## 9. Version Checkpoints
 
