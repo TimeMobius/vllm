@@ -20,6 +20,7 @@
 | --- | --- | --- |
 | `default_mixed_8` | `i am`; `北京是`; `The capital of France is`; `Once upon a time`; `In a shocking finding, scientists discovered`; `人工智能的未来`; `Write a short haiku about the sea`; `The theory of relativity says` | [tmp_rwkv7_long_benchmark.py](/home/liu/vllm/tmp_rwkv7_long_benchmark.py) |
 | `rwkv7_ttft_seed_repeat` | exact token prefixes cut from repeated tokenization of `The capital of France is Paris. 北京是中国的首都。 RWKV7 is a recurrent world model for language generation.` | [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py) |
+| `rwkv7_exact_long_repeat` | exact token prefixes cut from repeated tokenization of `The capital of France is Paris. Beijing is the capital of China. RWKV7 is a recurrent world model for language generation.` | [tmp_rwkv7_exact_long_input_bench.py](/home/liu/vllm/tmp_rwkv7_exact_long_input_bench.py) |
 
 ## Run Index
 
@@ -27,6 +28,12 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `2026-04-13_eager_0p4b_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `1/2/4/8` | `default_mixed_8` | [rwkv7_bench_0p4b_eager_64_20260413.json](/tmp/rwkv7_bench_0p4b_eager_64_20260413.json) | [vllm_rwkv7_eager_bench_20260413.log](/tmp/vllm_rwkv7_eager_bench_20260413.log) | `tmp_rwkv7_long_benchmark.py --enforce-eager` 基线复跑；全部并发轮次都与串行 baseline 一致 |
 | `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `16` | `1` | `1` | `4/8` | `default_mixed_8` | [rwkv7_long_piecewise_packedprefill_20260413.json](/tmp/rwkv7_long_piecewise_packedprefill_20260413.json) | [vllm_rwkv7_long_piecewise_packedprefill_20260413.log](/tmp/vllm_rwkv7_long_piecewise_packedprefill_20260413.log) | packed/varlen prefill 落地后的真实服务 smoke；主要用于确认并发输出仍与串行 baseline 一致，不作为 before/after 性能结论 |
+| `2026-04-13_eager_0p4b_exact_long_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `1` | `1` | `1/4/8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_20260413.json](/tmp/rwkv7_exact_long_eager_20260413.json) | [vllm_rwkv7_exact_long_eager_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_20260413.log) | exact token 长输入 probe；单轮大 sweep 可用于趋势判断，但不如 focused rerun 稳定 |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `1` | `1` | `1/4/8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_20260413.json](/tmp/rwkv7_exact_long_piecewise_20260413.json) | [vllm_rwkv7_exact_long_piecewise_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_20260413.log) | exact token 长输入 probe；`1024` mixed-scenario 结果波动很大，需要 focused rerun 才能看 steady-state |
+| `2026-04-13_eager_0p4b_exact_long_1024_c8_r2` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_1024_c8_r2_20260413.json](/tmp/rwkv7_exact_long_eager_1024_c8_r2_20260413.json) | [vllm_rwkv7_exact_long_eager_1024_c8_r2_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_1024_c8_r2_20260413.log) | focused rerun；用于估计 `1024 + 64` 的 steady-state c8 带宽 |
+| `2026-04-13_piecewise_0p4b_exact_long_1024_c8_r2` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_1024_c8_r2_20260413.json](/tmp/rwkv7_exact_long_piecewise_1024_c8_r2_20260413.json) | [vllm_rwkv7_exact_long_piecewise_1024_c8_r2_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_1024_c8_r2_20260413.log) | focused rerun；显示 `1024` 档 steady-state 已接近 eager，而不是 mixed-scenario probe 里那种异常慢 |
+| `2026-04-13_eager_0p4b_exact_long_1984_c8` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `1` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_1984_c8_20260413.json](/tmp/rwkv7_exact_long_eager_1984_c8_20260413.json) | [vllm_rwkv7_exact_long_eager_1984_c8_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_1984_c8_20260413.log) | focused rerun；用于和 `PIECEWISE` 对照 packed prefill 在超长 prompt 上的收益 |
+| `2026-04-13_piecewise_0p4b_exact_long_1984_c8` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `1` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_1984_c8_20260413.json](/tmp/rwkv7_exact_long_piecewise_1984_c8_20260413.json) | [vllm_rwkv7_exact_long_piecewise_1984_c8_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_1984_c8_20260413.log) | focused rerun；`1984` 档明显受益于 packed prefill |
 
 ## Throughput Table
 
@@ -38,6 +45,44 @@
 | `2026-04-13_eager_0p4b_mt64` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `8` | `215.131` | `214.844` | `214.987` | `true` |
 | `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `4` | `18.689` | `n/a` | `18.689` | `true` |
 | `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `8` | `208.104` | `n/a` | `208.104` | `true` |
+
+## Exact Long-Input Throughput Table
+
+| run_id | prompt_len | concurrency | round0_tps | round1_tps | avg_tps | all_match_serial_baseline |
+| --- | --- | --- | --- | --- | --- | --- |
+| `2026-04-13_eager_0p4b_exact_long_mt64` | `1024` | `1` | `5.438` | `n/a` | `5.438` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64` | `1024` | `4` | `21.009` | `n/a` | `21.009` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64` | `1024` | `8` | `31.685` | `n/a` | `31.685` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64` | `1984` | `1` | `6.517` | `n/a` | `6.517` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64` | `1984` | `4` | `10.038` | `n/a` | `10.038` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64` | `1984` | `8` | `11.717` | `n/a` | `11.717` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64` | `1024` | `1` | `4.715` | `n/a` | `4.715` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64` | `1024` | `4` | `12.378` | `n/a` | `12.378` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64` | `1024` | `8` | `13.387` | `n/a` | `13.387` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64` | `1984` | `1` | `22.369` | `n/a` | `22.369` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64` | `1984` | `4` | `60.396` | `n/a` | `60.396` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64` | `1984` | `8` | `78.889` | `n/a` | `78.889` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_1024_c8_r2` | `1024` | `8` | `131.458` | `124.108` | `127.783` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_1024_c8_r2` | `1024` | `8` | `120.680` | `123.058` | `121.869` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_1984_c8` | `1984` | `8` | `14.594` | `n/a` | `14.594` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_1984_c8` | `1984` | `8` | `80.053` | `n/a` | `80.053` | `true` |
+
+## Investigation Note
+
+`aggregate_tps` in the exact long-input probe is defined as `completion_tokens / wall_time`, see [tmp_rwkv7_exact_long_input_bench.py](/home/liu/vllm/tmp_rwkv7_exact_long_input_bench.py:120). That means:
+
+- it penalizes long prefill time very heavily
+- it is sensitive to first-run compile/cudagraph warmup
+- mixed-scenario one-shot sweeps can under-report `PIECEWISE` if the first relevant shape pays extra runtime setup
+
+So the focused reruns are the better estimate for steady-state:
+
+- `1024 + 64`, concurrency `8`:
+  - eager: `131.458 / 124.108`
+  - piecewise: `120.680 / 123.058`
+- `1984 + 64`, concurrency `8`:
+  - eager: `14.594`
+  - piecewise: `80.053`
 
 ## Latency Run Index
 
@@ -246,4 +291,43 @@ python tmp_rwkv7_long_benchmark.py \
   --concurrency-levels 4 8 \
   --log /tmp/vllm_rwkv7_long_piecewise_packedprefill_20260413.log \
   > /tmp/rwkv7_long_piecewise_packedprefill_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_exact_long_mt64`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8053 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 1 \
+  --prompt-lengths 1024 1984 \
+  --concurrency-levels 1 4 8 \
+  --log /tmp/vllm_rwkv7_exact_long_eager_20260413.log \
+  > /tmp/rwkv7_exact_long_eager_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_exact_long_mt64`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --disable-compile-cache \
+  --port 8054 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 1 \
+  --prompt-lengths 1024 1984 \
+  --concurrency-levels 1 4 8 \
+  --log /tmp/vllm_rwkv7_exact_long_piecewise_20260413.log \
+  > /tmp/rwkv7_exact_long_piecewise_20260413.json
 ```

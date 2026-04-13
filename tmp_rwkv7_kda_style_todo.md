@@ -680,6 +680,12 @@ RWKV7 in vLLM:
   - `max_tokens=128`
   - concurrency `8`
 - [x] 做 TTFT / prefill-heavy benchmark，把长 prefill 和 decode 开销分开看
+- [x] 做 exact long-input throughput probe：
+  - [x] `1024 + 64`
+  - [x] `1984 + 64`
+  - [x] eager vs `PIECEWISE`
+  - [x] concurrency `1/4/8`
+- [x] 对异常慢的 `1024 + 64, c=8` 做 focused rerun
 - [ ] prefix caching / mixed prompt lengths 覆盖
 
 ### Phase 5. Kernelization / Varlen Optimization
@@ -771,11 +777,6 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 做 long-prompt concurrent benchmark 复测：
-  - prompt len `1024`
-  - prompt len `1984`
-  - eager vs `PIECEWISE`
-  - concurrency `1/4/8`
 - [ ] 做 fused decode recurrent backend，对齐 `forward_decode_batch()` 的热点
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
 - [ ] 继续盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
@@ -785,6 +786,8 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
 - `FULL_AND_PIECEWISE` 仍然不安全
 - fused prefill 已经把长 prompt TTFT 明显打下来
 - packed-prefill runtime 已经接上 `query_start_loc`
+- `1024 + 64, c=8` steady-state 下 `PIECEWISE` 已经接近 eager
+- `1984 + 64, c=8` 下 `PIECEWISE` 已明显优于 eager
 - eager fused-on 仍有一小段 decode ITL 回升，需要继续盯
-- `PIECEWISE` + fused prefill 是当前最有前景的 compile 性能主线
+- 剩下最明显的模型瓶颈已经切到 decode backend
 - `no-cg` 仍有长输出高并发尾巴要清

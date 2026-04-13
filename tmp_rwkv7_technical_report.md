@@ -813,6 +813,66 @@ Interpretation:
 - after that, the next remaining hot path is decode recurrence, which still uses
   the older tensor implementation in `forward_decode_batch()`
 
+### 8.7.6 Why The Model Can Still Look "Slow" After Packed Prefill
+
+After packed-prefill landed, the first impression could still be "it is slower"
+if one compared the wrong benchmark rows:
+
+- the packed-prefill smoke used short mixed prompts and `max_tokens=16`
+- the earlier eager baseline used a different workload and `max_tokens=64`
+- exact benchmark `aggregate_tps` is defined as `completion_tokens / wall_time`,
+  so it penalizes prefill time hard and is very sensitive to one-time runtime
+  setup costs
+
+To resolve that ambiguity, an exact-token long-input benchmark was added:
+
+- [tmp_rwkv7_exact_long_input_bench.py](/home/liu/vllm/tmp_rwkv7_exact_long_input_bench.py)
+
+It uses:
+
+- fixed token-count prompt prefixes
+- token-id prompts instead of prompt strings
+- exact prompt lengths `1024` and `1984`
+- exact output length `64`
+
+The first broad one-shot rerun already showed that `1984`-token prompts were
+helping a lot under `PIECEWISE`, but the `1024, c=8` row came out suspiciously
+slow (`13.387` TPS). A focused rerun on that exact row showed the broad sweep
+was not a good steady-state estimate.
+
+Focused results:
+
+| workload | eager | piecewise |
+|---|---|---|
+| `1024 + 64`, concurrency `8` | `131.458 / 124.108` TPS | `120.680 / 123.058` TPS |
+| `1984 + 64`, concurrency `8` | `14.594` TPS | `80.053` TPS |
+
+Interpretation:
+
+- packed prefill is now doing what it should:
+  - it moves the very long prompt case (`1984`) decisively in favor of `PIECEWISE`
+- the medium-long case (`1024`) is now roughly at eager parity in steady-state,
+  not dramatically slower
+- the earlier "very slow" `1024` row was measurement pollution, not the true
+  steady-state behavior
+
+So why is there still no uniform win?
+
+- because prefill is no longer the only hot path
+- the remaining major RWKV7 bottleneck is decode recurrence, which still goes
+  through the older tensor implementation:
+  - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:401)
+  - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:703)
+- once prompt length is not extreme enough to dominate the request, the decode
+  side limits how much benefit packed prefill can surface
+
+This gives the next optimization order very clearly:
+
+1. keep the exact-long eager rows as the control
+2. fuse the decode recurrent backend
+3. rerun the exact-long steady-state rows
+4. only then revisit whether `PIECEWISE` should be marketed as a throughput win
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

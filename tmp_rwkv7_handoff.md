@@ -841,6 +841,67 @@ Current interpretation:
 - the next missing measurement is a true long-prompt concurrent sweep to
   quantify the packed-prefill payoff
 
+### 17. The "still slower" impression mostly came from benchmark mismatch and first-run instability
+
+Problem:
+
+- the first packed-prefill smoke used:
+  - `max_tokens=16`
+  - short mixed prompts
+  - one round only
+- that was compared informally against the earlier eager baseline which used:
+  - `max_tokens=64`
+  - a different scenario mix
+- a later one-shot exact long-input sweep also produced an anomalously bad
+  `PIECEWISE` row for:
+  - prompt `1024`
+  - concurrency `8`
+  - aggregate TPS `13.387`
+
+Handling:
+
+- added a reusable exact-token benchmark:
+  - [tmp_rwkv7_exact_long_input_bench.py](/home/liu/vllm/tmp_rwkv7_exact_long_input_bench.py)
+- reran eager and `PIECEWISE` on exact token lengths:
+  - prompt `1024`
+  - prompt `1984`
+  - concurrency `1/4/8`
+  - `max_tokens=64`
+- then did focused reruns on the suspicious rows:
+  - `1024`, concurrency `8`, `rounds=2`
+  - `1984`, concurrency `8`
+
+Key findings:
+
+- focused steady-state `1024 + 64`, concurrency `8`:
+  - eager: `131.458 / 124.108` TPS
+  - piecewise: `120.680 / 123.058` TPS
+- focused `1984 + 64`, concurrency `8`:
+  - eager: `14.594` TPS
+  - piecewise: `80.053` TPS
+
+Interpretation:
+
+- `PIECEWISE` is not uniformly "still slower" after packed-prefill
+- on moderately long prompts (`1024`) it is now roughly in the same band as eager
+- on very long prompts (`1984`) it is materially faster, which is exactly where
+  packed prefill should help most
+- the old `13.387` TPS row is not a good steady-state estimate; the focused rerun
+  shows the same scenario near `121-123` TPS
+- the short `max_tokens=16` smoke also should not be compared directly to the old
+  `max_tokens=64` throughput baseline
+
+Why performance is not a clean win everywhere:
+
+- packed prefill only improves the prefill-heavy side of the runtime
+- the decode hot path is still the older tensor implementation:
+  - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:401)
+  - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:703)
+- so once prompt length is not extreme enough to dominate the request,
+  `PIECEWISE` only gets part of the total request time back
+- exact benchmark `aggregate_tps` is also defined as `completion_tokens / wall_time`,
+  so it penalizes prefill time hard and is very sensitive to first-run setup costs
+
 ## Current TODO List
 
 ### Highest priority
@@ -856,12 +917,8 @@ Current interpretation:
    - longer outputs
    - prefix caching
    - mixed prompt lengths
-4. Run a long-prompt concurrent sweep now that packed-prefill is live:
-   - prompt len `1024`
-   - prompt len `1984`
-   - eager vs `PIECEWISE`
-   - concurrency `1/4/8`
-5. Start the fused decode recurrent backend.
+4. Start the fused decode recurrent backend.
+5. Re-run exact long-input throughput after decode fusion lands.
 6. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
 
 ### After correctness recovery
@@ -932,8 +989,8 @@ Recommended order:
 4. GPU utilization sampling
 
 The fused prefill route and packed-prefill runtime path are now both in place.
-The next high-value move is to quantify the concurrent long-prompt gain and
-then do the same backend treatment for decode.
+The long-prompt gain is now quantified well enough to move on. The next
+high-value move is decode fusion.
 
 ### Step 5. For compile/cudagraph work, inspect logs first
 
@@ -966,10 +1023,10 @@ Useful files to keep inspecting:
 
 The next concrete experiment should be:
 
-1. keep the current eager fused-off baseline as the control
-2. rerun the long-input exact-token sweep after packed-prefill landing:
-   - prompt len `1024`
-   - prompt len `1984`
-   - concurrency `1/4/8`
-3. compare the new piecewise numbers against the pre-packed-prefill artifacts
-4. then move to a fused decode recurrent backend if prefill scaling is now good enough
+1. keep the focused exact-long eager rows as the decode-era control
+2. implement a fused decode recurrent backend
+3. rerun:
+   - `1024 + 64`, concurrency `8`
+   - `1984 + 64`, concurrency `8`
+4. check whether the `1024` row can move from "roughly equal to eager" to a
+   clear compile-side win
