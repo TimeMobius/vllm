@@ -692,6 +692,70 @@ So the current recommendation is:
 - measure TTFT / prefill-only and deeper kernelization next if performance is
   the main remaining goal
 
+### 8.7.4 Fused Prefill Recurrent Addendum
+
+The next bottleneck after compile correctness recovery was the Python token loop
+inside `RWKV7Attention._forward()`. That loop still sat on the critical path for
+sequence prefill in both eager and PIECEWISE serve, which limited long-prefill
+TTFT and left compile with little headroom to help.
+
+To address that, a dedicated fused RWKV7 recurrent op was added under:
+
+- [vllm/model_executor/layers/fla/ops/rwkv7.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/rwkv7.py)
+
+It is adapted from the FLA RWKV7 fused recurrent implementation, but narrowed to
+the inference needs here:
+
+- Triton kernel for the recurrent state update
+- local Python reference path for parity and fallback
+- env kill switch:
+  - `RWKV7_DISABLE_FUSED_PREFILL=1`
+
+The model integration was intentionally scoped:
+
+- only the sequence-prefill branch in
+  [RWKV7Attention._forward()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:550)
+  was switched from the Python token loop to `fused_mul_recurrent_rwkv7(...)`
+- decode batching in `forward_decode_batch()` is still the older tensor path
+- metadata-driven packed/varlen prefill is still not implemented
+
+Validation on the local `0.4B` checkpoint:
+
+- unit tests:
+  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+  - result: `11 passed, 2 skipped`
+- service correctness:
+  - `tmp_rwkv7_compare.py --disable-compile-cache`
+  - one-shot vs step-by-step still matched on the standard `3` prompts
+
+Stable reruns with higher warmup (`rounds=3`, `warmup=2`) showed:
+
+| mode | prompt `64` TTFT | prompt `1024` TTFT | prompt `1984` TTFT | decode ITL (`64 -> 64`) |
+|---|---|---|---|---|
+| eager, fused off | `577.311ms` | `2991.876ms` | `5031.042ms` | `27.296ms` |
+| eager, fused on | `96.296ms` | `522.067ms` | `1069.782ms` | `34.035ms` |
+| piecewise, fused on | `60.013ms` | `276.974ms` | `530.588ms` | `27.823ms` |
+
+Interpretation:
+
+- fused prefill is the first model-specific optimization that produces a clear
+  and repeatable long-prefill latency win for RWKV7
+- earlier eager post-fused seconds-long ITL spikes disappeared once warmup was
+  increased, suggesting those were one-time warmup effects rather than a stable
+  runtime regression
+- eager fused-on still shows a modest decode-side ITL regression relative to
+  the Python-loop baseline
+- piecewise fused-on currently gives the best long-prefill latency while keeping
+  decode ITL near the historical eager band
+
+This shifts the next bottleneck:
+
+- the main remaining prefill problem is no longer the per-token recurrence
+  inside attention
+- it is the Python per-prefill-request loop inside `RWKV7Block._forward_runtime()`
+- so the next meaningful optimization step is packed/varlen prefill driven by
+  `query_start_loc`, followed by a fused decode recurrent backend
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

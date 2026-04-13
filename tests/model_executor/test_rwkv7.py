@@ -28,6 +28,10 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
     get_conv_copy_spec,
     get_temporal_copy_spec,
 )
+from vllm.model_executor.layers.fla.ops import (
+    fused_mul_recurrent_rwkv7,
+    rwkv7_recurrent_reference,
+)
 from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
 from vllm.model_executor.models.rwkv7 import RWKV7Block, RWKV7ForCausalLM
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
@@ -255,6 +259,53 @@ def test_rwkv7_attention_custom_op_matches_direct_forward():
                 torch.testing.assert_close(wrapped_tensor, direct_tensor)
         finally:
             cleanup_dist_env_and_memory()
+
+
+def test_rwkv7_fused_recurrent_matches_reference():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise the RWKV7 fused recurrent op.")
+
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    batch_size = 1
+    seq_len = 17
+    num_heads = 4
+    head_dim = 16
+    head_v_dim = 16
+
+    r = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    w = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    k = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    v = torch.randn(batch_size, seq_len, num_heads, head_v_dim, device=device)
+    kk = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    a = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    initial_state = torch.randn(
+        batch_size, num_heads, head_dim, head_v_dim, device=device
+    )
+
+    out_ref, state_ref = rwkv7_recurrent_reference(
+        r=r,
+        w=w,
+        k=k,
+        v=v,
+        kk=kk,
+        a=a,
+        initial_state=initial_state,
+        output_final_state=True,
+    )
+    out_fused, state_fused = fused_mul_recurrent_rwkv7(
+        r=r,
+        w=w,
+        k=k,
+        v=v,
+        kk=kk,
+        a=a,
+        initial_state=initial_state,
+        output_final_state=True,
+    )
+
+    torch.testing.assert_close(out_fused, out_ref, rtol=2e-4, atol=1e-3)
+    torch.testing.assert_close(state_fused, state_ref, rtol=2e-4, atol=1e-3)
 
 
 def test_rwkv7_block_updates_cached_states():

@@ -13,6 +13,7 @@ from .fused_recurrent import (
 )
 from .fused_sigmoid_gating import fused_sigmoid_gating_delta_rule_update
 from .layernorm_guard import RMSNormGated
+from .rwkv7 import fused_mul_recurrent_rwkv7, rwkv7_recurrent_reference
 
 __all__ = [
     "RMSNormGated",
@@ -20,4 +21,6 @@ __all__ = [
     "fused_recurrent_gated_delta_rule",
     "fused_recurrent_gated_delta_rule_packed_decode",
     "fused_sigmoid_gating_delta_rule_update",
+    "fused_mul_recurrent_rwkv7",
+    "rwkv7_recurrent_reference",
 ]

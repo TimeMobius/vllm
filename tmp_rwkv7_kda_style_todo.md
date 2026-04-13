@@ -672,7 +672,10 @@ RWKV7 in vLLM:
   - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
 - [x] 补 `2026-04-13` eager `0.4B` TTFT 基线记录
 - [x] 用 TTFT benchmark 补首轮 `PIECEWISE` / `compile_no_cg` 对照
-- [ ] 把 benchmark 扩成更稳定的多轮统计，减少单次波动
+- [x] 把 benchmark 扩成更稳定的多轮统计，减少单次波动：
+  - [x] eager fused-off `rounds=3`, `warmup=2`
+  - [x] eager fused-on `rounds=3`, `warmup=2`
+  - [x] `PIECEWISE` fused-on `rounds=3`, `warmup=2`
 - [ ] 继续查 `no-cg` 的长输出高并发分叉：
   - `max_tokens=128`
   - concurrency `8`
@@ -681,10 +684,16 @@ RWKV7 in vLLM:
 
 ### Phase 5. Kernelization / Varlen Optimization
 
+- [x] 新增 RWKV7 fused recurrent op：
+  - [rwkv7.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/rwkv7.py)
+- [x] 用 fused recurrent kernel 替换 sequence prefill 的 Python token loop
+- [x] 为 fused recurrent op 补 CUDA/reference 单测
 - [ ] 借鉴 Mamba/KDA 的 metadata 使用方式
 - [ ] 用 `query_start_loc` 做 packed / varlen prefill
-- [ ] 对照 FLA 的 `chunk_rwkv7` / `fused_mul_recurrent_rwkv7`
-- [ ] 评估是否需要独立 Triton/CUDA kernel
+- [x] 对照 FLA 的 `chunk_rwkv7` / `fused_mul_recurrent_rwkv7`
+- [x] 评估并落地首版独立 Triton kernel
+- [ ] 把 fused kernel 接到 packed / varlen prefill，而不是只接单 sequence path
+- [ ] 为 decode batch 评估/接入 fused recurrent backend
 
 ### Phase 6. Precision / Policy Cleanup
 
@@ -701,6 +710,7 @@ RWKV7 in vLLM:
 - [rwkv7.py](/home/liu/vllm/vllm/model_executor/models/rwkv7.py)
 - [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py)
 - [config.py](/home/liu/vllm/vllm/model_executor/models/config.py)
+- [rwkv7.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/rwkv7.py)
 
 ### Likely new or adjacent files
 
@@ -757,16 +767,17 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 做 TTFT / prefill-only benchmark，确认 `PIECEWISE` 在长 prefill 下到底有没有独立收益
-- [ ] 用 [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
-  扩成更稳定多轮统计，确认 `PIECEWISE` 对长 prompt 首 token 的收益是否稳定
-- [ ] 把 default/PIECEWISE benchmark 做成更稳定的多轮统计，并持续追加到
-  [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+- [ ] 把 fused recurrent kernel 接到 packed / varlen prefill：
+  - 利用 `query_start_loc`
+  - 避免 `RWKV7Block._forward_runtime()` 里按 prefill request 的 Python loop
+- [ ] 做 fused decode recurrent backend，对齐 `forward_decode_batch()` 的热点
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
 - [ ] 继续盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
 
 compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
 - 纯 `PIECEWISE` 已经是可用且正确的主线
 - `FULL_AND_PIECEWISE` 仍然不安全
-- `PIECEWISE` 在当前 `0.4B` benchmark 上还不是稳定的吞吐优势路径
+- fused prefill 已经把长 prompt TTFT 明显打下来
+- eager fused-on 仍有一小段 decode ITL 回升，需要继续盯
+- `PIECEWISE` + fused prefill 是当前最有前景的 compile 性能主线
 - `no-cg` 仍有长输出高并发尾巴要清

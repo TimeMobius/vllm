@@ -43,6 +43,9 @@
 | `2026-04-13_eager_0p4b_ttft` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `2` | `1` | [rwkv7_ttft_0p4b_eager_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_20260413.json) | [vllm_rwkv7_ttft_eager_20260413.log](/tmp/vllm_rwkv7_ttft_eager_20260413.log) | `tmp_rwkv7_ttft_benchmark.py --enforce-eager`；`server_ready_sec=30.034`；prefill 部分使用 streaming `max_tokens=1` 的 TTFT proxy，因为 vLLM 不支持 `max_tokens=0` |
 | `2026-04-13_compile_no_cg_0p4b_ttft` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `2` | `1` | [rwkv7_ttft_0p4b_compile_no_cg_20260413.json](/tmp/rwkv7_ttft_0p4b_compile_no_cg_20260413.json) | [vllm_rwkv7_ttft_compile_no_cg_20260413.log](/tmp/vllm_rwkv7_ttft_compile_no_cg_20260413.log) | `tmp_rwkv7_ttft_benchmark.py --compile-no-cg --disable-compile-cache`；`server_ready_sec=38.044`；长 prompt TTFT 没有明显优于 eager |
 | `2026-04-13_piecewise_0p4b_ttft` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `2` | `1` | [rwkv7_ttft_0p4b_piecewise_20260413.json](/tmp/rwkv7_ttft_0p4b_piecewise_20260413.json) | [vllm_rwkv7_ttft_piecewise_20260413.log](/tmp/vllm_rwkv7_ttft_piecewise_20260413.log) | `tmp_rwkv7_ttft_benchmark.py --cudagraph-mode piecewise --disable-compile-cache`；`server_ready_sec=108.093`；长 prompt TTFT 开始略优于 eager，但启动仍明显更慢 |
+| `2026-04-13_eager_0p4b_ttft_fusedoff_r3w2` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `3` | `2` | [rwkv7_ttft_0p4b_eager_fusedoff_r3w2_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_fusedoff_r3w2_20260413.json) | [vllm_rwkv7_ttft_eager_fusedoff_r3w2_20260413.log](/tmp/vllm_rwkv7_ttft_eager_fusedoff_r3w2_20260413.log) | 关闭 `RWKV7` fused prefill 的稳定多轮基线；decode ITL 稳定在 `27ms` 左右，用来对照 Python token loop |
+| `2026-04-13_eager_0p4b_ttft_fusedon_r3w2` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `3` | `2` | [rwkv7_ttft_0p4b_eager_fusedon_r3w2_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_fusedon_r3w2_20260413.json) | [vllm_rwkv7_ttft_eager_fusedon_r3w2_20260413.log](/tmp/vllm_rwkv7_ttft_eager_fusedon_r3w2_20260413.log) | 启用 fused prefill 的稳定多轮 eager 复测；长 prefill TTFT 显著下降，decode ITL 小幅回升到 `33~34ms`，未再出现秒级 outlier |
+| `2026-04-13_piecewise_0p4b_ttft_fusedon_r3w2` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `3` | `2` | [rwkv7_ttft_0p4b_piecewise_fusedon_r3w2_20260413.json](/tmp/rwkv7_ttft_0p4b_piecewise_fusedon_r3w2_20260413.json) | [vllm_rwkv7_ttft_piecewise_fusedon_r3w2_20260413.log](/tmp/vllm_rwkv7_ttft_piecewise_fusedon_r3w2_20260413.log) | 启用 fused prefill 的稳定多轮 PIECEWISE 复测；长 prefill TTFT 继续下降，decode ITL 回到 eager fused-off 同量级；`server_ready_sec` 受 warm cache 影响，不宜和最早 cold run 直接对比 |
 
 ## Prefill Proxy Table
 
@@ -57,6 +60,15 @@
 | `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `streaming_max_tokens_1` | `229.968` | `229.968` | `229.968` | `2` |
 | `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `1024` | `streaming_max_tokens_1` | `2660.877` | `2660.877` | `2660.877` | `2` |
 | `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `1984` | `streaming_max_tokens_1` | `4930.740` | `4930.740` | `4930.740` | `2` |
+| `2026-04-13_eager_0p4b_ttft_fusedoff_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `streaming_max_tokens_1` | `577.311` | `578.445` | `577.311` | `3` |
+| `2026-04-13_eager_0p4b_ttft_fusedoff_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `1024` | `streaming_max_tokens_1` | `2991.876` | `2991.847` | `2991.876` | `3` |
+| `2026-04-13_eager_0p4b_ttft_fusedoff_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `1984` | `streaming_max_tokens_1` | `5031.042` | `5047.797` | `5031.042` | `3` |
+| `2026-04-13_eager_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `streaming_max_tokens_1` | `96.296` | `100.860` | `96.296` | `3` |
+| `2026-04-13_eager_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `1024` | `streaming_max_tokens_1` | `522.067` | `523.143` | `522.067` | `3` |
+| `2026-04-13_eager_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `1984` | `streaming_max_tokens_1` | `1069.782` | `1059.762` | `1069.782` | `3` |
+| `2026-04-13_piecewise_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `streaming_max_tokens_1` | `60.013` | `66.210` | `60.013` | `3` |
+| `2026-04-13_piecewise_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `1024` | `streaming_max_tokens_1` | `276.974` | `277.462` | `276.974` | `3` |
+| `2026-04-13_piecewise_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `1984` | `streaming_max_tokens_1` | `530.588` | `529.985` | `530.588` | `3` |
 
 ## Decode Latency Table
 
@@ -68,6 +80,12 @@
 | `2026-04-13_compile_no_cg_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `64` | `64` | `250.975` | `2167.977` | `30.429` | `30.429` |
 | `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `32` | `251.827` | `1111.017` | `27.716` | `27.716` |
 | `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `64` | `275.944` | `2041.429` | `28.024` | `28.024` |
+| `2026-04-13_eager_0p4b_ttft_fusedoff_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `32` | `247.801` | `1102.542` | `27.572` | `27.572` |
+| `2026-04-13_eager_0p4b_ttft_fusedoff_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `64` | `231.665` | `1951.312` | `27.296` | `27.296` |
+| `2026-04-13_eager_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `32` | `204.524` | `1240.580` | `33.421` | `33.421` |
+| `2026-04-13_eager_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `64` | `85.932` | `2230.139` | `34.035` | `34.035` |
+| `2026-04-13_piecewise_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `32` | `88.598` | `942.975` | `27.561` | `27.561` |
+| `2026-04-13_piecewise_0p4b_ttft_fusedon_r3w2` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `64` | `70.734` | `1823.606` | `27.823` | `27.823` |
 
 ## Repro Commands
 
@@ -145,4 +163,65 @@ python tmp_rwkv7_ttft_benchmark.py \
   --decode-output-lengths 32 64 \
   --log /tmp/vllm_rwkv7_ttft_piecewise_20260413.log \
   > /tmp/rwkv7_ttft_0p4b_piecewise_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_ttft_fusedoff_r3w2`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+export RWKV7_DISABLE_FUSED_PREFILL=1
+python tmp_rwkv7_ttft_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8049 \
+  --rounds 3 \
+  --warmup 2 \
+  --prompt-lengths 64 1024 1984 \
+  --decode-prompt-len 64 \
+  --decode-output-lengths 32 64 \
+  --log /tmp/vllm_rwkv7_ttft_eager_fusedoff_r3w2_20260413.log \
+  > /tmp/rwkv7_ttft_0p4b_eager_fusedoff_r3w2_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_ttft_fusedon_r3w2`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+unset RWKV7_DISABLE_FUSED_PREFILL
+python tmp_rwkv7_ttft_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8050 \
+  --rounds 3 \
+  --warmup 2 \
+  --prompt-lengths 64 1024 1984 \
+  --decode-prompt-len 64 \
+  --decode-output-lengths 32 64 \
+  --log /tmp/vllm_rwkv7_ttft_eager_fusedon_r3w2_20260413.log \
+  > /tmp/rwkv7_ttft_0p4b_eager_fusedon_r3w2_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_ttft_fusedon_r3w2`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+unset RWKV7_DISABLE_FUSED_PREFILL
+python tmp_rwkv7_ttft_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --disable-compile-cache \
+  --port 8051 \
+  --rounds 3 \
+  --warmup 2 \
+  --prompt-lengths 64 1024 1984 \
+  --decode-prompt-len 64 \
+  --decode-output-lengths 32 64 \
+  --log /tmp/vllm_rwkv7_ttft_piecewise_fusedon_r3w2_20260413.log \
+  > /tmp/rwkv7_ttft_0p4b_piecewise_fusedon_r3w2_20260413.json
 ```

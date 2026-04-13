@@ -686,6 +686,96 @@ Handling:
   - compile/no-cg correctness is restored
   - default PIECEWISE correctness is also restored
 
+### 14. Fused RWKV7 prefill kernel is now wired into the sequence path
+
+Problem:
+
+- RWKV7 prefill still spent most of its time in the Python token loop inside
+  `RWKV7Attention._forward()`
+- that path limited both eager long-prefill latency and the upside of
+  `PIECEWISE`, because compile still had to route prefill through a slow
+  per-token recurrence in Python
+
+Handling:
+
+- added a dedicated RWKV7 fused recurrent op at
+  [vllm/model_executor/layers/fla/ops/rwkv7.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/rwkv7.py)
+- exported it through
+  [vllm/model_executor/layers/fla/ops/__init__.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/__init__.py)
+- switched the sequence-prefill branch of
+  [RWKV7Attention._forward()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:550)
+  from the Python token loop to `fused_mul_recurrent_rwkv7(...)`
+- kept the old Python recurrence as an env-guarded fallback:
+  - `RWKV7_DISABLE_FUSED_PREFILL=1`
+
+Validation:
+
+- unit tests:
+  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+  - result: `11 passed, 2 skipped`
+- service correctness:
+  - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --disable-compile-cache`
+  - result: one-shot vs step-by-step still matches on:
+    - `i am`
+    - `北京是`
+    - `The capital of France is`
+- op parity:
+  - `tests/model_executor/test_rwkv7.py` now compares the fused kernel against a
+    reference recurrence on CUDA
+
+Artifacts:
+
+- [rwkv7_ttft_0p4b_eager_fusedoff_r3w2_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_fusedoff_r3w2_20260413.json)
+- [rwkv7_ttft_0p4b_eager_fusedon_r3w2_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_fusedon_r3w2_20260413.json)
+- [rwkv7_ttft_0p4b_piecewise_fusedon_r3w2_20260413.json](/tmp/rwkv7_ttft_0p4b_piecewise_fusedon_r3w2_20260413.json)
+- [vllm_rwkv7_compare_piecewise_fused_20260413.log](/tmp/vllm_rwkv7_compare_piecewise_fused_20260413.log)
+- [vllm_rwkv7_ttft_eager_fusedoff_r3w2_20260413.log](/tmp/vllm_rwkv7_ttft_eager_fusedoff_r3w2_20260413.log)
+- [vllm_rwkv7_ttft_eager_fusedon_r3w2_20260413.log](/tmp/vllm_rwkv7_ttft_eager_fusedon_r3w2_20260413.log)
+- [vllm_rwkv7_ttft_piecewise_fusedon_r3w2_20260413.log](/tmp/vllm_rwkv7_ttft_piecewise_fusedon_r3w2_20260413.log)
+
+Current interpretation:
+
+- eager fused-on vs fused-off:
+  - prompt `1024`: TTFT proxy `2991.876ms -> 522.067ms`
+  - prompt `1984`: TTFT proxy `5031.042ms -> 1069.782ms`
+  - decode ITL: `27.3ms -> 33~34ms`, so prefill gains came with a small decode-side regression
+- piecewise fused-on:
+  - prompt `1024`: `276.974ms`
+  - prompt `1984`: `530.588ms`
+  - decode ITL returned to `27.6~27.8ms`, close to the old eager band
+- the earlier eager post-fused seconds-long ITL spikes were not reproduced once
+  warmup was increased to `2`; those look more like one-time warmup noise than a
+  persistent regression
+
+### 15. `.venv`-first validation was attempted, but the local reproducible path is still the prepared conda env
+
+Problem:
+
+- repo instructions prefer `uv` + `.venv/bin/python`
+- the local `.venv` was missing core test/runtime dependencies
+- hydrating it fully hit repeated PyPI timeouts while downloading transitive test
+  or build dependencies
+
+Handling:
+
+- successfully installed a small subset into `.venv`:
+  - `pytest`
+  - `aiohttp`
+  - `tblib`
+- but:
+  - editable `vllm` install timed out while fetching `cmake`
+  - full `requirements/test.txt` timed out while fetching `pyogrio`
+- so the practical validation path remains the already-prepared user env:
+  - `source ~/miniforge3/etc/profile.d/conda.sh`
+  - `conda activate vllm-dev`
+
+Recommendation:
+
+- continue using `vllm-dev` for end-to-end RWKV7 work unless/until `.venv`
+  hydration is cached locally
+- if a future PR workflow needs strict `.venv` parity, retry after warming the
+  package cache or mirroring the missing wheels
+
 ## Current TODO List
 
 ### Highest priority
@@ -701,7 +791,8 @@ Handling:
    - longer outputs
    - prefix caching
    - mixed prompt lengths
-4. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
+4. Land packed/varlen prefill so `RWKV7Block._forward_runtime()` stops looping over prefills in Python.
+5. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
 
 ### After correctness recovery
 
@@ -729,7 +820,7 @@ Handling:
 ### Long-term performance work
 
 1. High-performance prefill batching for RWKV7
-2. Fused kernel route for RWKV7 recurrent update
+2. Fused decode recurrent backend for RWKV7
 3. More aggressive CUDA graph or compile optimization if safe
 
 ## Recommended Workflow For Future RWKV7 Iteration
@@ -769,6 +860,11 @@ Recommended order:
 2. concurrent decode TPS
 3. longer-output benchmarks
 4. GPU utilization sampling
+
+The fused prefill route is now in place, so the next high-value move is no
+longer "can we fuse the recurrence at all?" but "can we feed it packed /
+varlen prefill batches directly from metadata without a Python loop per
+prefill request?"
 
 ### Step 5. For compile/cudagraph work, inspect logs first
 

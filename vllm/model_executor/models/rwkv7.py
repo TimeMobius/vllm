@@ -20,6 +20,7 @@ from vllm.distributed.parallel_state import (
     model_parallel_is_initialized,
 )
 from vllm.forward_context import get_forward_context, is_forward_context_available
+from vllm.model_executor.layers.fla.ops import fused_mul_recurrent_rwkv7
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear,
@@ -91,6 +92,13 @@ def token_shift_with_cache(
         cached_state.dtype if cached_state is not None else hidden_states.dtype
     )
     return delta, final_state
+
+
+def _can_use_rwkv7_fused_prefill(hidden_states: torch.Tensor) -> bool:
+    return (
+        hidden_states.device.type == "cuda"
+        and os.getenv("RWKV7_DISABLE_FUSED_PREFILL") != "1"
+    )
 
 
 def _rwkv7_can_collect_tensor_debug_stats(tensor: torch.Tensor) -> bool:
@@ -553,19 +561,32 @@ class RWKV7Attention(nn.Module):
         else:
             recurrent_state = recurrent_state.to(torch.float32)
 
-        outputs: list[torch.Tensor] = []
-        for idx in range(hidden_states.shape[0]):
-            sa = (recurrent_state * (-kk[idx]).unsqueeze(-1)).sum(dim=-2)
-            recurrent_state = (
-                torch.exp(w[idx]).unsqueeze(-1) * recurrent_state
-                + (kk[idx] * a[idx]).unsqueeze(-1) * sa.unsqueeze(-2)
-                + k[idx].unsqueeze(-1) * v[idx].unsqueeze(-2)
+        if _can_use_rwkv7_fused_prefill(hidden_states):
+            recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
+                r=r.unsqueeze(0),
+                w=w.unsqueeze(0),
+                k=k.unsqueeze(0),
+                v=v.unsqueeze(0),
+                kk=kk.unsqueeze(0),
+                a=a.unsqueeze(0),
+                initial_state=recurrent_state.unsqueeze(0),
+                output_final_state=True,
             )
-            outputs.append(
-                (recurrent_state * r[idx].unsqueeze(-1)).sum(dim=-2)
-            )
-
-        output = torch.stack(outputs, dim=0).reshape(-1, self.local_value_dim)
+            output = recurrent_output.squeeze(0).reshape(-1, self.local_value_dim)
+            recurrent_state = final_recurrent_state.squeeze(0)
+        else:
+            outputs: list[torch.Tensor] = []
+            for idx in range(hidden_states.shape[0]):
+                sa = (recurrent_state * (-kk[idx]).unsqueeze(-1)).sum(dim=-2)
+                recurrent_state = (
+                    torch.exp(w[idx]).unsqueeze(-1) * recurrent_state
+                    + (kk[idx] * a[idx]).unsqueeze(-1) * sa.unsqueeze(-2)
+                    + k[idx].unsqueeze(-1) * v[idx].unsqueeze(-2)
+                )
+                outputs.append(
+                    (recurrent_state * r[idx].unsqueeze(-1)).sum(dim=-2)
+                )
+            output = torch.stack(outputs, dim=0).reshape(-1, self.local_value_dim)
         output = self.g_norm(output)
 
         local_r_k = self.r_k[
