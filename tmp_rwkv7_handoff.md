@@ -50,6 +50,44 @@
   - interpretation:
     - this is now the fresh eager reference point for the next round of
       `PIECEWISE` / `compile_no_cg` comparison
+- Added a dedicated TTFT / prefill-heavy benchmark tool:
+  - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
+  - this script records:
+    - `server_ready_sec`
+    - long-prompt streaming TTFT proxy
+    - fixed-prompt decode latency / ITL / TPOT
+  - important limitation:
+    - vLLM rejects `max_tokens=0`
+    - so the script uses streaming `max_tokens=1` TTFT as a prefill-heavy proxy,
+      not true zero-decode prefill-only latency
+- Re-ran an eager TTFT baseline on the local `0.4B` checkpoint:
+  - run id:
+    - `2026-04-13_eager_0p4b_ttft`
+  - raw artifacts:
+    - [rwkv7_ttft_0p4b_eager_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_20260413.json)
+    - [vllm_rwkv7_ttft_eager_20260413.log](/tmp/vllm_rwkv7_ttft_eager_20260413.log)
+  - server ready:
+    - `30.034s`
+  - prefill-heavy TTFT proxy, `max_tokens=1`, avg TTFT:
+    - prompt len `64`: `188.986ms`
+    - prompt len `1024`: `2708.602ms`
+    - prompt len `1984`: `5409.289ms`
+  - decode profile, prompt len `64`:
+    - `max_tokens=32`:
+      - avg TTFT `255.053ms`
+      - avg latency `1118.779ms`
+      - avg TPOT / ITL `27.862ms`
+    - `max_tokens=64`:
+      - avg TTFT `255.353ms`
+      - avg latency `2061.966ms`
+      - avg TPOT / ITL `28.676ms`
+  - interpretation:
+    - the eager path now shows a very strong prompt-length sensitivity on the
+      first token
+    - while short-prompt decode stays near `28ms/token`
+    - so the current next compile comparison should focus on whether
+      `PIECEWISE` actually reduces the long-prompt first-token cost, not just
+      aggregate throughput
 
 ## Latest Update (2026-03-31)
 

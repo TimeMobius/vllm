@@ -29,6 +29,22 @@
   - 以后每次 benchmark 先落原始 JSON / log
   - 再把摘要追加到 benchmark 台账
   - 然后再在 todo / handoff 里只写结论和下一步
+- 已新增 TTFT / prefill-heavy benchmark 工具：
+  - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
+- 已补一条新的 eager TTFT 基线：
+  - run id: `2026-04-13_eager_0p4b_ttft`
+  - server ready: `30.034s`
+  - prefill-heavy TTFT proxy:
+    - prompt len `64`: `188.986ms`
+    - prompt len `1024`: `2708.602ms`
+    - prompt len `1984`: `5409.289ms`
+  - decode profile, prompt len `64`:
+    - `max_tokens=32`: avg TTFT `255.053ms`, avg ITL `27.862ms`
+    - `max_tokens=64`: avg TTFT `255.353ms`, avg ITL `28.676ms`
+- 新 benchmark 口径说明：
+  - vLLM 服务口径下 `max_tokens` 不能是 `0`
+  - 所以当前所谓 prefill-only benchmark 更准确地说是：
+    - streaming `max_tokens=1` 的 prefill-heavy TTFT proxy
 - 下一步直接接这条基线继续补：
   - `PIECEWISE`
   - `compile_no_cg`
@@ -111,6 +127,8 @@
   - 区分 cold start
   - 区分 prefill
   - 区分 decode
+- 当前已完成 eager 基线工具化：
+  - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
 - 把 benchmark 扩成更稳定多轮统计：
   - 不只看一次 aggregate TPS
 - 补这几类 coverage：
@@ -641,11 +659,15 @@ RWKV7 in vLLM:
 - [x] 新增独立 benchmark 台账文件：
   - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
 - [x] 补 `2026-04-13` eager `0.4B` / `max_tokens=64` 基线记录
+- [x] 新增 TTFT / prefill-heavy benchmark 脚本：
+  - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
+- [x] 补 `2026-04-13` eager `0.4B` TTFT 基线记录
 - [ ] 把 benchmark 扩成更稳定的多轮统计，减少单次波动
+- [ ] 用 TTFT benchmark 补 `PIECEWISE` / `compile_no_cg` 对照
 - [ ] 继续查 `no-cg` 的长输出高并发分叉：
   - `max_tokens=128`
   - concurrency `8`
-- [ ] 做 TTFT / prefill-only benchmark，把长 prefill 和 decode 开销分开看
+- [x] 做 TTFT / prefill-heavy benchmark，把长 prefill 和 decode 开销分开看
 - [ ] prefix caching / mixed prompt lengths 覆盖
 
 ### Phase 5. Kernelization / Varlen Optimization
@@ -727,6 +749,8 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 下一步最值得直接开始的是：
 
 - [ ] 做 TTFT / prefill-only benchmark，确认 `PIECEWISE` 在长 prefill 下到底有没有独立收益
+- [ ] 用 [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
+  补 `PIECEWISE` / `compile_no_cg`，确认 compile 是否真的改善长 prompt 首 token
 - [ ] 把 default/PIECEWISE benchmark 做成更稳定的多轮统计，并持续追加到
   [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
