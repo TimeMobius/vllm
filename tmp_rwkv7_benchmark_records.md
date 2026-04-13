@@ -34,6 +34,8 @@
 | `2026-04-13_piecewise_0p4b_exact_long_1024_c8_r2` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_1024_c8_r2_20260413.json](/tmp/rwkv7_exact_long_piecewise_1024_c8_r2_20260413.json) | [vllm_rwkv7_exact_long_piecewise_1024_c8_r2_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_1024_c8_r2_20260413.log) | focused rerun；显示 `1024` 档 steady-state 已接近 eager，而不是 mixed-scenario probe 里那种异常慢 |
 | `2026-04-13_eager_0p4b_exact_long_1984_c8` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `1` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_1984_c8_20260413.json](/tmp/rwkv7_exact_long_eager_1984_c8_20260413.json) | [vllm_rwkv7_exact_long_eager_1984_c8_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_1984_c8_20260413.log) | focused rerun；用于和 `PIECEWISE` 对照 packed prefill 在超长 prompt 上的收益 |
 | `2026-04-13_piecewise_0p4b_exact_long_1984_c8` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `1` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_1984_c8_20260413.json](/tmp/rwkv7_exact_long_piecewise_1984_c8_20260413.json) | [vllm_rwkv7_exact_long_piecewise_1984_c8_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_1984_c8_20260413.log) | focused rerun；`1984` 档明显受益于 packed prefill |
+| `2026-04-13_eager_0p4b_exact_long_mt64_decodefused_seq` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_decodefused_seq_20260413.json](/tmp/rwkv7_exact_long_eager_decodefused_seq_20260413.json) | [vllm_rwkv7_exact_long_eager_decodefused_seq_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_decodefused_seq_20260413.log) | decode fused 后的串行 benchmark；用于替代同机并行启动 eager/piecewise 的无效样本 |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_decodefused_seq_20260413.json](/tmp/rwkv7_exact_long_piecewise_decodefused_seq_20260413.json) | [vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log) | decode fused 后的串行 benchmark；与 eager 使用同一口径对照 |
 
 ## Throughput Table
 
@@ -66,6 +68,10 @@
 | `2026-04-13_piecewise_0p4b_exact_long_1024_c8_r2` | `1024` | `8` | `120.680` | `123.058` | `121.869` | `true` |
 | `2026-04-13_eager_0p4b_exact_long_1984_c8` | `1984` | `8` | `14.594` | `n/a` | `14.594` | `true` |
 | `2026-04-13_piecewise_0p4b_exact_long_1984_c8` | `1984` | `8` | `80.053` | `n/a` | `80.053` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64_decodefused_seq` | `1024` | `8` | `128.662` | `126.905` | `127.784` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `1024` | `8` | `123.847` | `124.573` | `124.210` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64_decodefused_seq` | `1984` | `8` | `82.291` | `84.238` | `83.264` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `1984` | `8` | `84.708` | `88.764` | `86.736` | `true` |
 
 ## Investigation Note
 
@@ -83,6 +89,19 @@ So the focused reruns are the better estimate for steady-state:
 - `1984 + 64`, concurrency `8`:
   - eager: `14.594`
   - piecewise: `80.053`
+
+After decode fusion landed, the new same-host sequential control is:
+
+- `1024 + 64`, concurrency `8`:
+  - eager: `128.662 / 126.905`
+  - piecewise: `123.847 / 124.573`
+- `1984 + 64`, concurrency `8`:
+  - eager: `82.291 / 84.238`
+  - piecewise: `84.708 / 88.764`
+
+On a single GPU, do not launch eager and `PIECEWISE` benchmark servers in
+parallel. Those runs contend on the same device and should be treated as
+invalid samples, not trend data.
 
 ## Latency Run Index
 
@@ -330,4 +349,43 @@ python tmp_rwkv7_exact_long_input_bench.py \
   --concurrency-levels 1 4 8 \
   --log /tmp/vllm_rwkv7_exact_long_piecewise_20260413.log \
   > /tmp/rwkv7_exact_long_piecewise_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_exact_long_mt64_decodefused_seq`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8055 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 2 \
+  --prompt-lengths 1024 1984 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_exact_long_eager_decodefused_seq_20260413.log \
+  > /tmp/rwkv7_exact_long_eager_decodefused_seq_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --disable-compile-cache \
+  --port 8056 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 2 \
+  --prompt-lengths 1024 1984 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log \
+  > /tmp/rwkv7_exact_long_piecewise_decodefused_seq_20260413.json
 ```

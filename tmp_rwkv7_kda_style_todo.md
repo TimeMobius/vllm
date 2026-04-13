@@ -703,7 +703,13 @@ RWKV7 in vLLM:
   - [x] `PIECEWISE`
   - [x] concurrency `4/8`
   - [x] 输出对齐串行 baseline
-- [ ] 为 decode batch 评估/接入 fused recurrent backend
+- [x] 为 decode batch 接入 fused recurrent backend
+- [x] 给 decode batch 补 CUDA 回归测试
+- [x] 用 exact long-input benchmark 复测 decode fused 后的 steady-state：
+  - [x] eager `1024 + 64, c=8`
+  - [x] eager `1984 + 64, c=8`
+  - [x] `PIECEWISE 1024 + 64, c=8`
+  - [x] `PIECEWISE 1984 + 64, c=8`
 
 ### Phase 6. Precision / Policy Cleanup
 
@@ -777,17 +783,23 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 做 fused decode recurrent backend，对齐 `forward_decode_batch()` 的热点
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
 - [ ] 继续盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
+- [ ] 从“核心内核补齐”切到“vLLM 特性覆盖矩阵”：
+  - async scheduling
+  - TP/PP
+  - 需要的话再评估 LoRA / 量化接口
 
 compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
 - 纯 `PIECEWISE` 已经是可用且正确的主线
 - `FULL_AND_PIECEWISE` 仍然不安全
 - fused prefill 已经把长 prompt TTFT 明显打下来
 - packed-prefill runtime 已经接上 `query_start_loc`
-- `1024 + 64, c=8` steady-state 下 `PIECEWISE` 已经接近 eager
-- `1984 + 64, c=8` 下 `PIECEWISE` 已明显优于 eager
-- eager fused-on 仍有一小段 decode ITL 回升，需要继续盯
-- 剩下最明显的模型瓶颈已经切到 decode backend
+- fused decode backend 也已经接上 `forward_decode_batch()`
+- 当前 exact-long steady-state：
+  - eager `1024 + 64, c=8`: avg `127.784`
+  - `PIECEWISE 1024 + 64, c=8`: avg `124.210`
+  - eager `1984 + 64, c=8`: avg `83.264`
+  - `PIECEWISE 1984 + 64, c=8`: avg `86.736`
+- 模型特定热点已经不像之前那样突出，接下来更需要补服务矩阵和特性覆盖
 - `no-cg` 仍有长输出高并发尾巴要清

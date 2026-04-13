@@ -123,13 +123,16 @@ def token_shift_with_cache_varlen(
 
 
 def _rwkv7_packed_prefill_enabled() -> bool:
-    return os.getenv("RWKV7_DISABLE_FUSED_PREFILL") != "1"
+    return (
+        os.getenv("RWKV7_DISABLE_FUSED_PREFILL") != "1"
+        and os.getenv("RWKV7_DISABLE_FUSED_RECURRENT") != "1"
+    )
 
 
-def _can_use_rwkv7_fused_prefill(hidden_states: torch.Tensor) -> bool:
+def _can_use_rwkv7_fused_recurrent(hidden_states: torch.Tensor) -> bool:
     return (
         hidden_states.device.type == "cuda"
-        and os.getenv("RWKV7_DISABLE_FUSED_PREFILL") != "1"
+        and _rwkv7_packed_prefill_enabled()
     )
 
 
@@ -544,15 +547,21 @@ class RWKV7Attention(nn.Module):
         compilation_config.static_forward_context[prefix] = self
         self.debug_last_runtime_metadata_summary: dict[str, int] | None = None
 
-    def _forward(
+    def _project_recurrent_inputs(
         self,
         hidden_states: torch.Tensor,
-        cached_shift_state: torch.Tensor | None,
-        recurrent_state: torch.Tensor | None,
+        delta: torch.Tensor,
         v_first: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        delta, final_shift_state = token_shift_with_cache(hidden_states, cached_shift_state)
-
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
         x_r = self.x_r.squeeze(0).squeeze(0)
         x_w = self.x_w.squeeze(0).squeeze(0)
         x_k = self.x_k.squeeze(0).squeeze(0)
@@ -595,9 +604,47 @@ class RWKV7Attention(nn.Module):
         local_k_a = self.k_a[self.key_start : self.key_end].view(
             1, self.local_num_heads, self.head_dim
         )
-
         kk = F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
         k = k * (1 + (a - 1) * local_k_a.to(torch.float32))
+        return r, w, k, v, kk, a, g, v_first_out
+
+    def _finalize_attention_output(
+        self,
+        recurrent_output: torch.Tensor,
+        r: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        hidden_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        output = recurrent_output.reshape(-1, self.local_value_dim)
+        output = self.g_norm(output)
+
+        local_r_k = self.r_k[
+            self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
+            * self.local_num_heads
+        ].to(torch.float32)
+        correction = (
+            (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
+        ).reshape(-1, self.local_value_dim)
+        output = (output + correction) * g.to(torch.float32)
+        output = output.to(hidden_dtype)
+        output, _ = self.o_proj(output)
+        return output
+
+    def _forward(
+        self,
+        hidden_states: torch.Tensor,
+        cached_shift_state: torch.Tensor | None,
+        recurrent_state: torch.Tensor | None,
+        v_first: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        delta, final_shift_state = token_shift_with_cache(hidden_states, cached_shift_state)
+        r, w, k, v, kk, a, g, v_first_out = self._project_recurrent_inputs(
+            hidden_states,
+            delta,
+            v_first,
+        )
 
         if recurrent_state is None:
             recurrent_state = torch.zeros(
@@ -610,7 +657,7 @@ class RWKV7Attention(nn.Module):
         else:
             recurrent_state = recurrent_state.to(torch.float32)
 
-        if _can_use_rwkv7_fused_prefill(hidden_states):
+        if _can_use_rwkv7_fused_recurrent(hidden_states):
             recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
                 r=r.unsqueeze(0),
                 w=w.unsqueeze(0),
@@ -621,8 +668,8 @@ class RWKV7Attention(nn.Module):
                 initial_state=recurrent_state.unsqueeze(0),
                 output_final_state=True,
             )
-            output = recurrent_output.squeeze(0).reshape(-1, self.local_value_dim)
-            recurrent_state = final_recurrent_state.squeeze(0)
+            recurrent_output = recurrent_output.squeeze(0)
+            final_recurrent_state = final_recurrent_state.squeeze(0)
         else:
             outputs: list[torch.Tensor] = []
             for idx in range(hidden_states.shape[0]):
@@ -635,20 +682,18 @@ class RWKV7Attention(nn.Module):
                 outputs.append(
                     (recurrent_state * r[idx].unsqueeze(-1)).sum(dim=-2)
                 )
-            output = torch.stack(outputs, dim=0).reshape(-1, self.local_value_dim)
-        output = self.g_norm(output)
+            recurrent_output = torch.stack(outputs, dim=0)
+            final_recurrent_state = recurrent_state
 
-        local_r_k = self.r_k[
-            self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
-            * self.local_num_heads
-        ].to(torch.float32)
-        correction = (
-            (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
-        ).reshape(-1, self.local_value_dim)
-        output = (output + correction) * g.to(torch.float32)
-        output = output.to(hidden_states.dtype)
-        output, _ = self.o_proj(output)
-        return output, final_shift_state, recurrent_state, v_first_out
+        output = self._finalize_attention_output(
+            recurrent_output,
+            r,
+            k,
+            v,
+            g,
+            hidden_states.dtype,
+        )
+        return output, final_shift_state, final_recurrent_state, v_first_out
 
     def forward(
         self,
@@ -709,77 +754,43 @@ class RWKV7Attention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         delta = cached_shift_state.to(hidden_states.dtype) - hidden_states
         final_shift_state = hidden_states
-
-        x_r = self.x_r.squeeze(0).squeeze(0)
-        x_w = self.x_w.squeeze(0).squeeze(0)
-        x_k = self.x_k.squeeze(0).squeeze(0)
-        x_v = self.x_v.squeeze(0).squeeze(0)
-        x_a = self.x_a.squeeze(0).squeeze(0)
-        x_g = self.x_g.squeeze(0).squeeze(0)
-
-        xr = hidden_states.addcmul(delta, x_r)
-        xw = hidden_states.addcmul(delta, x_w)
-        xk = hidden_states.addcmul(delta, x_k)
-        xv = hidden_states.addcmul(delta, x_v)
-        xa = hidden_states.addcmul(delta, x_a)
-        xg = hidden_states.addcmul(delta, x_g)
-
-        r, _ = self.r_proj(xr)
-        w = LOG_DECAY_SCALE * self.w_lora(xw).sigmoid()
-        k, _ = self.k_proj(xk)
-        v, _ = self.v_proj(xv)
-
-        if self.layer_idx == 0:
-            v_first_out = v
-        else:
-            if v_first is None:
-                raise ValueError("RWKV7 layers after layer 0 require `v_first`.")
-            v = torch.lerp(v, v_first, self.v_lora(xv).sigmoid())
-            v_first_out = v_first
-
-        a = self.a_lora(xa).sigmoid()
-        g = self.g_lora(xg)
-
-        r = r.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        w = w.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        k = k.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        a = a.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        v = v.view(-1, self.local_num_heads, self.head_v_dim).to(torch.float32)
-
-        local_k_k = self.k_k[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
+        r, w, k, v, kk, a, g, v_first_out = self._project_recurrent_inputs(
+            hidden_states,
+            delta,
+            v_first,
         )
-        local_k_a = self.k_a[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
-        )
-
-        kk = F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
-        k = k * (1 + (a - 1) * local_k_a.to(torch.float32))
         recurrent_state = recurrent_state.to(torch.float32)
 
-        sa = (recurrent_state * (-kk).unsqueeze(-1)).sum(dim=-2)
-        recurrent_state = (
-            torch.exp(w).unsqueeze(-1) * recurrent_state
-            + (kk * a).unsqueeze(-1) * sa.unsqueeze(-2)
-            + k.unsqueeze(-1) * v.unsqueeze(-2)
-        )
+        if _can_use_rwkv7_fused_recurrent(hidden_states):
+            recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
+                r=r.unsqueeze(1),
+                w=w.unsqueeze(1),
+                k=k.unsqueeze(1),
+                v=v.unsqueeze(1),
+                kk=kk.unsqueeze(1),
+                a=a.unsqueeze(1),
+                initial_state=recurrent_state,
+                output_final_state=True,
+            )
+            recurrent_output = recurrent_output.squeeze(1)
+        else:
+            sa = (recurrent_state * (-kk).unsqueeze(-1)).sum(dim=-2)
+            final_recurrent_state = (
+                torch.exp(w).unsqueeze(-1) * recurrent_state
+                + (kk * a).unsqueeze(-1) * sa.unsqueeze(-2)
+                + k.unsqueeze(-1) * v.unsqueeze(-2)
+            )
+            recurrent_output = (final_recurrent_state * r.unsqueeze(-1)).sum(dim=-2)
 
-        output = (recurrent_state * r.unsqueeze(-1)).sum(dim=-2).reshape(
-            -1, self.local_value_dim
+        output = self._finalize_attention_output(
+            recurrent_output,
+            r,
+            k,
+            v,
+            g,
+            hidden_states.dtype,
         )
-        output = self.g_norm(output)
-
-        local_r_k = self.r_k[
-            self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
-            * self.local_num_heads
-        ].to(torch.float32)
-        correction = (
-            (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
-        ).reshape(-1, self.local_value_dim)
-        output = (output + correction) * g.to(torch.float32)
-        output = output.to(hidden_states.dtype)
-        output, _ = self.o_proj(output)
-        return output, final_shift_state, recurrent_state, v_first_out
+        return output, final_shift_state, final_recurrent_state, v_first_out
 
     def forward_prefill_batch(
         self,
@@ -794,52 +805,11 @@ class RWKV7Attention(nn.Module):
             query_start_loc,
             cached_shift_state,
         )
-
-        x_r = self.x_r.squeeze(0).squeeze(0)
-        x_w = self.x_w.squeeze(0).squeeze(0)
-        x_k = self.x_k.squeeze(0).squeeze(0)
-        x_v = self.x_v.squeeze(0).squeeze(0)
-        x_a = self.x_a.squeeze(0).squeeze(0)
-        x_g = self.x_g.squeeze(0).squeeze(0)
-
-        xr = hidden_states.addcmul(delta, x_r)
-        xw = hidden_states.addcmul(delta, x_w)
-        xk = hidden_states.addcmul(delta, x_k)
-        xv = hidden_states.addcmul(delta, x_v)
-        xa = hidden_states.addcmul(delta, x_a)
-        xg = hidden_states.addcmul(delta, x_g)
-
-        r, _ = self.r_proj(xr)
-        w = LOG_DECAY_SCALE * self.w_lora(xw).sigmoid()
-        k, _ = self.k_proj(xk)
-        v, _ = self.v_proj(xv)
-
-        if self.layer_idx == 0:
-            v_first_out = v
-        else:
-            if v_first is None:
-                raise ValueError("RWKV7 layers after layer 0 require `v_first`.")
-            v = torch.lerp(v, v_first, self.v_lora(xv).sigmoid())
-            v_first_out = v_first
-
-        a = self.a_lora(xa).sigmoid()
-        g = self.g_lora(xg)
-
-        r = r.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        w = w.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        k = k.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        a = a.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        v = v.view(-1, self.local_num_heads, self.head_v_dim).to(torch.float32)
-
-        local_k_k = self.k_k[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
+        r, w, k, v, kk, a, g, v_first_out = self._project_recurrent_inputs(
+            hidden_states,
+            delta,
+            v_first,
         )
-        local_k_a = self.k_a[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
-        )
-
-        kk = F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
-        k = k * (1 + (a - 1) * local_k_a.to(torch.float32))
 
         recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
             r=r.unsqueeze(0),
@@ -854,19 +824,14 @@ class RWKV7Attention(nn.Module):
             output_final_state=True,
             cu_seqlens=query_start_loc,
         )
-        output = recurrent_output.squeeze(0).reshape(-1, self.local_value_dim)
-        output = self.g_norm(output)
-
-        local_r_k = self.r_k[
-            self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
-            * self.local_num_heads
-        ].to(torch.float32)
-        correction = (
-            (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
-        ).reshape(-1, self.local_value_dim)
-        output = (output + correction) * g.to(torch.float32)
-        output = output.to(hidden_states.dtype)
-        output, _ = self.o_proj(output)
+        output = self._finalize_attention_output(
+            recurrent_output.squeeze(0),
+            r,
+            k,
+            v,
+            g,
+            hidden_states.dtype,
+        )
         return output, final_shift_state, final_recurrent_state, v_first_out
 
 

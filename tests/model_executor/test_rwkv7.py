@@ -449,6 +449,88 @@ def test_rwkv7_block_batches_decode_tokens_without_changing_results():
             cleanup_dist_env_and_memory()
 
 
+def test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise fused RWKV7 decode batching.")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="nccl",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="nccl")
+        try:
+            block_batched = RWKV7Block(
+                config=config, layer_idx=0, prefix="model.layers.0"
+            )
+            _initialize_module_parameters(block_batched)
+            block_batched = block_batched.to("cuda", torch.float32)
+
+            block_ref = RWKV7Block(config=config, layer_idx=0, prefix="model.layers.1")
+            block_ref.load_state_dict(block_batched.state_dict())
+            block_ref = block_ref.to("cuda", torch.float32)
+
+            torch.manual_seed(123)
+            state_shapes = block_batched.get_state_shape()
+            state_dtypes = block_batched.get_state_dtype()
+
+            def make_cache() -> tuple[torch.Tensor, ...]:
+                return tuple(
+                    torch.randn(
+                        (2, *shape),
+                        dtype=dtype,
+                        device="cuda",
+                    )
+                    for shape, dtype in zip(state_shapes, state_dtypes)
+                )
+
+            block_batched.kv_cache = make_cache()
+            block_ref.kv_cache = tuple(cache.clone() for cache in block_batched.kv_cache)
+
+            hidden_states = torch.randn(
+                2,
+                config.hidden_size,
+                device="cuda",
+                dtype=torch.float32,
+            )
+            metadata = _make_multi_decode_metadata(
+                [5, 7], [0, 1], device=torch.device("cuda")
+            )
+
+            output_batched, v_first_batched = block_batched(
+                hidden_states, None, metadata
+            )
+
+            output_ref = torch.empty_like(hidden_states)
+            v_first_ref = torch.empty_like(hidden_states)
+            for idx, slot_id in enumerate([0, 1]):
+                states = block_ref._get_kv_state(slot_id, use_initial_state=True)
+                out, v_first_out, attn_shift, recurrent, ffn_shift = block_ref._run_sequence(
+                    hidden_states[idx : idx + 1],
+                    None,
+                    *states,
+                )
+                output_ref[idx : idx + 1] = out
+                v_first_ref[idx : idx + 1] = v_first_out
+                block_ref._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
+
+            torch.testing.assert_close(output_batched, output_ref, rtol=2e-4, atol=1e-3)
+            torch.testing.assert_close(
+                v_first_batched, v_first_ref, rtol=2e-4, atol=1e-3
+            )
+            for batched_state, ref_state in zip(block_batched.kv_cache, block_ref.kv_cache):
+                torch.testing.assert_close(
+                    batched_state, ref_state, rtol=2e-4, atol=1e-3
+                )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
 def test_rwkv7_block_batches_prefill_tokens_without_changing_results():
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))

@@ -895,31 +895,82 @@ Why performance is not a clean win everywhere:
 
 - packed prefill only improves the prefill-heavy side of the runtime
 - the decode hot path is still the older tensor implementation:
-  - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:401)
-  - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:703)
+  - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:404)
+  - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:748)
 - so once prompt length is not extreme enough to dominate the request,
   `PIECEWISE` only gets part of the total request time back
 - exact benchmark `aggregate_tps` is also defined as `completion_tokens / wall_time`,
   so it penalizes prefill time hard and is very sensitive to first-run setup costs
 
+### 18. Fused decode recurrent backend is now in place
+
+Implementation:
+
+- `RWKV7Attention.forward_decode_batch()` now runs its recurrent update through
+  `fused_mul_recurrent_rwkv7(...)` on CUDA instead of the older explicit tensor
+  recurrence
+- recurrent input projection and output finalization are now shared between:
+  - `_forward(...)`
+  - `forward_prefill_batch(...)`
+  - `forward_decode_batch(...)`
+- the fused op accepts a generic disable knob:
+  - `RWKV7_DISABLE_FUSED_RECURRENT=1`
+  - legacy `RWKV7_DISABLE_FUSED_PREFILL=1` still disables the fused path too
+- added a CUDA regression guard:
+  - `test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda`
+
+Validation:
+
+- unit tests:
+  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+  - result: `13 passed, 2 skipped`
+- service correctness:
+  - `tmp_rwkv7_compare.py --disable-compile-cache`
+  - standard `3` prompts still match one-shot vs step-by-step
+  - log:
+    - [vllm_rwkv7_compare_default_decodefused_20260413.log](/tmp/vllm_rwkv7_compare_default_decodefused_20260413.log)
+- exact long-input benchmark, sequential on a single GPU:
+  - eager:
+    - `1024 + 64`, `c=8`: `128.662 / 126.905`, avg `127.784`
+    - `1984 + 64`, `c=8`: `82.291 / 84.238`, avg `83.264`
+  - piecewise:
+    - `1024 + 64`, `c=8`: `123.847 / 124.573`, avg `124.210`
+    - `1984 + 64`, `c=8`: `84.708 / 88.764`, avg `86.736`
+
+Interpretation:
+
+- decode recurrence was indeed one of the remaining RWKV7 bottlenecks
+- after it was fused, the current exact-long steady-state rows cluster tightly:
+  - eager is still slightly ahead at `1024`
+  - `PIECEWISE` is slightly ahead at `1984`
+- this means the largest RWKV7 model-specific runtime gaps are now much smaller
+  than they were before decode fusion
+- it also means compile is no longer showing a huge model-side throughput win
+  on this exact workload; most of the gain came from fixing the model path itself
+
+Benchmark hygiene note:
+
+- do not launch eager and `PIECEWISE` benchmark servers in parallel on the same
+  GPU
+- that invalidates TPS by introducing direct device contention
+- only the sequential reruns should be used as the current control rows
+
 ## Current TODO List
 
 ### Highest priority
 
-1. Benchmark compile throughput now that correctness is restored:
-   - default PIECEWISE
-   - `cudagraph_mode=none`
-   - compare against eager
-2. Re-run concurrency correctness and throughput on the restored compile path:
-   - concurrent 3
-   - concurrent 8
-3. Extend service validation beyond the current prompt set if needed:
+1. Extend service validation beyond the current prompt set:
    - longer outputs
    - prefix caching
    - mixed prompt lengths
-4. Start the fused decode recurrent backend.
-5. Re-run exact long-input throughput after decode fusion lands.
-6. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
+2. Re-check `compile_no_cg` on:
+   - `max_tokens=128`
+   - concurrency `8`
+3. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
+4. Start moving from core-kernel work to feature-parity work:
+   - async scheduling coverage
+   - TP/PP coverage
+   - interface support such as LoRA if needed
 
 ### After correctness recovery
 
@@ -988,9 +1039,10 @@ Recommended order:
 3. longer-output benchmarks
 4. GPU utilization sampling
 
-The fused prefill route and packed-prefill runtime path are now both in place.
-The long-prompt gain is now quantified well enough to move on. The next
-high-value move is decode fusion.
+The fused prefill route, packed-prefill runtime path, and fused decode recurrent
+backend are now all in place. The next high-value move is broader service
+validation and feature coverage rather than another RWKV7-specific recurrent
+kernel rewrite.
 
 ### Step 5. For compile/cudagraph work, inspect logs first
 
@@ -1023,10 +1075,11 @@ Useful files to keep inspecting:
 
 The next concrete experiment should be:
 
-1. keep the focused exact-long eager rows as the decode-era control
-2. implement a fused decode recurrent backend
-3. rerun:
-   - `1024 + 64`, concurrency `8`
-   - `1984 + 64`, concurrency `8`
-4. check whether the `1024` row can move from "roughly equal to eager" to a
-   clear compile-side win
+1. keep the decode-fused exact-long sequential rows as the current control
+2. validate:
+   - prefix caching
+   - mixed prompt lengths
+   - longer outputs
+3. revisit `compile_no_cg` with `128 tokens + concurrency 8`
+4. if the service matrix is stable, move to feature-parity work instead of more
+   low-level recurrent-kernel churn

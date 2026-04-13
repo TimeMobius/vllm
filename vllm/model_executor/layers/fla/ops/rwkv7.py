@@ -16,6 +16,13 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 from .op import exp
 
 
+def _rwkv7_fused_recurrent_disabled() -> bool:
+    return (
+        os.getenv("RWKV7_DISABLE_FUSED_RECURRENT") == "1"
+        or os.getenv("RWKV7_DISABLE_FUSED_PREFILL") == "1"
+    )
+
+
 @triton.heuristics(
     {
         "USE_INITIAL_STATE": lambda args: args["h0"] is not None,
@@ -190,7 +197,7 @@ def fused_mul_recurrent_rwkv7(
     cu_seqlens: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     if (
-        os.getenv("RWKV7_DISABLE_FUSED_PREFILL") == "1"
+        _rwkv7_fused_recurrent_disabled()
         or not HAS_TRITON
         or r.device.type != "cuda"
         or r.numel() == 0

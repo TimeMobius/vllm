@@ -861,8 +861,8 @@ So why is there still no uniform win?
 - because prefill is no longer the only hot path
 - the remaining major RWKV7 bottleneck is decode recurrence, which still goes
   through the older tensor implementation:
-  - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:401)
-  - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:703)
+  - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:404)
+  - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:748)
 - once prompt length is not extreme enough to dominate the request, the decode
   side limits how much benefit packed prefill can surface
 
@@ -872,6 +872,65 @@ This gives the next optimization order very clearly:
 2. fuse the decode recurrent backend
 3. rerun the exact-long steady-state rows
 4. only then revisit whether `PIECEWISE` should be marketed as a throughput win
+
+### 8.7.7 Fused Decode Recurrent Backend
+
+The next iteration after packed prefill was to remove the remaining explicit
+decode recurrence in:
+
+- [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:748)
+
+This iteration did two things:
+
+1. moved recurrent-input projection and output finalization into shared helpers
+2. switched decode batch recurrence to `fused_mul_recurrent_rwkv7(...)` on CUDA
+
+Concretely:
+
+- added shared helpers in `RWKV7Attention`:
+  - `_project_recurrent_inputs(...)`
+  - `_finalize_attention_output(...)`
+- changed decode batch to call the fused recurrent op with:
+  - batch dimension = decode batch size
+  - sequence length = `1`
+- added a generic disable knob:
+  - `RWKV7_DISABLE_FUSED_RECURRENT=1`
+  - legacy `RWKV7_DISABLE_FUSED_PREFILL=1` still disables the fused recurrent path too
+- added CUDA regression coverage:
+  - `test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda`
+
+Validation:
+
+- unit tests:
+  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+  - result: `13 passed, 2 skipped`
+- service correctness:
+  - `tmp_rwkv7_compare.py --disable-compile-cache`
+  - one-shot vs step-by-step still matched on the standard `3` prompts
+- exact long-input benchmark, sequential on one GPU:
+
+| workload | eager | piecewise |
+|---|---|---|
+| `1024 + 64`, concurrency `8` | `128.662 / 126.905` TPS | `123.847 / 124.573` TPS |
+| `1984 + 64`, concurrency `8` | `82.291 / 84.238` TPS | `84.708 / 88.764` TPS |
+
+Interpretation:
+
+- decode recurrence was indeed one of the last material RWKV7 runtime bottlenecks
+- after it was fused, the exact-long steady-state rows narrowed substantially:
+  - eager remains slightly ahead at `1024`
+  - `PIECEWISE` remains slightly ahead at `1984`
+- this means the main model-specific adaptation gap is now much smaller than it
+  was before decode fusion
+- it also means compile no longer shows a dramatic RWKV7-specific throughput win
+  on this exact workload; most of the recovered performance came from fixing the
+  model path itself
+
+One practical lesson from this round:
+
+- do not launch eager and `PIECEWISE` benchmark servers in parallel on a single
+  GPU
+- those runs directly contend on the same device and produce invalid TPS samples
 
 ## 9. Version Checkpoints
 
