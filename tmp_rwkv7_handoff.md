@@ -12,6 +12,44 @@
     - `cudagraph_mode=none`
   - No experimental environment variable is required anymore.
   - The main remaining work is performance/cleanup, not basic compile correctness.
+  - Benchmark results are now tracked separately in:
+    - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+
+## Latest Update (2026-04-13)
+
+- Added a dedicated benchmark ledger:
+  - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+  - it stores:
+    - run metadata
+    - prompt-set naming
+    - per-concurrency throughput rows
+    - raw JSON/log paths
+- Re-ran the eager throughput baseline on the local `0.4B` checkpoint:
+  - model:
+    - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+  - script:
+    - [tmp_rwkv7_long_benchmark.py](/home/liu/vllm/tmp_rwkv7_long_benchmark.py)
+  - run id:
+    - `2026-04-13_eager_0p4b_mt64`
+  - config:
+    - `--enforce-eager`
+    - `max_tokens=64`
+    - `rounds=2`
+    - `warmup=1`
+    - concurrency `1/2/4/8`
+  - raw artifacts:
+    - [rwkv7_bench_0p4b_eager_64_20260413.json](/tmp/rwkv7_bench_0p4b_eager_64_20260413.json)
+    - [vllm_rwkv7_eager_bench_20260413.log](/tmp/vllm_rwkv7_eager_bench_20260413.log)
+  - aggregate TPS:
+    - `1`: `35.047 / 34.912`, avg `34.980`
+    - `2`: `68.610 / 71.110`, avg `69.860`
+    - `4`: `132.553 / 132.926`, avg `132.739`
+    - `8`: `215.131 / 214.844`, avg `214.987`
+  - correctness note:
+    - every concurrent round still matched the serial baseline
+  - interpretation:
+    - this is now the fresh eager reference point for the next round of
+      `PIECEWISE` / `compile_no_cg` comparison
 
 ## Latest Update (2026-03-31)
 

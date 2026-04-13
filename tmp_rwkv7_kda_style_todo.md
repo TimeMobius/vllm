@@ -4,6 +4,36 @@
 
 结论是：**可行，而且比继续硬推“整模型 fullgraph compile”更合理。**
 
+## Progress Update (2026-04-13)
+
+- 新增了独立 benchmark 台账文件：
+  - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+- 这份台账现在固定记录：
+  - run id
+  - 模型名 / 模型大小
+  - 运行模式
+  - `max_tokens`
+  - 并发档位
+  - 每轮 TPS 和平均 TPS
+  - 串行 baseline 一致性
+  - 原始 JSON / log 路径
+- 已补一条新的 eager 基线：
+  - run id: `2026-04-13_eager_0p4b_mt64`
+  - model: `RWKV7-Goose-World2.9-0.4B-HF`
+  - mode: `eager`
+  - `max_tokens=64`
+  - concurrency `1/2/4/8`
+  - avg aggregate TPS:
+    - `34.980 / 69.860 / 132.739 / 214.987`
+- 当前在做的事也更明确了：
+  - 以后每次 benchmark 先落原始 JSON / log
+  - 再把摘要追加到 benchmark 台账
+  - 然后再在 todo / handoff 里只写结论和下一步
+- 下一步直接接这条基线继续补：
+  - `PIECEWISE`
+  - `compile_no_cg`
+  的同口径对照
+
 ## Progress Update (2026-03-31)
 
 - 同一天的后续推进已经把 compile/no-cudagraph 路径真正打通：
@@ -388,6 +418,8 @@ RWKV7 in vLLM:
 ### Immediate Next Steps
 
 1. 补 compile 路径的吞吐 benchmark：
+   - 以 [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+     里的 `2026-04-13_eager_0p4b_mt64` 为当前 eager 基线
    - eager vs 默认 PIECEWISE vs `cudagraph_mode=none`
 2. 补 compile 路径的并发正确性与吞吐：
    - concurrent 3
@@ -472,6 +504,9 @@ RWKV7 in vLLM:
   - prompt len `1984`
   - concurrency `1/4/8`
   - eager vs `PIECEWISE`
+- [x] 新增独立 benchmark 台账文件：
+  - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+- [x] 补 `2026-04-13` eager `0.4B` / `max_tokens=64` 基线记录
 - [ ] 把 benchmark 扩成更稳定的多轮统计，减少单次波动
 - [ ] 继续查 `no-cg` 的长输出高并发分叉：
   - `max_tokens=128`
@@ -558,7 +593,8 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 下一步最值得直接开始的是：
 
 - [ ] 做 TTFT / prefill-only benchmark，确认 `PIECEWISE` 在长 prefill 下到底有没有独立收益
-- [ ] 把 default/PIECEWISE benchmark 做成更稳定的多轮统计
+- [ ] 把 default/PIECEWISE benchmark 做成更稳定的多轮统计，并持续追加到
+  [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉
 - [ ] 继续盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
 
