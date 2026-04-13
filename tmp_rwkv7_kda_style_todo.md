@@ -34,6 +34,140 @@
   - `compile_no_cg`
   的同口径对照
 
+## CUDA Graph Assessment (2026-04-13)
+
+### 当前判断
+
+- RWKV7 其实已经不是“完全没有 CUDA graph”：
+  - 默认 `PIECEWISE` 已经能正确跑通
+  - `compile/no-cg` 也已经能正确跑通
+- 现在真正缺的不是“能不能 capture”，而是：
+  - 能不能把 `PIECEWISE` 路径做成值得长期默认使用的主线
+  - 能不能在不回退正确性的前提下，把 cold start / TTFT / 吞吐做上去
+  - 要不要继续追更激进的 full decode graph
+- 现阶段不建议直接追 `FULL_AND_PIECEWISE`：
+  - 当前历史结论已经证明它对 RWKV7 仍然不安全
+  - 更合理的主线仍然是：
+    - 先把 `PIECEWISE` 做强
+    - 再决定要不要重新打开 full decode graph
+
+### 代码层面的真实 blocker
+
+1. prefill recurrence 还是 Python token loop：
+   - [`RWKV7Attention._forward()`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L490)
+   - 里面仍有：
+     - `for idx in range(hidden_states.shape[0])`
+   - 这说明 compile 虽然被 custom op boundary 挡住了
+   - 但真正最重的 prefill recurrence 还没有变成 varlen/chunk kernel
+   - 所以 `PIECEWISE` 很难稳定打赢 eager
+
+2. runtime metadata dispatch 还是 Python-side loop + `.item()`：
+   - [`RWKV7Block._forward_runtime()`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L945)
+   - 当前 prefill 还是逐段：
+     - 读 `query_start_loc`
+     - 读 `seq_lens`
+     - 读 `state_indices_tensor`
+     - 再逐条 `_run_sequence(...)`
+   - 这条路径现在对 correctness 已经足够
+   - 但对更激进的 graph capture / 更低 CPU overhead 并不理想
+
+3. decode 还是普通张量实现，不是 fused recurrent kernel：
+   - [`RWKV7Attention.forward_decode_batch()`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L633)
+   - 这条路径已经正确
+   - 但还没有变成类似 FLA / KDA / Mamba 风格的 fused recurrent backend
+
+4. 当前 compile policy 还是“安全优先”而不是“最大 capture”：
+   - [`config.py`](/home/liu/vllm/vllm/model_executor/models/config.py#L675)
+   - RWKV7 现在会把：
+     - `FULL_AND_PIECEWISE`
+     收紧到：
+     - `PIECEWISE`
+   - 这说明当前策略是：
+     - 先保住正确性
+     - 还没有准备好重新打开 full decode graph
+
+5. 现有 benchmark 结论说明性能目标还没达成：
+   - [tmp_rwkv7_handoff.md](/home/liu/vllm/tmp_rwkv7_handoff.md)
+   - 当前结论仍然是：
+     - `PIECEWISE` 和 eager 大致同一量级
+     - 没有稳定显著胜出
+     - piecewise cold start 还明显更慢
+
+### 推荐实现顺序
+
+#### Stage A. 先把目标定义清楚
+
+- 把“实现 CUDA graph”拆成两个目标：
+  - Goal 1:
+    - 让 `PIECEWISE` 成为稳定、可解释、可回归的 compile 主线
+  - Goal 2:
+    - 只有在 Goal 1 达成后，才考虑 full decode graph
+- 当前推荐优先级：
+  - `PIECEWISE` > `compile/no-cg` > `FULL_AND_PIECEWISE`
+
+#### Stage B. 先补性能判断依据
+
+- 补 TTFT / prefill-only benchmark：
+  - 区分 cold start
+  - 区分 prefill
+  - 区分 decode
+- 把 benchmark 扩成更稳定多轮统计：
+  - 不只看一次 aggregate TPS
+- 补这几类 coverage：
+  - prefix caching
+  - mixed prompt lengths
+  - 更长输出
+  - concurrency `3/8`
+- 如果这些 benchmark 还显示 `PIECEWISE` 没有明确收益
+  - 就不要急着继续追 full decode graph
+
+#### Stage C. 再做真正的 compile backend 优化
+
+1. prefill kernelization：
+   - 优先把 [`RWKV7Attention._forward()`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L490)
+     里的 Python recurrence 换成：
+     - packed / varlen / chunk prefill backend
+   - 重点参考：
+     - `/home/liu/flash-linear-attention`
+     - KDA / Mamba 在 vLLM 内的 metadata 接法
+
+2. decode fused recurrent：
+   - 保持现在的接口不变
+   - 先把 [`forward_decode_batch()`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L633)
+     的内部替换成 fused recurrent kernel
+
+3. metadata path 去 Python 化：
+   - 尽量减少 `_forward_runtime()` 里的：
+     - `.item()`
+     - Python per-prefill loop
+   - 目标不是马上删光所有 Python
+   - 而是把最热路径挪到 backend/kernel 里
+
+4. 只在上面三步完成后，再重新评估：
+   - 是否值得重新尝试 `FULL_AND_PIECEWISE`
+   - 或者长期把 RWKV7 固定在 `PIECEWISE`
+
+### 验收标准
+
+- Correctness：
+  - `0.1B` / `0.4B`
+  - one-shot vs step-by-step
+  - `PIECEWISE`
+  - `compile/no-cg`
+  - prefix caching
+  - mixed prompt lengths
+- Performance：
+  - eager vs `PIECEWISE`
+  - TTFT
+  - prefill-only
+  - decode throughput
+  - cold start
+- Policy：
+  - 如果 `FULL_AND_PIECEWISE` 不能稳定通过 correctness + benchmark
+  - 就继续保持：
+    - RWKV7 默认 `PIECEWISE`
+    - full decode graph 关闭
+
 ## Progress Update (2026-03-31)
 
 - 同一天的后续推进已经把 compile/no-cudagraph 路径真正打通：
