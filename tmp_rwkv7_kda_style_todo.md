@@ -45,10 +45,19 @@
   - vLLM 服务口径下 `max_tokens` 不能是 `0`
   - 所以当前所谓 prefill-only benchmark 更准确地说是：
     - streaming `max_tokens=1` 的 prefill-heavy TTFT proxy
-- 下一步直接接这条基线继续补：
+- 已补首轮 compile TTFT 对照：
+  - `compile/no-cg`
   - `PIECEWISE`
-  - `compile_no_cg`
-  的同口径对照
+  - 对照结论：
+    - `compile/no-cg` 没有表现出 TTFT 优势
+    - `PIECEWISE` 对短 prompt 没优势
+    - 但在长 prompt 首 token 上已经开始比 eager 更好
+    - `PIECEWISE` decode ITL 目前与 eager 基本同量级
+- 下一步直接接这组 TTFT 对照继续补：
+  - 更稳定多轮统计
+  - prefix caching
+  - mixed prompt lengths
+  - 更长输出
 
 ## CUDA Graph Assessment (2026-04-13)
 
@@ -662,8 +671,8 @@ RWKV7 in vLLM:
 - [x] 新增 TTFT / prefill-heavy benchmark 脚本：
   - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
 - [x] 补 `2026-04-13` eager `0.4B` TTFT 基线记录
+- [x] 用 TTFT benchmark 补首轮 `PIECEWISE` / `compile_no_cg` 对照
 - [ ] 把 benchmark 扩成更稳定的多轮统计，减少单次波动
-- [ ] 用 TTFT benchmark 补 `PIECEWISE` / `compile_no_cg` 对照
 - [ ] 继续查 `no-cg` 的长输出高并发分叉：
   - `max_tokens=128`
   - concurrency `8`
@@ -750,7 +759,7 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 - [ ] 做 TTFT / prefill-only benchmark，确认 `PIECEWISE` 在长 prefill 下到底有没有独立收益
 - [ ] 用 [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
-  补 `PIECEWISE` / `compile_no_cg`，确认 compile 是否真的改善长 prompt 首 token
+  扩成更稳定多轮统计，确认 `PIECEWISE` 对长 prompt 首 token 的收益是否稳定
 - [ ] 把 default/PIECEWISE benchmark 做成更稳定的多轮统计，并持续追加到
   [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
 - [ ] 评估 prefix caching、长输出、mixed prompt lengths 是否还有隐藏分叉

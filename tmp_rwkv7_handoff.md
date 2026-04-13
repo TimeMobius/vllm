@@ -88,6 +88,48 @@
     - so the current next compile comparison should focus on whether
       `PIECEWISE` actually reduces the long-prompt first-token cost, not just
       aggregate throughput
+- Added the first compile TTFT comparison on the local `0.4B` checkpoint:
+  - raw artifacts:
+    - compile/no-cg:
+      - [rwkv7_ttft_0p4b_compile_no_cg_20260413.json](/tmp/rwkv7_ttft_0p4b_compile_no_cg_20260413.json)
+      - [vllm_rwkv7_ttft_compile_no_cg_20260413.log](/tmp/vllm_rwkv7_ttft_compile_no_cg_20260413.log)
+    - piecewise:
+      - [rwkv7_ttft_0p4b_piecewise_20260413.json](/tmp/rwkv7_ttft_0p4b_piecewise_20260413.json)
+      - [vllm_rwkv7_ttft_piecewise_20260413.log](/tmp/vllm_rwkv7_ttft_piecewise_20260413.log)
+  - server ready:
+    - eager: `30.034s`
+    - compile/no-cg: `38.044s`
+    - piecewise: `108.093s`
+  - prefill-heavy TTFT proxy, prompt len `64 / 1024 / 1984`:
+    - eager:
+      - `188.986 / 2708.602 / 5409.289 ms`
+    - compile/no-cg:
+      - `219.612 / 2915.364 / 5432.906 ms`
+    - piecewise:
+      - `229.968 / 2660.877 / 4930.740 ms`
+  - decode profile, prompt len `64`, avg ITL:
+    - eager:
+      - `32 tok`: `27.862ms`
+      - `64 tok`: `28.676ms`
+    - compile/no-cg:
+      - `32 tok`: `29.558ms`
+      - `64 tok`: `30.429ms`
+    - piecewise:
+      - `32 tok`: `27.716ms`
+      - `64 tok`: `28.024ms`
+  - interpretation:
+    - `compile/no-cg` 仍然更像 correctness/debug 路径：
+      - 启动更慢
+      - TTFT 没明显改善
+      - decode ITL 还略差
+    - `PIECEWISE` 对短 prompt 没有优势
+    - 但对长 prompt 首 token 已经开始出现改善：
+      - `1024` token prompt 略优于 eager
+      - `1984` token prompt 改善更明显
+    - `PIECEWISE` 的 decode ITL 目前基本和 eager 同量级
+    - 所以下一步最值当的方向是：
+      - 继续盯长 prefill TTFT
+      - 而不是继续投资 `compile/no-cg`
 
 ## Latest Update (2026-03-31)
 

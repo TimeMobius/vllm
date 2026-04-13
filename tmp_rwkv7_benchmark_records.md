@@ -41,6 +41,8 @@
 | run_id | date | model_name | model_size | mode | benchmark_type | prompt_set_id | rounds | warmup | raw_json | server_log | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `2026-04-13_eager_0p4b_ttft` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `2` | `1` | [rwkv7_ttft_0p4b_eager_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_20260413.json) | [vllm_rwkv7_ttft_eager_20260413.log](/tmp/vllm_rwkv7_ttft_eager_20260413.log) | `tmp_rwkv7_ttft_benchmark.py --enforce-eager`；`server_ready_sec=30.034`；prefill 部分使用 streaming `max_tokens=1` 的 TTFT proxy，因为 vLLM 不支持 `max_tokens=0` |
+| `2026-04-13_compile_no_cg_0p4b_ttft` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `2` | `1` | [rwkv7_ttft_0p4b_compile_no_cg_20260413.json](/tmp/rwkv7_ttft_0p4b_compile_no_cg_20260413.json) | [vllm_rwkv7_ttft_compile_no_cg_20260413.log](/tmp/vllm_rwkv7_ttft_compile_no_cg_20260413.log) | `tmp_rwkv7_ttft_benchmark.py --compile-no-cg --disable-compile-cache`；`server_ready_sec=38.044`；长 prompt TTFT 没有明显优于 eager |
+| `2026-04-13_piecewise_0p4b_ttft` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `ttft_prefill_proxy_decode` | `rwkv7_ttft_seed_repeat` | `2` | `1` | [rwkv7_ttft_0p4b_piecewise_20260413.json](/tmp/rwkv7_ttft_0p4b_piecewise_20260413.json) | [vllm_rwkv7_ttft_piecewise_20260413.log](/tmp/vllm_rwkv7_ttft_piecewise_20260413.log) | `tmp_rwkv7_ttft_benchmark.py --cudagraph-mode piecewise --disable-compile-cache`；`server_ready_sec=108.093`；长 prompt TTFT 开始略优于 eager，但启动仍明显更慢 |
 
 ## Prefill Proxy Table
 
@@ -49,6 +51,12 @@
 | `2026-04-13_eager_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `streaming_max_tokens_1` | `188.986` | `188.986` | `188.986` | `2` |
 | `2026-04-13_eager_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `1024` | `streaming_max_tokens_1` | `2708.602` | `2708.602` | `2708.602` | `2` |
 | `2026-04-13_eager_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `1984` | `streaming_max_tokens_1` | `5409.289` | `5409.289` | `5409.289` | `2` |
+| `2026-04-13_compile_no_cg_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `64` | `streaming_max_tokens_1` | `219.612` | `219.612` | `219.612` | `2` |
+| `2026-04-13_compile_no_cg_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `1024` | `streaming_max_tokens_1` | `2915.364` | `2915.364` | `2915.364` | `2` |
+| `2026-04-13_compile_no_cg_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `1984` | `streaming_max_tokens_1` | `5432.906` | `5432.906` | `5432.906` | `2` |
+| `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `streaming_max_tokens_1` | `229.968` | `229.968` | `229.968` | `2` |
+| `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `1024` | `streaming_max_tokens_1` | `2660.877` | `2660.877` | `2660.877` | `2` |
+| `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `1984` | `streaming_max_tokens_1` | `4930.740` | `4930.740` | `4930.740` | `2` |
 
 ## Decode Latency Table
 
@@ -56,6 +64,10 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `2026-04-13_eager_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `32` | `255.053` | `1118.779` | `27.862` | `27.862` |
 | `2026-04-13_eager_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `64` | `255.353` | `2061.966` | `28.676` | `28.676` |
+| `2026-04-13_compile_no_cg_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `64` | `32` | `412.099` | `1328.407` | `29.558` | `29.558` |
+| `2026-04-13_compile_no_cg_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `64` | `64` | `250.975` | `2167.977` | `30.429` | `30.429` |
+| `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `32` | `251.827` | `1111.017` | `27.716` | `27.716` |
+| `2026-04-13_piecewise_0p4b_ttft` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `64` | `275.944` | `2041.429` | `28.024` | `28.024` |
 
 ## Repro Commands
 
@@ -93,4 +105,44 @@ python tmp_rwkv7_ttft_benchmark.py \
   --decode-output-lengths 32 64 \
   --log /tmp/vllm_rwkv7_ttft_eager_20260413.log \
   > /tmp/rwkv7_ttft_0p4b_eager_20260413.json
+```
+
+### `2026-04-13_compile_no_cg_0p4b_ttft`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_ttft_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --compile-no-cg \
+  --disable-compile-cache \
+  --port 8045 \
+  --rounds 2 \
+  --warmup 1 \
+  --prompt-lengths 64 1024 1984 \
+  --decode-prompt-len 64 \
+  --decode-output-lengths 32 64 \
+  --log /tmp/vllm_rwkv7_ttft_compile_no_cg_20260413.log \
+  > /tmp/rwkv7_ttft_0p4b_compile_no_cg_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_ttft`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_ttft_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --disable-compile-cache \
+  --port 8046 \
+  --rounds 2 \
+  --warmup 1 \
+  --prompt-lengths 64 1024 1984 \
+  --decode-prompt-len 64 \
+  --decode-output-lengths 32 64 \
+  --log /tmp/vllm_rwkv7_ttft_piecewise_20260413.log \
+  > /tmp/rwkv7_ttft_0p4b_piecewise_20260413.json
 ```
