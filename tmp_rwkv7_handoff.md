@@ -776,6 +776,71 @@ Recommendation:
 - if a future PR workflow needs strict `.venv` parity, retry after warming the
   package cache or mirroring the missing wheels
 
+### 16. Packed/varlen prefill is now wired through `RWKV7Block._forward_runtime()`
+
+Problem:
+
+- after landing the fused recurrent op, prefill was only faster inside a single
+  sequence
+- `RWKV7Block._forward_runtime()` still looped over each prefill request in
+  Python:
+  - sliced `query_start_loc` one request at a time
+  - loaded/stored KV state one request at a time
+  - never exercised the fused op's existing `cu_seqlens` support
+
+Handling:
+
+- added a varlen shift helper:
+  - `token_shift_with_cache_varlen(...)`
+- added packed-prefill entrypoints:
+  - `RWKV7Attention.forward_prefill_batch(...)`
+  - `RWKV7FeedForward.forward_prefill_batch(...)`
+- added `RWKV7Block._run_prefill_batch(...)`
+- switched the prefill branch of
+  [RWKV7Block._forward_runtime()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py)
+  to:
+  - slice all prefill tokens as one flat range
+  - build per-request `cu_seqlens` from `query_start_loc`
+  - mask out nonexistent initial states using `seq_lens > query_lens`
+  - batch-load KV state with `_get_kv_states(...)`
+  - batch-store final state with `_store_kv_states(...)`
+- kept the old per-request loop behind the existing env switch:
+  - `RWKV7_DISABLE_FUSED_PREFILL=1`
+
+Validation:
+
+- unit tests:
+  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+  - result: `12 passed, 2 skipped`
+- new coverage:
+  - `test_rwkv7_block_batches_prefill_tokens_without_changing_results`
+- service correctness:
+  - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --disable-compile-cache`
+  - one-shot vs step-by-step still matches on:
+    - `i am`
+    - `北京是`
+    - `The capital of France is`
+- service batching smoke:
+  - `tmp_rwkv7_long_benchmark.py --cudagraph-mode piecewise --disable-compile-cache --max-tokens 16 --concurrency-levels 4 8`
+  - both `4` and `8` concurrency matched the serial baseline
+
+Artifacts:
+
+- [rwkv7_long_piecewise_packedprefill_20260413.json](/tmp/rwkv7_long_piecewise_packedprefill_20260413.json)
+- [vllm_rwkv7_long_piecewise_packedprefill_20260413.log](/tmp/vllm_rwkv7_long_piecewise_packedprefill_20260413.log)
+- [vllm_rwkv7_compare_piecewise_packedprefill_20260413.log](/tmp/vllm_rwkv7_compare_piecewise_packedprefill_20260413.log)
+
+Current interpretation:
+
+- the Python per-prefill-request loop is no longer on the main RWKV7 runtime
+  path when fused prefill is enabled
+- single-request long-prefill latency was already fixed by the fused recurrent
+  op; this change is about letting concurrent prefills share that path
+- the short-prompt concurrency smoke is a correctness check, not proof of a
+  throughput win, because it is not prefill-heavy enough to isolate the gain
+- the next missing measurement is a true long-prompt concurrent sweep to
+  quantify the packed-prefill payoff
+
 ## Current TODO List
 
 ### Highest priority
@@ -791,8 +856,13 @@ Recommendation:
    - longer outputs
    - prefix caching
    - mixed prompt lengths
-4. Land packed/varlen prefill so `RWKV7Block._forward_runtime()` stops looping over prefills in Python.
-5. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
+4. Run a long-prompt concurrent sweep now that packed-prefill is live:
+   - prompt len `1024`
+   - prompt len `1984`
+   - eager vs `PIECEWISE`
+   - concurrency `1/4/8`
+5. Start the fused decode recurrent backend.
+6. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
 
 ### After correctness recovery
 
@@ -861,10 +931,9 @@ Recommended order:
 3. longer-output benchmarks
 4. GPU utilization sampling
 
-The fused prefill route is now in place, so the next high-value move is no
-longer "can we fuse the recurrence at all?" but "can we feed it packed /
-varlen prefill batches directly from metadata without a Python loop per
-prefill request?"
+The fused prefill route and packed-prefill runtime path are now both in place.
+The next high-value move is to quantify the concurrent long-prompt gain and
+then do the same backend treatment for decode.
 
 ### Step 5. For compile/cudagraph work, inspect logs first
 
@@ -895,11 +964,12 @@ Useful files to keep inspecting:
 
 ## Recommended Next Action
 
-Continue from commit `c15f30216`.
-
 The next concrete experiment should be:
 
-1. keep the eager baseline as the known-good correctness/perf control
-2. move RWKV7 metadata/stateful dispatch out of the current fullgraph-sensitive path
-3. use `VLLM_DISABLE_COMPILE_CACHE=1` and rerun [rwkv7_engine_step_1_final_repro.json](/tmp/rwkv7_engine_step_1_final_repro.json)-style probes until `attn_metadata_is_none` flips to `0`
-4. only then resume later-step replay and end-to-end divergence checks
+1. keep the current eager fused-off baseline as the control
+2. rerun the long-input exact-token sweep after packed-prefill landing:
+   - prompt len `1024`
+   - prompt len `1984`
+   - concurrency `1/4/8`
+3. compare the new piecewise numbers against the pre-packed-prefill artifacts
+4. then move to a fused decode recurrent backend if prefill scaling is now good enough

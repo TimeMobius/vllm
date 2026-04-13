@@ -26,6 +26,7 @@
 | run_id | date | model_name | model_size | mode | dtype | max_tokens | rounds | warmup | concurrency_levels | prompt_set_id | raw_json | server_log | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `2026-04-13_eager_0p4b_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `1/2/4/8` | `default_mixed_8` | [rwkv7_bench_0p4b_eager_64_20260413.json](/tmp/rwkv7_bench_0p4b_eager_64_20260413.json) | [vllm_rwkv7_eager_bench_20260413.log](/tmp/vllm_rwkv7_eager_bench_20260413.log) | `tmp_rwkv7_long_benchmark.py --enforce-eager` 基线复跑；全部并发轮次都与串行 baseline 一致 |
+| `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `16` | `1` | `1` | `4/8` | `default_mixed_8` | [rwkv7_long_piecewise_packedprefill_20260413.json](/tmp/rwkv7_long_piecewise_packedprefill_20260413.json) | [vllm_rwkv7_long_piecewise_packedprefill_20260413.log](/tmp/vllm_rwkv7_long_piecewise_packedprefill_20260413.log) | packed/varlen prefill 落地后的真实服务 smoke；主要用于确认并发输出仍与串行 baseline 一致，不作为 before/after 性能结论 |
 
 ## Throughput Table
 
@@ -35,6 +36,8 @@
 | `2026-04-13_eager_0p4b_mt64` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `2` | `68.610` | `71.110` | `69.860` | `true` |
 | `2026-04-13_eager_0p4b_mt64` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `4` | `132.553` | `132.926` | `132.739` | `true` |
 | `2026-04-13_eager_0p4b_mt64` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `8` | `215.131` | `214.844` | `214.987` | `true` |
+| `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `4` | `18.689` | `n/a` | `18.689` | `true` |
+| `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `8` | `208.104` | `n/a` | `208.104` | `true` |
 
 ## Latency Run Index
 
@@ -224,4 +227,23 @@ python tmp_rwkv7_ttft_benchmark.py \
   --decode-output-lengths 32 64 \
   --log /tmp/vllm_rwkv7_ttft_piecewise_fusedon_r3w2_20260413.log \
   > /tmp/rwkv7_ttft_0p4b_piecewise_fusedon_r3w2_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_long_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --disable-compile-cache \
+  --port 8052 \
+  --max-tokens 16 \
+  --rounds 1 \
+  --warmup 1 \
+  --concurrency-levels 4 8 \
+  --log /tmp/vllm_rwkv7_long_piecewise_packedprefill_20260413.log \
+  > /tmp/rwkv7_long_piecewise_packedprefill_20260413.json
 ```

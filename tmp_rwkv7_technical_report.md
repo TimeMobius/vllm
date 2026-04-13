@@ -756,6 +756,63 @@ This shifts the next bottleneck:
 - so the next meaningful optimization step is packed/varlen prefill driven by
   `query_start_loc`, followed by a fused decode recurrent backend
 
+### 8.7.5 Packed Prefill Runtime Addendum
+
+The next follow-up after the fused recurrent op was to stop wasting that kernel
+behind a Python loop over prefill requests. The fused op already accepted
+`cu_seqlens`, but RWKV7 block runtime still handled each prefill request
+separately, including individual KV-state loads and stores.
+
+This iteration moved packed/varlen prefill into the model runtime:
+
+- added `token_shift_with_cache_varlen(...)`
+- added:
+  - `RWKV7Attention.forward_prefill_batch(...)`
+  - `RWKV7FeedForward.forward_prefill_batch(...)`
+  - `RWKV7Block._run_prefill_batch(...)`
+- changed
+  [RWKV7Block._forward_runtime()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py)
+  to:
+  - slice all prefill tokens as one packed token range
+  - derive `cu_seqlens` from `query_start_loc`
+  - mask out nonexistent initial states with `seq_lens > query_lens`
+  - batch-load KV state via `_get_kv_states(...)`
+  - batch-store final state via `_store_kv_states(...)`
+
+The old per-request fallback was kept behind:
+
+- `RWKV7_DISABLE_FUSED_PREFILL=1`
+
+Validation on the local `0.4B` checkpoint:
+
+- unit tests:
+  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+  - result: `12 passed, 2 skipped`
+- new model-level regression guard:
+  - `test_rwkv7_block_batches_prefill_tokens_without_changing_results`
+- service correctness:
+  - `tmp_rwkv7_compare.py --disable-compile-cache`
+  - one-shot vs step-by-step still matched on the standard `3` prompts
+- real-entrypoint batching smoke:
+  - `tmp_rwkv7_long_benchmark.py --cudagraph-mode piecewise --disable-compile-cache --max-tokens 16 --concurrency-levels 4 8`
+  - aggregate TPS:
+    - concurrency `4`: `18.689`
+    - concurrency `8`: `208.104`
+  - both rows matched the serial baseline
+
+Interpretation:
+
+- the Python per-prefill-request loop is now removed from the main packed
+  prefill path
+- this change is necessary for concurrent prefill scaling, but the short-prompt
+  smoke benchmark above is still mostly a correctness check rather than a clean
+  performance attribution experiment
+- the next meaningful benchmark should reuse the long-input exact-token setup
+  (`1024` / `1984` prompt lengths at concurrency `1/4/8`) so the packed-prefill
+  gain can be quantified directly
+- after that, the next remaining hot path is decode recurrence, which still uses
+  the older tensor implementation in `forward_decode_batch()`
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:
