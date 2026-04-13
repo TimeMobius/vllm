@@ -39,10 +39,14 @@
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_decodefused_seq_20260413.json](/tmp/rwkv7_exact_long_piecewise_decodefused_seq_20260413.json) | [vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log) | decode fused 后的串行 benchmark；与 eager 使用同一口径对照 |
 | `2026-04-13_eager_0p4b_exact_long_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_prefixcache_20260413.json](/tmp/rwkv7_exact_long_eager_prefixcache_20260413.json) | [vllm_rwkv7_exact_long_eager_prefixcache_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_prefixcache_20260413.log) | `--enable-prefix-caching`；serial baseline 先暖 cache，再测 cached throughput |
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_prefixcache_20260413.json](/tmp/rwkv7_exact_long_piecewise_prefixcache_20260413.json) | [vllm_rwkv7_exact_long_piecewise_prefixcache_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_prefixcache_20260413.log) | `--enable-prefix-caching`；日志显示 Mamba cache 进入 experimental `align` mode |
+| `2026-04-13_eager_0p4b_exact_long_mt128` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `128` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_mt128_20260413.json](/tmp/rwkv7_exact_long_eager_mt128_20260413.json) | [vllm_rwkv7_exact_long_eager_mt128_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_mt128_20260413.log) | longer-output exact-long control；使用 `1024/1920`，因为 `1984 + 128` 超出当前 `2048` 上限 |
+| `2026-04-13_piecewise_0p4b_exact_long_mt128` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `128` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_mt128_20260413.json](/tmp/rwkv7_exact_long_piecewise_mt128_20260413.json) | [vllm_rwkv7_exact_long_piecewise_mt128_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_mt128_20260413.log) | longer-output exact-long control；使用 `1024/1920` 口径 |
+| `2026-04-13_compile_no_cg_0p4b_exact_long_mt128` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `auto` | `128` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_compile_no_cg_mt128_20260413.json](/tmp/rwkv7_exact_long_compile_no_cg_mt128_20260413.json) | [vllm_rwkv7_exact_long_compile_no_cg_mt128_20260413.log](/tmp/vllm_rwkv7_exact_long_compile_no_cg_mt128_20260413.log) | longer-output exact-long control；用于和 eager / `PIECEWISE` 对照 `no-cg` 在长输出下的位置 |
 | `2026-04-13_eager_0p4b_mixed_exact_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_eager_20260413.json](/tmp/rwkv7_mixed_exact_eager_20260413.json) | [vllm_rwkv7_mixed_exact_eager_20260413.log](/tmp/vllm_rwkv7_mixed_exact_eager_20260413.log) | exact token mixed prompt lengths；无 prefix caching |
 | `2026-04-13_piecewise_0p4b_mixed_exact_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_piecewise_20260413.json](/tmp/rwkv7_mixed_exact_piecewise_20260413.json) | [vllm_rwkv7_mixed_exact_piecewise_20260413.log](/tmp/vllm_rwkv7_mixed_exact_piecewise_20260413.log) | exact token mixed prompt lengths；无 prefix caching；首轮受 compile warmup 影响较大 |
 | `2026-04-13_eager_0p4b_mixed_exact_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_eager_prefixcache_20260413.json](/tmp/rwkv7_mixed_exact_eager_prefixcache_20260413.json) | [vllm_rwkv7_mixed_exact_eager_prefixcache_20260413.log](/tmp/vllm_rwkv7_mixed_exact_eager_prefixcache_20260413.log) | exact token mixed prompt lengths；开启 prefix caching |
 | `2026-04-13_piecewise_0p4b_mixed_exact_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_piecewise_prefixcache_20260413.json](/tmp/rwkv7_mixed_exact_piecewise_prefixcache_20260413.json) | [vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log](/tmp/vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log) | exact token mixed prompt lengths；开启 prefix caching；Mamba cache `align` mode |
+| `2026-04-13_compile_no_cg_0p4b_mt128` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `auto` | `128` | `2` | `1` | `8` | `default_mixed_8` | [rwkv7_long_compile_no_cg_mt128_20260413.json](/tmp/rwkv7_long_compile_no_cg_mt128_20260413.json) | [vllm_rwkv7_long_compile_no_cg_mt128_20260413.log](/tmp/vllm_rwkv7_long_compile_no_cg_mt128_20260413.log) | 直接回查历史 `no-cg 128/c8` mixed 场景；当前实现下未复现 mismatch |
 
 ## Throughput Table
 
@@ -54,6 +58,7 @@
 | `2026-04-13_eager_0p4b_mt64` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `8` | `215.131` | `214.844` | `214.987` | `true` |
 | `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `4` | `18.689` | `n/a` | `18.689` | `true` |
 | `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `8` | `208.104` | `n/a` | `208.104` | `true` |
+| `2026-04-13_compile_no_cg_0p4b_mt128` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `128` | `8` | `277.310` | `274.227` | `275.768` | `true` |
 
 ## Exact Long-Input Throughput Table
 
@@ -79,6 +84,12 @@
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `1024` | `8` | `123.847` | `124.573` | `124.210` | `true` |
 | `2026-04-13_eager_0p4b_exact_long_mt64_decodefused_seq` | `1984` | `8` | `82.291` | `84.238` | `83.264` | `true` |
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `1984` | `8` | `84.708` | `88.764` | `86.736` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt128` | `1024` | `8` | `187.512` | `185.750` | `186.631` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt128` | `1024` | `8` | `180.043` | `182.027` | `181.035` | `true` |
+| `2026-04-13_compile_no_cg_0p4b_exact_long_mt128` | `1024` | `8` | `177.782` | `175.871` | `176.827` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt128` | `1920` | `8` | `137.117` | `137.148` | `137.133` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt128` | `1920` | `8` | `134.320` | `135.409` | `134.864` | `true` |
+| `2026-04-13_compile_no_cg_0p4b_exact_long_mt128` | `1920` | `8` | `133.385` | `133.164` | `133.275` | `true` |
 | `2026-04-13_eager_0p4b_exact_long_mt64_prefixcache` | `1024` | `8` | `130.217` | `210.408` | `170.313` | `true` |
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_prefixcache` | `1024` | `8` | `149.130` | `208.119` | `178.625` | `true` |
 | `2026-04-13_eager_0p4b_exact_long_mt64_prefixcache` | `1984` | `8` | `155.799` | `270.292` | `213.046` | `true` |
@@ -147,6 +158,36 @@ So this service-level picture is much clearer than the earlier kernel-only view:
   the first `PIECEWISE` round
 - on mixed prompt lengths with prefix caching, eager and `PIECEWISE` land in the
   same band, with `PIECEWISE` very slightly ahead in this run
+
+For longer outputs (`max_tokens=128`), exact-long control now uses `1024/1920`
+rather than `1984`, because `1984 + 128` exceeds the current `2048` limit.
+
+Longer-output exact-long results:
+
+- `1024 + 128`, concurrency `8`:
+  - eager: `187.512 / 185.750`
+  - piecewise: `180.043 / 182.027`
+  - compile_no_cg: `177.782 / 175.871`
+- `1920 + 128`, concurrency `8`:
+  - eager: `137.117 / 137.148`
+  - piecewise: `134.320 / 135.409`
+  - compile_no_cg: `133.385 / 133.164`
+
+So at longer outputs:
+
+- all three paths are correct against the serial baseline
+- eager remains slightly ahead on this exact-long workload
+- `PIECEWISE` stays close behind
+- `compile_no_cg` is now also in the same general band, though still a bit slower
+
+The historical `compile_no_cg 128/c8` tail item was also rerun directly on the
+old mixed prompt benchmark:
+
+- `default_mixed_8`, `max_tokens=128`, concurrency `8`
+- compile_no_cg aggregate TPS: `277.310 / 274.227`, avg `275.768`
+- all requests still matched the serial baseline
+
+That old mismatch is therefore not reproduced on the current decode-fused branch.
 
 On a single GPU, do not launch eager and `PIECEWISE` benchmark servers in
 parallel. Those runs contend on the same device and should be treated as
@@ -547,4 +588,82 @@ python tmp_rwkv7_mixed_exact_prompt_bench.py \
   --warmup 1 \
   --log /tmp/vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log \
   > /tmp/rwkv7_mixed_exact_piecewise_prefixcache_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_exact_long_mt128`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8063 \
+  --max-tokens 128 \
+  --rounds 2 \
+  --warmup 2 \
+  --prompt-lengths 1024 1920 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_exact_long_eager_mt128_20260413.log \
+  > /tmp/rwkv7_exact_long_eager_mt128_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_exact_long_mt128`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --disable-compile-cache \
+  --port 8064 \
+  --max-tokens 128 \
+  --rounds 2 \
+  --warmup 2 \
+  --prompt-lengths 1024 1920 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_exact_long_piecewise_mt128_20260413.log \
+  > /tmp/rwkv7_exact_long_piecewise_mt128_20260413.json
+```
+
+### `2026-04-13_compile_no_cg_0p4b_exact_long_mt128`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --compile-no-cg \
+  --disable-compile-cache \
+  --port 8065 \
+  --max-tokens 128 \
+  --rounds 2 \
+  --warmup 2 \
+  --prompt-lengths 1024 1920 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_exact_long_compile_no_cg_mt128_20260413.log \
+  > /tmp/rwkv7_exact_long_compile_no_cg_mt128_20260413.json
+```
+
+### `2026-04-13_compile_no_cg_0p4b_mt128`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_long_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --compile-no-cg \
+  --disable-compile-cache \
+  --port 8066 \
+  --max-tokens 128 \
+  --rounds 2 \
+  --warmup 1 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_long_compile_no_cg_mt128_20260413.log \
+  > /tmp/rwkv7_long_compile_no_cg_mt128_20260413.json
 ```

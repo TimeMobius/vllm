@@ -996,6 +996,63 @@ This sharpens the practical conclusion:
 - the biggest remaining work is service/feature coverage, not another deep
   recurrence rewrite
 
+### 8.7.9 Longer Outputs And compile_no_cg Recheck
+
+The next validation round targeted two remaining concerns:
+
+1. do longer outputs reintroduce hidden regressions?
+2. does the old `compile_no_cg 128/c8` mismatch still exist?
+
+For longer outputs, the exact-long benchmark was reused with:
+
+- prompt lengths `1024` and `1920`
+- output length `128`
+- concurrency `8`
+
+Why `1920` instead of `1984`?
+
+- because `1984 + 128` exceeds the current `2048` limit
+- the resulting `400 Bad Request` is a workload validity issue, not a model bug
+
+Exact-long `max_tokens=128` results:
+
+| workload | eager | piecewise | compile_no_cg |
+|---|---|---|---|
+| `1024 + 128`, concurrency `8` | `187.512 / 185.750` TPS | `180.043 / 182.027` TPS | `177.782 / 175.871` TPS |
+| `1920 + 128`, concurrency `8` | `137.117 / 137.148` TPS | `134.320 / 135.409` TPS | `133.385 / 133.164` TPS |
+
+Interpretation:
+
+- all three paths still matched the serial baseline
+- eager remains slightly ahead on this exact-long workload
+- `PIECEWISE` stays close behind
+- `compile_no_cg` is now also in the same general band, though still a bit slower
+
+The historical `compile_no_cg 128/c8` tail item was also rerun directly on the
+older mixed prompt benchmark:
+
+- `default_mixed_8`
+- `max_tokens=128`
+- concurrency `8`
+- compile_no_cg aggregate TPS:
+  - `277.310 / 274.227`
+  - avg `275.768`
+- all requests matched the serial baseline
+
+Interpretation:
+
+- the old `compile_no_cg 128/c8` mismatch is not reproduced on the current
+  decode-fused branch
+- this does not promote `compile_no_cg` to the preferred performance path
+- but it does substantially reduce the earlier correctness concern around long
+  outputs at high concurrency
+
+This changes the project posture again:
+
+- the remaining unanswered questions are increasingly about product-style
+  serving mixes and feature parity
+- not about an obviously broken RWKV7 recurrent execution path
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

@@ -689,7 +689,10 @@ RWKV7 in vLLM:
 - [x] 做 prefix caching correctness 覆盖
 - [x] 做 prefix caching exact-long throughput 覆盖
 - [x] 做 mixed prompt lengths throughput 覆盖
-- [ ] longer outputs 覆盖
+- [x] 做 longer outputs exact-long 覆盖：
+  - [x] eager `1024/1920 + 128, c=8`
+  - [x] `PIECEWISE 1024/1920 + 128, c=8`
+  - [x] `compile_no_cg 1024/1920 + 128, c=8`
 
 ### Phase 5. Kernelization / Varlen Optimization
 
@@ -786,12 +789,11 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
 
 下一步最值得直接开始的是：
 
-- [ ] 评估 longer outputs 是否还有隐藏分叉
-- [ ] 继续盯 `no-cg` 的 `128 tokens + concurrency 8` mismatch
 - [ ] 从“核心内核补齐”切到“vLLM 特性覆盖矩阵”：
   - async scheduling
   - TP/PP
   - 需要的话再评估 LoRA / 量化接口
+- [ ] 如果要证明 compile 的现实价值，补更真实的 repeated-prefix / partial-cache-hit workload
 
 compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
 - 纯 `PIECEWISE` 已经是可用且正确的主线
@@ -815,5 +817,16 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
   - prefix-cache：
     - eager avg `228.240`
     - `PIECEWISE` avg `229.388`
+- longer outputs exact-long 也已完成：
+  - `1024 + 128, c=8`:
+    - eager avg `186.631`
+    - `PIECEWISE` avg `181.035`
+    - `compile_no_cg` avg `176.827`
+  - `1920 + 128, c=8`:
+    - eager avg `137.133`
+    - `PIECEWISE` avg `134.864`
+    - `compile_no_cg` avg `133.275`
+- 旧的 `compile_no_cg 128/c8` mixed mismatch 在当前分支未复现：
+  - avg `275.768`
+  - all_match `true`
 - 模型特定热点已经不像之前那样突出，接下来更需要补服务矩阵和特性覆盖
-- `no-cg` 仍有长输出高并发尾巴要清

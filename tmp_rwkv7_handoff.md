@@ -1007,20 +1007,66 @@ Interpretation:
   - not a guaranteed standalone speedup over an already-fixed eager path
   - compatible with service features like prefix caching
 
+### 20. Longer outputs and the old compile_no_cg 128/c8 tail item are now covered
+
+Longer-output exact-long benchmark:
+
+- used:
+  - prompt lengths `1024` and `1920`
+  - `max_tokens=128`
+  - concurrency `8`
+- note:
+  - `1984 + 128` is invalid under the current `2048` cap, so `1920` is the
+    longest exact-long row that still fits
+
+Results:
+
+- eager:
+  - `1024 + 128`: `187.512 / 185.750`, avg `186.631`
+  - `1920 + 128`: `137.117 / 137.148`, avg `137.133`
+- piecewise:
+  - `1024 + 128`: `180.043 / 182.027`, avg `181.035`
+  - `1920 + 128`: `134.320 / 135.409`, avg `134.864`
+- compile_no_cg:
+  - `1024 + 128`: `177.782 / 175.871`, avg `176.827`
+  - `1920 + 128`: `133.385 / 133.164`, avg `133.275`
+
+Interpretation:
+
+- all three paths still match the serial baseline at longer outputs
+- eager remains slightly ahead on this exact-long workload
+- `PIECEWISE` stays close behind
+- `compile_no_cg` is also now in the same general band, though still slightly slower
+
+Historical tail-item recheck:
+
+- reran the old mixed-prompt scenario directly:
+  - `tmp_rwkv7_long_benchmark.py`
+  - `compile_no_cg`
+  - `max_tokens=128`
+  - concurrency `8`
+- result:
+  - aggregate TPS `277.310 / 274.227`, avg `275.768`
+  - all requests matched the serial baseline
+
+Conclusion:
+
+- the old `compile_no_cg 128/c8` mismatch is not reproduced on the current
+  decode-fused branch
+- `compile_no_cg` should still be treated as a secondary/debug path, but its
+  earlier long-output correctness concern is materially reduced now
+
 ## Current TODO List
 
 ### Highest priority
 
-1. Extend service validation beyond the current prompt set:
-   - longer outputs
-2. Re-check `compile_no_cg` on:
-   - `max_tokens=128`
-   - concurrency `8`
-3. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
-4. Start moving from core-kernel work to feature-parity work:
+1. Decide whether any parts of the current `fp32` correctness-first policy can be relaxed safely.
+2. Start moving from core-kernel work to feature-parity work:
    - async scheduling coverage
    - TP/PP coverage
    - interface support such as LoRA if needed
+3. If you want a stronger compile value story, test more realistic cache-hit
+   ratios and repeated-prefix serving mixes instead of only kernel-isolated probes
 
 ### After correctness recovery
 
@@ -1127,7 +1173,7 @@ The next concrete experiment should be:
 
 1. keep the decode-fused exact-long sequential rows as the current control
 2. validate:
-   - longer outputs
-3. revisit `compile_no_cg` with `128 tokens + concurrency 8`
-4. if the service matrix is stable, move to feature-parity work instead of more
+   - partial prefix-hit ratios
+   - more production-like repeated-prefix mixes
+3. if the service matrix is stable, move to feature-parity work instead of more
    low-level recurrent-kernel churn
