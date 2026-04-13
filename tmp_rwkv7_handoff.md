@@ -1209,3 +1209,74 @@ The next concrete experiment should be:
    - more production-like repeated-prefix mixes
 3. if the service matrix is stable, move to feature-parity work instead of more
    low-level recurrent-kernel churn
+
+## Partial Prefix-Hit Prefix-Caching Validation (2026-04-13)
+
+This round added a new benchmark helper:
+
+- [tmp_rwkv7_prefix_hit_bench.py](/home/liu/vllm/tmp_rwkv7_prefix_hit_bench.py)
+
+Why this probe exists:
+
+- the earlier prefix-caching checks proved correctness and "cache on vs off"
+  throughput, but they did not model partial hit ratios
+- this helper warms a small set of shared long prefixes, mixes them with fresh
+  cold prefixes, and measures `0.0 / 0.5 / 1.0` hit ratios under concurrency `8`
+- one subtle bug was fixed before running it: different hit-ratio scenarios now
+  use disjoint cold/tail token ranges so a previous scenario cannot silently
+  pre-warm a later one
+
+Commands and raw artifacts:
+
+- eager JSON:
+  - [rwkv7_prefix_hit_eager_20260413.json](/tmp/rwkv7_prefix_hit_eager_20260413.json)
+- eager log:
+  - [vllm_rwkv7_prefix_hit_eager_20260413.log](/tmp/vllm_rwkv7_prefix_hit_eager_20260413.log)
+- piecewise JSON:
+  - [rwkv7_prefix_hit_piecewise_20260413.json](/tmp/rwkv7_prefix_hit_piecewise_20260413.json)
+- piecewise log:
+  - [vllm_rwkv7_prefix_hit_piecewise_20260413.log](/tmp/vllm_rwkv7_prefix_hit_piecewise_20260413.log)
+
+Steady-state summary:
+
+- eager:
+  - hit ratio `0.0`: `109.572 / 122.895`, avg `116.233`
+  - hit ratio `0.5`: `166.636 / 172.240`, avg `169.438`
+  - hit ratio `1.0`: `251.274 / 255.214`, avg `253.244`
+- piecewise:
+  - hit ratio `0.0`: `121.039 / 124.047`, avg `122.543`
+  - hit ratio `0.5`: `163.858 / 174.774`, avg `169.316`
+  - hit ratio `1.0`: `252.544 / 249.909`, avg `251.227`
+
+Correctness and log checks:
+
+- all measured rounds matched the serial baseline
+- both logs still report experimental Mamba cache `align` mode
+
+Interpretation:
+
+- prefix caching remains the dominant service-level lever for RWKV7
+- throughput rises almost monotonically with prefix-hit ratio:
+  - eager: `116.233 -> 169.438 -> 253.244`
+  - piecewise: `122.543 -> 169.316 -> 251.227`
+- `PIECEWISE` is a bit better at `0%` hit, essentially tied at `50%`, and
+  slightly behind at `100%`; practically they sit in the same band once cache
+  reuse is present
+- this strengthens the current project-level conclusion:
+  - compile/cudagraph is supported and correct on RWKV7
+  - the biggest serving gain still comes from prefix caching itself, not from
+    compile alone
+
+Important caveat:
+
+- this benchmark is still bursty concurrent traffic
+- it is more realistic than the old exact-length cache probe, but it is not yet
+  an arrival-staggered streaming workload
+
+Updated recommended next action:
+
+1. extend the new helper into repeated-prefix arrival-staggered mixes
+2. if that is stable, move to feature-parity work:
+   - LoRA if needed
+   - quantization matrix
+   - disaggregated prefill/decode validation

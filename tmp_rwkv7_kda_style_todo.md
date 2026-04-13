@@ -794,6 +794,20 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
   - TP/PP
   - 需要的话再评估 LoRA / 量化接口
 - [ ] 如果要证明 compile 的现实价值，补更真实的 repeated-prefix / partial-cache-hit workload
+- [x] partial prefix-hit workload：
+  - [x] 新增 [tmp_rwkv7_prefix_hit_bench.py](/home/liu/vllm/tmp_rwkv7_prefix_hit_bench.py)
+  - [x] 用 warmed shared prefixes + fresh cold prefixes 跑 `0.0 / 0.5 / 1.0`
+    hit ratio
+  - [x] eager 和 `PIECEWISE` 都完成 `concurrency=8`、`1024+128 -> 64`
+    的部分命中率验证
+  - [x] 所有测量轮次继续对齐串行 baseline
+  - [x] 结论明确：
+    - prefix caching 仍然是最大的服务级增益来源
+    - `PIECEWISE` 在 partial-hit workload 下已经和 eager 基本同档
+- [ ] 更真实的 repeated-prefix / partial-cache-hit workload：
+  - [ ] 做 arrival-staggered 请求流，而不是每轮同时送一批
+  - [ ] 补 partial hit ratio 随时间变化的场景，而不是固定 `0.0 / 0.5 / 1.0`
+  - [ ] 加入更接近线上分布的 prompt length mix
 
 compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
 - 纯 `PIECEWISE` 已经是可用且正确的主线
@@ -817,6 +831,16 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
   - prefix-cache：
     - eager avg `228.240`
     - `PIECEWISE` avg `229.388`
+- partial prefix-hit workload 已完成：
+  - eager：
+    - hit ratio `0.0`: avg `116.233`
+    - hit ratio `0.5`: avg `169.438`
+    - hit ratio `1.0`: avg `253.244`
+  - `PIECEWISE`：
+    - hit ratio `0.0`: avg `122.543`
+    - hit ratio `0.5`: avg `169.316`
+    - hit ratio `1.0`: avg `251.227`
+  - 两边都随 hit ratio 提升而阶梯式增速，且全部对齐串行 baseline
 - longer outputs exact-long 也已完成：
   - `1024 + 128, c=8`:
     - eager avg `186.631`

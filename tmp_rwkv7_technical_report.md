@@ -1053,6 +1053,68 @@ This changes the project posture again:
   serving mixes and feature parity
 - not about an obviously broken RWKV7 recurrent execution path
 
+### 8.7.10 Partial Prefix-Hit Prefix-Caching Workload
+
+The next follow-up was to probe a more realistic cache-reuse pattern than the
+previous "cache off vs cache on" experiments. The new helper
+[tmp_rwkv7_prefix_hit_bench.py](/home/liu/vllm/tmp_rwkv7_prefix_hit_bench.py)
+does the following:
+
+1. warms a small set of long shared prefixes
+2. mixes those warmed prefixes with fresh cold prefixes
+3. measures concurrent throughput at hit ratios `0.0`, `0.5`, and `1.0`
+4. checks every measured round against a serial baseline
+
+One correctness detail mattered here:
+
+- different hit-ratio scenarios must not reuse the same cold prefixes
+- otherwise a previous scenario silently warms the next one and contaminates the
+  measurement
+- the helper was fixed to allocate disjoint cold/tail token ranges per scenario
+  before any numbers were collected
+
+Configuration:
+
+- model: `RWKV7-Goose-World2.9-0.4B-HF`
+- shared prefix length: `1024`
+- tail length: `128`
+- output length: `64`
+- concurrency: `8`
+- rounds: `2`
+- prefix caching: enabled
+
+Results:
+
+| hit ratio | eager | piecewise |
+|---|---|---|
+| `0.0` | `109.572 / 122.895` TPS | `121.039 / 124.047` TPS |
+| `0.5` | `166.636 / 172.240` TPS | `163.858 / 174.774` TPS |
+| `1.0` | `251.274 / 255.214` TPS | `252.544 / 249.909` TPS |
+
+Interpretation:
+
+- throughput rises strongly with prefix-hit ratio on both paths
+- eager:
+  - avg `116.233 -> 169.438 -> 253.244`
+- piecewise:
+  - avg `122.543 -> 169.316 -> 251.227`
+- `PIECEWISE` is slightly better at `0%` hit, essentially tied at `50%`, and
+  slightly behind at `100%`
+- practically, once cache reuse exists, eager and `PIECEWISE` land in the same
+  serving band
+
+This result sharpens the current conclusion again:
+
+- compile/cudagraph support for RWKV7 is real and correct
+- but the major production-style throughput lever is still prefix caching
+  itself, not compile alone
+
+There is still one realism gap left:
+
+- this benchmark is a burst workload with concurrent arrivals inside a round
+- it is more realistic than the earlier exact-length cache probe
+- but it is not yet an arrival-staggered repeated-prefix serving stream
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

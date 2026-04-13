@@ -690,3 +690,70 @@ python tmp_rwkv7_long_benchmark.py \
   --log /tmp/vllm_rwkv7_long_compile_no_cg_mt128_20260413.log \
   > /tmp/rwkv7_long_compile_no_cg_mt128_20260413.json
 ```
+
+### `2026-04-13_eager_0p4b_prefix_hit_mt64_prefixcache`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --enable-prefix-caching \
+  --port 8069 \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --shared-prefix-count 2 \
+  --hit-ratios 0.0 0.5 1.0 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_eager_20260413.log \
+  > /tmp/rwkv7_prefix_hit_eager_20260413.json
+```
+
+Results:
+
+- hit ratio `0.0`: `109.572 / 122.895`, avg `116.233`, all-match `true`
+- hit ratio `0.5`: `166.636 / 172.240`, avg `169.438`, all-match `true`
+- hit ratio `1.0`: `251.274 / 255.214`, avg `253.244`, all-match `true`
+
+### `2026-04-13_piecewise_0p4b_prefix_hit_mt64_prefixcache`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --cudagraph-mode piecewise \
+  --port 8070 \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --shared-prefix-count 2 \
+  --hit-ratios 0.0 0.5 1.0 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_piecewise_20260413.log \
+  > /tmp/rwkv7_prefix_hit_piecewise_20260413.json
+```
+
+Results:
+
+- hit ratio `0.0`: `121.039 / 124.047`, avg `122.543`, all-match `true`
+- hit ratio `0.5`: `163.858 / 174.774`, avg `169.316`, all-match `true`
+- hit ratio `1.0`: `252.544 / 249.909`, avg `251.227`, all-match `true`
+
+Notes:
+
+- logs confirm prefix caching is still using experimental Mamba cache `align`
+  mode
+- this benchmark warms only the shared prefixes; each scenario uses fresh cold
+  prefixes so `0.0 / 0.5 / 1.0` stay isolated
+- this is more realistic than the previous exact-length cache probe, but it is
+  still a burst workload rather than arrival-staggered traffic
