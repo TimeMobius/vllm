@@ -47,6 +47,8 @@
 | `2026-04-13_eager_0p4b_mixed_exact_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_eager_prefixcache_20260413.json](/tmp/rwkv7_mixed_exact_eager_prefixcache_20260413.json) | [vllm_rwkv7_mixed_exact_eager_prefixcache_20260413.log](/tmp/vllm_rwkv7_mixed_exact_eager_prefixcache_20260413.log) | exact token mixed prompt lengths；开启 prefix caching |
 | `2026-04-13_piecewise_0p4b_mixed_exact_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_piecewise_prefixcache_20260413.json](/tmp/rwkv7_mixed_exact_piecewise_prefixcache_20260413.json) | [vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log](/tmp/vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log) | exact token mixed prompt lengths；开启 prefix caching；Mamba cache `align` mode |
 | `2026-04-13_compile_no_cg_0p4b_mt128` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `auto` | `128` | `2` | `1` | `8` | `default_mixed_8` | [rwkv7_long_compile_no_cg_mt128_20260413.json](/tmp/rwkv7_long_compile_no_cg_mt128_20260413.json) | [vllm_rwkv7_long_compile_no_cg_mt128_20260413.log](/tmp/vllm_rwkv7_long_compile_no_cg_mt128_20260413.log) | 直接回查历史 `no-cg 128/c8` mixed 场景；当前实现下未复现 mismatch |
+| `2026-04-13_eager_0p4b_mt64_refresh_seq` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `1/2/4/8` | `default_mixed_8` | [rwkv7_bench_eager_refresh_seq_20260413.json](/tmp/rwkv7_bench_eager_refresh_seq_20260413.json) | [vllm_rwkv7_eager_bench_refresh_seq_20260413.log](/tmp/vllm_rwkv7_eager_bench_refresh_seq_20260413.log) | 当前代码状态下重新串行复跑的 eager 对照；用于和最新 `PIECEWISE` 直接横比 |
+| `2026-04-13_piecewise_0p4b_mt64_refresh_seq` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `1/2/4/8` | `default_mixed_8` | [rwkv7_bench_piecewise_refresh_seq_20260413.json](/tmp/rwkv7_bench_piecewise_refresh_seq_20260413.json) | [vllm_rwkv7_piecewise_bench_refresh_seq_20260413.log](/tmp/vllm_rwkv7_piecewise_bench_refresh_seq_20260413.log) | 当前代码状态下重新串行复跑的 `compile + cg (PIECEWISE)` 对照 |
 
 ## Throughput Table
 
@@ -59,6 +61,14 @@
 | `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `4` | `18.689` | `n/a` | `18.689` | `true` |
 | `2026-04-13_piecewise_0p4b_mt16_smoke_packedprefill` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `16` | `8` | `208.104` | `n/a` | `208.104` | `true` |
 | `2026-04-13_compile_no_cg_0p4b_mt128` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `compile_no_cg` | `128` | `8` | `277.310` | `274.227` | `275.768` | `true` |
+| `2026-04-13_eager_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `1` | `36.107` | `35.839` | `35.973` | `true` |
+| `2026-04-13_eager_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `2` | `68.850` | `73.769` | `71.310` | `true` |
+| `2026-04-13_eager_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `4` | `133.740` | `141.088` | `137.414` | `true` |
+| `2026-04-13_eager_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `64` | `8` | `286.786` | `283.853` | `285.320` | `true` |
+| `2026-04-13_piecewise_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `1` | `34.830` | `35.667` | `35.249` | `true` |
+| `2026-04-13_piecewise_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `2` | `69.997` | `70.206` | `70.102` | `true` |
+| `2026-04-13_piecewise_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `4` | `129.235` | `129.512` | `129.374` | `true` |
+| `2026-04-13_piecewise_0p4b_mt64_refresh_seq` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `64` | `8` | `271.006` | `257.948` | `264.477` | `true` |
 
 ## Exact Long-Input Throughput Table
 
@@ -188,6 +198,19 @@ old mixed prompt benchmark:
 - all requests still matched the serial baseline
 
 That old mismatch is therefore not reproduced on the current decode-fused branch.
+
+Current refreshed `default_mixed_8`, `max_tokens=64` control under the latest code:
+
+- eager:
+  - concurrency `1`: `36.107 / 35.839`, avg `35.973`
+  - concurrency `2`: `68.850 / 73.769`, avg `71.310`
+  - concurrency `4`: `133.740 / 141.088`, avg `137.414`
+  - concurrency `8`: `286.786 / 283.853`, avg `285.320`
+- `PIECEWISE`:
+  - concurrency `1`: `34.830 / 35.667`, avg `35.249`
+  - concurrency `2`: `69.997 / 70.206`, avg `70.102`
+  - concurrency `4`: `129.235 / 129.512`, avg `129.374`
+  - concurrency `8`: `271.006 / 257.948`, avg `264.477`
 
 On a single GPU, do not launch eager and `PIECEWISE` benchmark servers in
 parallel. Those runs contend on the same device and should be treated as

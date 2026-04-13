@@ -829,4 +829,9 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
 - 旧的 `compile_no_cg 128/c8` mixed mismatch 在当前分支未复现：
   - avg `275.768`
   - all_match `true`
+- 当前最新 `default_mixed_8, max_tokens=64` refreshed control：
+  - eager:
+    - `1/2/4/8` = `35.973 / 71.310 / 137.414 / 285.320`
+  - `PIECEWISE`:
+    - `1/2/4/8` = `35.249 / 70.102 / 129.374 / 264.477`
 - 模型特定热点已经不像之前那样突出，接下来更需要补服务矩阵和特性覆盖

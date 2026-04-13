@@ -1056,6 +1056,38 @@ Conclusion:
 - `compile_no_cg` should still be treated as a secondary/debug path, but its
   earlier long-output correctness concern is materially reduced now
 
+### 21. Current 1/2/4/8 concurrency numbers have been refreshed on the latest branch state
+
+Workload:
+
+- prompt set: `default_mixed_8`
+- `max_tokens=64`
+- model:
+  - `RWKV7-Goose-World2.9-0.4B-HF`
+- rounds `2`, warmup `1`
+- eager and `PIECEWISE` rerun sequentially on one GPU
+
+Results:
+
+- eager:
+  - `1`: `36.107 / 35.839`, avg `35.973`
+  - `2`: `68.850 / 73.769`, avg `71.310`
+  - `4`: `133.740 / 141.088`, avg `137.414`
+  - `8`: `286.786 / 283.853`, avg `285.320`
+- piecewise:
+  - `1`: `34.830 / 35.667`, avg `35.249`
+  - `2`: `69.997 / 70.206`, avg `70.102`
+  - `4`: `129.235 / 129.512`, avg `129.374`
+  - `8`: `271.006 / 257.948`, avg `264.477`
+
+Interpretation:
+
+- current `compile + cg` is usable and close to eager on this benchmark
+- eager is still ahead on the latest no-cache mixed throughput control
+- the gap is modest at low concurrency and larger at `8`
+- this is one more sign that compile is now primarily a supported execution path,
+  not a guaranteed throughput win over the already-fixed eager path
+
 ## Current TODO List
 
 ### Highest priority
