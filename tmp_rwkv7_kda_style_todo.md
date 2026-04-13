@@ -808,6 +808,14 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
   - [ ] 做 arrival-staggered 请求流，而不是每轮同时送一批
   - [ ] 补 partial hit ratio 随时间变化的场景，而不是固定 `0.0 / 0.5 / 1.0`
   - [ ] 加入更接近线上分布的 prompt length mix
+- [x] 高并发压力测试：
+  - [x] 单卡 `default_mixed_8, max_tokens=64`
+  - [x] eager / `PIECEWISE` 都完成 `1/2/4/8/16/32/64`
+  - [x] 额外补 `128` 并发 stress pass
+  - [x] 所有轮次继续对齐串行 baseline
+  - [x] 结论：
+    - `PIECEWISE` 可以稳定扛到 `128`
+    - eager 在 `128` 出现明显吞吐 cliff 和队列延迟上升
 
 compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
 - 纯 `PIECEWISE` 已经是可用且正确的主线
@@ -858,4 +866,10 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - `1/2/4/8` = `35.973 / 71.310 / 137.414 / 285.320`
   - `PIECEWISE`:
     - `1/2/4/8` = `35.249 / 70.102 / 129.374 / 264.477`
+- 高并发 `default_mixed_8, max_tokens=64` stress：
+  - eager:
+    - `16/32/64/128` = `459.711 / 929.251 / 1284.756 / 379.127`
+  - `PIECEWISE`:
+    - `16/32/64/128` = `466.835 / 857.579 / 1275.735 / 1668.700`
+  - 单卡上 `PIECEWISE` 到 `128` 仍然健康，eager 在 `128` 出现明显 cliff
 - 模型特定热点已经不像之前那样突出，接下来更需要补服务矩阵和特性覆盖

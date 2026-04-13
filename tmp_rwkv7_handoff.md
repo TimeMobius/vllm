@@ -1280,3 +1280,83 @@ Updated recommended next action:
    - LoRA if needed
    - quantization matrix
    - disaggregated prefill/decode validation
+
+## High-Concurrency Stress Validation (2026-04-13)
+
+The next request was straightforward:
+
+- can the current RWKV7 adaptation actually tolerate very high concurrency on a
+  single GPU?
+
+To answer that, the existing mixed-prompt benchmark was reused with:
+
+- model: `RWKV7-Goose-World2.9-0.4B-HF`
+- workload: `default_mixed_8`
+- output length: `64`
+- prefix caching: disabled
+- execution paths:
+  - eager
+  - `PIECEWISE`
+- concurrency:
+  - `1, 2, 4, 8, 16, 32, 64`
+  - then `128` in a separate stress pass
+
+Raw artifacts:
+
+- piecewise `1..64`:
+  - [rwkv7_piecewise_high_conc_20260413.json](/tmp/rwkv7_piecewise_high_conc_20260413.json)
+- piecewise `128`:
+  - [rwkv7_piecewise_c128_20260413.json](/tmp/rwkv7_piecewise_c128_20260413.json)
+- eager `1..64`:
+  - [rwkv7_eager_high_conc_20260413.json](/tmp/rwkv7_eager_high_conc_20260413.json)
+- eager `128`:
+  - [rwkv7_eager_c128_20260413.json](/tmp/rwkv7_eager_c128_20260413.json)
+
+Summary table:
+
+| concurrency | eager TPS | piecewise TPS |
+|---|---:|---:|
+| `1` | `31.156` | `29.302` |
+| `2` | `62.260` | `68.573` |
+| `4` | `123.345` | `135.256` |
+| `8` | `245.424` | `244.390` |
+| `16` | `459.711` | `466.835` |
+| `32` | `929.251` | `857.579` |
+| `64` | `1284.756` | `1275.735` |
+| `128` | `379.127` | `1668.700` |
+
+Latency observations:
+
+- eager:
+  - stays near `~2.05s` through `8`
+  - `64`: avg `3.171s`, p95 `3.185s`
+  - `128`: avg `15.553s`, p95 `21.746s`
+- piecewise:
+  - stays near `~1.87s` to `~2.38s` through `32`
+  - `64`: avg `3.192s`, p95 `3.206s`
+  - `128`: avg `4.875s`, p95 `4.945s`
+
+Correctness:
+
+- every measured round still matched the serial baseline
+- even eager `128` returned full `64` output tokens per request
+- so the eager `128` collapse is not a "generated fewer tokens" artifact
+
+Interpretation:
+
+- yes, the current RWKV7 adaptation can handle very large concurrency on one
+  GPU
+- on the validated workload, `PIECEWISE` remains healthy through `128`
+- eager is also fine through `64`, but shows a sharp throughput/latency cliff at
+  `128`
+- this is the clearest evidence so far that compile/cudagraph support for RWKV7
+  is not just "compatible": at sufficiently high concurrency it can materially
+  improve service behavior
+
+Practical deployment readout from this round:
+
+1. if you expect peak concurrency around `<=64`, eager and `PIECEWISE` are both
+   usable on this workload
+2. if you expect larger bursts, `PIECEWISE` is now the safer path
+3. the next realism upgrade should be arrival-staggered high-concurrency traffic
+   rather than another synchronized burst-only sweep

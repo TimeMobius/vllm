@@ -1115,6 +1115,73 @@ There is still one realism gap left:
 - it is more realistic than the earlier exact-length cache probe
 - but it is not yet an arrival-staggered repeated-prefix serving stream
 
+### 8.7.11 High-Concurrency Stress Sweep
+
+Once the service-style cache probes were in place, the natural next question
+was whether the current RWKV7 adaptation could actually tolerate very large
+concurrency on a single GPU.
+
+The existing mixed-prompt benchmark was reused for a direct stress sweep:
+
+- model: `RWKV7-Goose-World2.9-0.4B-HF`
+- workload: `default_mixed_8`
+- output length: `64`
+- prefix caching: off
+- paths:
+  - eager
+  - `PIECEWISE`
+- concurrency:
+  - `1, 2, 4, 8, 16, 32, 64`
+  - plus a separate `128` stress pass
+
+Results:
+
+| concurrency | eager | piecewise |
+|---|---:|---:|
+| `1` | `31.156` TPS | `29.302` TPS |
+| `2` | `62.260` TPS | `68.573` TPS |
+| `4` | `123.345` TPS | `135.256` TPS |
+| `8` | `245.424` TPS | `244.390` TPS |
+| `16` | `459.711` TPS | `466.835` TPS |
+| `32` | `929.251` TPS | `857.579` TPS |
+| `64` | `1284.756` TPS | `1275.735` TPS |
+| `128` | `379.127` TPS | `1668.700` TPS |
+
+Latency behavior matters as much as TPS here:
+
+- eager:
+  - roughly `~2s` average request latency through `8`
+  - `64`: avg `3.171s`, p95 `3.185s`
+  - `128`: avg `15.553s`, p95 `21.746s`
+- piecewise:
+  - roughly `~1.9s` to `~2.4s` through `32`
+  - `64`: avg `3.192s`, p95 `3.206s`
+  - `128`: avg `4.875s`, p95 `4.945s`
+
+Correctness remained intact:
+
+- every measured round matched the serial baseline
+- even at eager `128`, all requests still produced the full `64` output tokens
+- so the eager collapse is not explained by truncated outputs
+
+Interpretation:
+
+- up to `64` concurrency, both eager and `PIECEWISE` remain viable on this
+  workload and land in a similar throughput band
+- at `128`, the execution paths diverge sharply:
+  - eager falls off a cliff
+  - `PIECEWISE` continues to scale
+- this is the strongest evidence so far that compile/cudagraph support for
+  RWKV7 is not merely "correctness plumbing"; under sufficiently high burst
+  concurrency it can materially improve serving behavior
+
+This does not yet mean "RWKV7 is solved for all large-scale traffic":
+
+- the workload is still synchronized burst traffic
+- the next realism step is arrival-staggered high-concurrency serving
+- but as a single-GPU stress result, the current adaptation already shows a
+  meaningful operational distinction between eager and `PIECEWISE`
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

@@ -757,3 +757,98 @@ Notes:
   prefixes so `0.0 / 0.5 / 1.0` stay isolated
 - this is more realistic than the previous exact-length cache probe, but it is
   still a burst workload rather than arrival-staggered traffic
+
+### `2026-04-13_piecewise_0p4b_mt64_high_concurrency`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_long_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --port 8071 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --concurrency-levels 1 2 4 8 16 32 64 \
+  --log /tmp/vllm_rwkv7_piecewise_high_conc_20260413.log \
+  > /tmp/rwkv7_piecewise_high_conc_20260413.json
+
+python tmp_rwkv7_long_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --cudagraph-mode piecewise \
+  --port 8073 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --concurrency-levels 128 \
+  --log /tmp/vllm_rwkv7_piecewise_c128_20260413.log \
+  > /tmp/rwkv7_piecewise_c128_20260413.json
+```
+
+Results:
+
+| concurrency | aggregate TPS | avg latency | p95 latency | all-match |
+|---|---:|---:|---:|---|
+| `1` | `29.302` | `2.191s` | `2.312s` | `true` |
+| `2` | `68.573` | `1.868s` | `1.919s` | `true` |
+| `4` | `135.256` | `1.892s` | `1.905s` | `true` |
+| `8` | `244.390` | `2.093s` | `2.114s` | `true` |
+| `16` | `466.835` | `2.189s` | `2.200s` | `true` |
+| `32` | `857.579` | `2.381s` | `2.457s` | `true` |
+| `64` | `1275.735` | `3.192s` | `3.206s` | `true` |
+| `128` | `1668.700` | `4.875s` | `4.945s` | `true` |
+
+### `2026-04-13_eager_0p4b_mt64_high_concurrency`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_long_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8072 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --concurrency-levels 1 2 4 8 16 32 64 \
+  --log /tmp/vllm_rwkv7_eager_high_conc_20260413.log \
+  > /tmp/rwkv7_eager_high_conc_20260413.json
+
+python tmp_rwkv7_long_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8074 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --concurrency-levels 128 \
+  --log /tmp/vllm_rwkv7_eager_c128_20260413.log \
+  > /tmp/rwkv7_eager_c128_20260413.json
+```
+
+Results:
+
+| concurrency | aggregate TPS | avg latency | p95 latency | all-match |
+|---|---:|---:|---:|---|
+| `1` | `31.156` | `2.054s` | `2.059s` | `true` |
+| `2` | `62.260` | `2.055s` | `2.082s` | `true` |
+| `4` | `123.345` | `2.074s` | `2.086s` | `true` |
+| `8` | `245.424` | `2.084s` | `2.094s` | `true` |
+| `16` | `459.711` | `2.226s` | `2.332s` | `true` |
+| `32` | `929.251` | `2.212s` | `2.410s` | `true` |
+| `64` | `1284.756` | `3.171s` | `3.185s` | `true` |
+| `128` | `379.127` | `15.553s` | `21.746s` | `true` |
+
+Notes:
+
+- workload is the existing `default_mixed_8` prompt mix, `max_tokens=64`,
+  single GPU, no prefix caching
+- `128` was run separately after the `1..64` sweep because the `64 -> 128`
+  extension was the real stress target
+- all requests still generated full `64` output tokens at `128`, so the eager
+  collapse at `128` is not a short-output artifact
+- `PIECEWISE` keeps scaling at `128`, while eager shows a clear throughput cliff
+  and large queueing latency jump
