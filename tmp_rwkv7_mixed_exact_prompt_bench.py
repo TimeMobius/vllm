@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import argparse
 import json
 import os
@@ -48,6 +50,7 @@ def build_token_buffer(
 def complete_with_ids(
     base: str,
     model: str,
+    prompt_name: str,
     prompt_ids: list[int],
     max_tokens: int,
     seed: int,
@@ -70,6 +73,8 @@ def complete_with_ids(
     choice = obj["choices"][0]
     token_ids = choice["token_ids"]
     return {
+        "prompt_name": prompt_name,
+        "prompt_len": len(prompt_ids),
         "token_ids": token_ids,
         "text": choice["text"],
         "elapsed_sec": elapsed,
@@ -81,37 +86,50 @@ def complete_with_ids(
 def run_serial_baseline(
     base: str,
     model: str,
-    prompt_ids: list[int],
+    prompt_specs: list[tuple[str, list[int]]],
     max_tokens: int,
     seed: int,
-) -> dict:
-    return complete_with_ids(base, model, prompt_ids, max_tokens, seed)
+) -> dict[str, dict]:
+    baseline: dict[str, dict] = {}
+    for prompt_name, prompt_ids in prompt_specs:
+        baseline[prompt_name] = complete_with_ids(
+            base,
+            model,
+            prompt_name,
+            prompt_ids,
+            max_tokens,
+            seed,
+        )
+    return baseline
 
 
 def run_concurrent_batch(
     base: str,
     model: str,
-    prompt_ids: list[int],
-    concurrency: int,
+    prompt_specs: list[tuple[str, list[int]]],
     max_tokens: int,
     seed: int,
 ) -> dict:
     started = time.perf_counter()
     results = []
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+    with ThreadPoolExecutor(max_workers=len(prompt_specs)) as pool:
         futures = [
             pool.submit(
                 complete_with_ids,
                 base,
                 model,
+                prompt_name,
                 prompt_ids,
                 max_tokens,
                 seed,
             )
-            for _ in range(concurrency)
+            for prompt_name, prompt_ids in prompt_specs
         ]
         for future in as_completed(futures):
             results.append(future.result())
+
+    prompt_order = {prompt_name: idx for idx, (prompt_name, _) in enumerate(prompt_specs)}
+    results.sort(key=lambda row: prompt_order[row["prompt_name"]])
     wall_time = time.perf_counter() - started
     total_output_tokens = sum(row["output_tokens"] for row in results)
     return {
@@ -129,7 +147,7 @@ def main() -> int:
     parser.add_argument("--gpu-memory-utilization", default="0.8")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--max-tokens", type=int, default=64)
-    parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--warmup-prompt-len", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
@@ -150,13 +168,7 @@ def main() -> int:
         "--prompt-lengths",
         nargs="+",
         type=int,
-        default=[1024, 1984],
-    )
-    parser.add_argument(
-        "--concurrency-levels",
-        nargs="+",
-        type=int,
-        default=[1, 4, 8],
+        default=[64, 128, 256, 512, 768, 1024, 1536, 1984],
     )
     parser.add_argument(
         "--seed-text",
@@ -168,7 +180,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--log",
-        default="/tmp/vllm_rwkv7_exact_long_input_bench.log",
+        default="/tmp/vllm_rwkv7_mixed_exact_prompt_bench.log",
         help="server log path",
     )
     args = parser.parse_args()
@@ -241,57 +253,61 @@ def main() -> int:
                 args.seed_text,
                 max(max(args.prompt_lengths), args.warmup_prompt_len),
             )
-
+            prompt_specs = [
+                (f"len_{prompt_len}", token_buffer[:prompt_len])
+                for prompt_len in args.prompt_lengths
+            ]
             warmup_prompt_ids = token_buffer[: args.warmup_prompt_len]
             for _ in range(args.warmup):
                 complete_with_ids(
                     base,
                     args.model,
+                    "warmup",
                     warmup_prompt_ids,
                     min(args.max_tokens, 16),
                     args.seed,
                 )
 
-            scenarios = []
-            for prompt_len in args.prompt_lengths:
-                prompt_ids = token_buffer[:prompt_len]
-                for concurrency in args.concurrency_levels:
-                    baseline = run_serial_baseline(
-                        base,
-                        args.model,
-                        prompt_ids,
-                        args.max_tokens,
-                        args.seed,
-                    )
-                    rounds = []
-                    for round_idx in range(args.rounds):
-                        batch = run_concurrent_batch(
-                            base,
-                            args.model,
-                            prompt_ids,
-                            concurrency,
-                            args.max_tokens,
-                            args.seed,
-                        )
-                        for req in batch["requests"]:
-                            req["matches_serial_baseline"] = (
-                                req["token_ids"] == baseline["token_ids"]
-                            )
-                        batch["round"] = round_idx
-                        batch["all_match_serial_baseline"] = all(
-                            req["matches_serial_baseline"] for req in batch["requests"]
-                        )
-                        rounds.append(batch)
+            baseline = run_serial_baseline(
+                base,
+                args.model,
+                prompt_specs,
+                args.max_tokens,
+                args.seed,
+            )
 
-                    scenarios.append(
+            rounds = []
+            for round_idx in range(args.rounds):
+                batch = run_concurrent_batch(
+                    base,
+                    args.model,
+                    prompt_specs,
+                    args.max_tokens,
+                    args.seed,
+                )
+                requests = []
+                for req in batch["requests"]:
+                    baseline_req = baseline[req["prompt_name"]]
+                    requests.append(
                         {
-                            "prompt_len": prompt_len,
-                            "concurrency": concurrency,
-                            "max_tokens": args.max_tokens,
-                            "baseline": baseline,
-                            "rounds": rounds,
+                            **req,
+                            "matches_serial_baseline": (
+                                req["token_ids"] == baseline_req["token_ids"]
+                            ),
                         }
                     )
+                rounds.append(
+                    {
+                        "round": round_idx,
+                        "wall_time_sec": batch["wall_time_sec"],
+                        "total_output_tokens": batch["total_output_tokens"],
+                        "aggregate_tps": batch["aggregate_tps"],
+                        "all_match_serial_baseline": all(
+                            req["matches_serial_baseline"] for req in requests
+                        ),
+                        "requests": requests,
+                    }
+                )
 
             print(
                 json.dumps(
@@ -308,9 +324,10 @@ def main() -> int:
                         "rounds": args.rounds,
                         "warmup": args.warmup,
                         "prompt_lengths": args.prompt_lengths,
-                        "concurrency_levels": args.concurrency_levels,
                         "server_log": str(log_path),
-                        "scenarios": scenarios,
+                        "baseline": baseline,
+                        "batch_concurrency": len(prompt_specs),
+                        "rounds_data": rounds,
                     },
                     ensure_ascii=False,
                     indent=2,

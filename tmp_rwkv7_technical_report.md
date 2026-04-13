@@ -932,6 +932,70 @@ One practical lesson from this round:
   GPU
 - those runs directly contend on the same device and produce invalid TPS samples
 
+### 8.7.8 Prefix Caching And Mixed Prompt-Length Validation
+
+After the recurrent hot paths were fused, the next question was no longer
+"can compile run correctly?" but rather "does it behave sensibly in real
+service-style workloads?"
+
+Two follow-up probes were added:
+
+1. `tmp_rwkv7_exact_long_input_bench.py --enable-prefix-caching`
+2. [tmp_rwkv7_mixed_exact_prompt_bench.py](/home/liu/vllm/tmp_rwkv7_mixed_exact_prompt_bench.py)
+
+The mixed prompt benchmark uses exact token lengths:
+
+- `64`
+- `128`
+- `256`
+- `512`
+- `768`
+- `1024`
+- `1536`
+- `1984`
+
+Correctness check first:
+
+- `tmp_rwkv7_compare.py --enable-prefix-caching --disable-compile-cache`
+- one-shot vs step-by-step still matched on the standard `3` prompts
+
+Prefix-caching exact-long results:
+
+| workload | eager | piecewise |
+|---|---|---|
+| `1024 + 64`, concurrency `8` | `130.217 / 210.408` TPS | `149.130 / 208.119` TPS |
+| `1984 + 64`, concurrency `8` | `155.799 / 270.292` TPS | `165.642 / 256.278` TPS |
+
+Interpretation:
+
+- prefix caching is working
+- the serial baseline warms the prefix cache before the measured concurrent
+  rounds, so the large round1 jump is expected
+- once the cache is hot, eager and `PIECEWISE` sit in the same band
+
+Mixed exact prompt-length results:
+
+| workload | eager | piecewise |
+|---|---|---|
+| no cache | `149.064 / 150.716` TPS | `87.009 / 134.828` TPS |
+| prefix cache | `225.201 / 231.280` TPS | `228.883 / 229.894` TPS |
+
+Interpretation:
+
+- without prefix caching, mixed prompt lengths still expose some first-round
+  `PIECEWISE` warmup cost
+- with prefix caching enabled, eager and `PIECEWISE` are again effectively tied
+- in these service-level scenarios, prefix caching contributes a much larger
+  throughput shift than compile alone
+
+This sharpens the practical conclusion:
+
+- compile support for RWKV7 is now real and correct on the validated path
+- but it should not be sold as a guaranteed standalone throughput win over the
+  already-fixed eager path
+- the biggest remaining work is service/feature coverage, not another deep
+  recurrence rewrite
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

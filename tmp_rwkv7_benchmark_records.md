@@ -21,6 +21,7 @@
 | `default_mixed_8` | `i am`; `北京是`; `The capital of France is`; `Once upon a time`; `In a shocking finding, scientists discovered`; `人工智能的未来`; `Write a short haiku about the sea`; `The theory of relativity says` | [tmp_rwkv7_long_benchmark.py](/home/liu/vllm/tmp_rwkv7_long_benchmark.py) |
 | `rwkv7_ttft_seed_repeat` | exact token prefixes cut from repeated tokenization of `The capital of France is Paris. 北京是中国的首都。 RWKV7 is a recurrent world model for language generation.` | [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py) |
 | `rwkv7_exact_long_repeat` | exact token prefixes cut from repeated tokenization of `The capital of France is Paris. Beijing is the capital of China. RWKV7 is a recurrent world model for language generation.` | [tmp_rwkv7_exact_long_input_bench.py](/home/liu/vllm/tmp_rwkv7_exact_long_input_bench.py) |
+| `rwkv7_mixed_exact_repeat` | exact token prefixes with lengths `64/128/256/512/768/1024/1536/1984`, all cut from the same repeated seed text buffer | [tmp_rwkv7_mixed_exact_prompt_bench.py](/home/liu/vllm/tmp_rwkv7_mixed_exact_prompt_bench.py) |
 
 ## Run Index
 
@@ -36,6 +37,12 @@
 | `2026-04-13_piecewise_0p4b_exact_long_1984_c8` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `1` | `1` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_1984_c8_20260413.json](/tmp/rwkv7_exact_long_piecewise_1984_c8_20260413.json) | [vllm_rwkv7_exact_long_piecewise_1984_c8_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_1984_c8_20260413.log) | focused rerun；`1984` 档明显受益于 packed prefill |
 | `2026-04-13_eager_0p4b_exact_long_mt64_decodefused_seq` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_decodefused_seq_20260413.json](/tmp/rwkv7_exact_long_eager_decodefused_seq_20260413.json) | [vllm_rwkv7_exact_long_eager_decodefused_seq_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_decodefused_seq_20260413.log) | decode fused 后的串行 benchmark；用于替代同机并行启动 eager/piecewise 的无效样本 |
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_decodefused_seq_20260413.json](/tmp/rwkv7_exact_long_piecewise_decodefused_seq_20260413.json) | [vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log) | decode fused 后的串行 benchmark；与 eager 使用同一口径对照 |
+| `2026-04-13_eager_0p4b_exact_long_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_eager_prefixcache_20260413.json](/tmp/rwkv7_exact_long_eager_prefixcache_20260413.json) | [vllm_rwkv7_exact_long_eager_prefixcache_20260413.log](/tmp/vllm_rwkv7_exact_long_eager_prefixcache_20260413.log) | `--enable-prefix-caching`；serial baseline 先暖 cache，再测 cached throughput |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `2` | `8` | `rwkv7_exact_long_repeat` | [rwkv7_exact_long_piecewise_prefixcache_20260413.json](/tmp/rwkv7_exact_long_piecewise_prefixcache_20260413.json) | [vllm_rwkv7_exact_long_piecewise_prefixcache_20260413.log](/tmp/vllm_rwkv7_exact_long_piecewise_prefixcache_20260413.log) | `--enable-prefix-caching`；日志显示 Mamba cache 进入 experimental `align` mode |
+| `2026-04-13_eager_0p4b_mixed_exact_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_eager_20260413.json](/tmp/rwkv7_mixed_exact_eager_20260413.json) | [vllm_rwkv7_mixed_exact_eager_20260413.log](/tmp/vllm_rwkv7_mixed_exact_eager_20260413.log) | exact token mixed prompt lengths；无 prefix caching |
+| `2026-04-13_piecewise_0p4b_mixed_exact_mt64` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_piecewise_20260413.json](/tmp/rwkv7_mixed_exact_piecewise_20260413.json) | [vllm_rwkv7_mixed_exact_piecewise_20260413.log](/tmp/vllm_rwkv7_mixed_exact_piecewise_20260413.log) | exact token mixed prompt lengths；无 prefix caching；首轮受 compile warmup 影响较大 |
+| `2026-04-13_eager_0p4b_mixed_exact_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `eager` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_eager_prefixcache_20260413.json](/tmp/rwkv7_mixed_exact_eager_prefixcache_20260413.json) | [vllm_rwkv7_mixed_exact_eager_prefixcache_20260413.log](/tmp/vllm_rwkv7_mixed_exact_eager_prefixcache_20260413.log) | exact token mixed prompt lengths；开启 prefix caching |
+| `2026-04-13_piecewise_0p4b_mixed_exact_mt64_prefixcache` | `2026-04-13` | `RWKV7-Goose-World2.9-0.4B-HF` | `0.4B` | `piecewise` | `auto` | `64` | `2` | `1` | `8` | `rwkv7_mixed_exact_repeat` | [rwkv7_mixed_exact_piecewise_prefixcache_20260413.json](/tmp/rwkv7_mixed_exact_piecewise_prefixcache_20260413.json) | [vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log](/tmp/vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log) | exact token mixed prompt lengths；开启 prefix caching；Mamba cache `align` mode |
 
 ## Throughput Table
 
@@ -72,6 +79,19 @@
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `1024` | `8` | `123.847` | `124.573` | `124.210` | `true` |
 | `2026-04-13_eager_0p4b_exact_long_mt64_decodefused_seq` | `1984` | `8` | `82.291` | `84.238` | `83.264` | `true` |
 | `2026-04-13_piecewise_0p4b_exact_long_mt64_decodefused_seq` | `1984` | `8` | `84.708` | `88.764` | `86.736` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64_prefixcache` | `1024` | `8` | `130.217` | `210.408` | `170.313` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64_prefixcache` | `1024` | `8` | `149.130` | `208.119` | `178.625` | `true` |
+| `2026-04-13_eager_0p4b_exact_long_mt64_prefixcache` | `1984` | `8` | `155.799` | `270.292` | `213.046` | `true` |
+| `2026-04-13_piecewise_0p4b_exact_long_mt64_prefixcache` | `1984` | `8` | `165.642` | `256.278` | `210.960` | `true` |
+
+## Mixed Exact Prompt Throughput Table
+
+| run_id | batch_prompt_lengths | round0_tps | round1_tps | avg_tps | all_match_serial_baseline |
+| --- | --- | --- | --- | --- | --- |
+| `2026-04-13_eager_0p4b_mixed_exact_mt64` | `64/128/256/512/768/1024/1536/1984` | `149.064` | `150.716` | `149.890` | `true` |
+| `2026-04-13_piecewise_0p4b_mixed_exact_mt64` | `64/128/256/512/768/1024/1536/1984` | `87.009` | `134.828` | `110.918` | `true` |
+| `2026-04-13_eager_0p4b_mixed_exact_mt64_prefixcache` | `64/128/256/512/768/1024/1536/1984` | `225.201` | `231.280` | `228.240` | `true` |
+| `2026-04-13_piecewise_0p4b_mixed_exact_mt64_prefixcache` | `64/128/256/512/768/1024/1536/1984` | `228.883` | `229.894` | `229.388` | `true` |
 
 ## Investigation Note
 
@@ -98,6 +118,35 @@ After decode fusion landed, the new same-host sequential control is:
 - `1984 + 64`, concurrency `8`:
   - eager: `82.291 / 84.238`
   - piecewise: `84.708 / 88.764`
+
+With prefix caching enabled, the same exact-long control shifts to:
+
+- `1024 + 64`, concurrency `8`:
+  - eager: `130.217 / 210.408`
+  - piecewise: `149.130 / 208.119`
+- `1984 + 64`, concurrency `8`:
+  - eager: `155.799 / 270.292`
+  - piecewise: `165.642 / 256.278`
+
+The big round1 jump is expected here: the serial baseline warms the prefix
+cache, so round1 is closer to the "cache already populated" steady-state.
+
+For mixed exact prompt lengths (`64/128/256/512/768/1024/1536/1984`):
+
+- without prefix caching:
+  - eager: `149.064 / 150.716`
+  - piecewise: `87.009 / 134.828`
+- with prefix caching:
+  - eager: `225.201 / 231.280`
+  - piecewise: `228.883 / 229.894`
+
+So this service-level picture is much clearer than the earlier kernel-only view:
+
+- prefix caching is working and dominates throughput gains in repeated-prefix scenarios
+- on mixed prompt lengths without prefix caching, eager is still more stable on
+  the first `PIECEWISE` round
+- on mixed prompt lengths with prefix caching, eager and `PIECEWISE` land in the
+  same band, with `PIECEWISE` very slightly ahead in this run
 
 On a single GPU, do not launch eager and `PIECEWISE` benchmark servers in
 parallel. Those runs contend on the same device and should be treated as
@@ -388,4 +437,114 @@ python tmp_rwkv7_exact_long_input_bench.py \
   --concurrency-levels 8 \
   --log /tmp/vllm_rwkv7_exact_long_piecewise_decodefused_seq_20260413.log \
   > /tmp/rwkv7_exact_long_piecewise_decodefused_seq_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_exact_long_mt64_prefixcache`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --enable-prefix-caching \
+  --port 8057 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 2 \
+  --prompt-lengths 1024 1984 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_exact_long_eager_prefixcache_20260413.log \
+  > /tmp/rwkv7_exact_long_eager_prefixcache_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_exact_long_mt64_prefixcache`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_exact_long_input_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --disable-compile-cache \
+  --port 8058 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 2 \
+  --prompt-lengths 1024 1984 \
+  --concurrency-levels 8 \
+  --log /tmp/vllm_rwkv7_exact_long_piecewise_prefixcache_20260413.log \
+  > /tmp/rwkv7_exact_long_piecewise_prefixcache_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_mixed_exact_mt64`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_mixed_exact_prompt_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --port 8059 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_mixed_exact_eager_20260413.log \
+  > /tmp/rwkv7_mixed_exact_eager_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_mixed_exact_mt64`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_mixed_exact_prompt_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --disable-compile-cache \
+  --port 8060 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_mixed_exact_piecewise_20260413.log \
+  > /tmp/rwkv7_mixed_exact_piecewise_20260413.json
+```
+
+### `2026-04-13_eager_0p4b_mixed_exact_mt64_prefixcache`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_mixed_exact_prompt_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enforce-eager \
+  --enable-prefix-caching \
+  --port 8061 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_mixed_exact_eager_prefixcache_20260413.log \
+  > /tmp/rwkv7_mixed_exact_eager_prefixcache_20260413.json
+```
+
+### `2026-04-13_piecewise_0p4b_mixed_exact_mt64_prefixcache`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_mixed_exact_prompt_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --disable-compile-cache \
+  --port 8062 \
+  --max-tokens 64 \
+  --rounds 2 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_mixed_exact_piecewise_prefixcache_20260413.log \
+  > /tmp/rwkv7_mixed_exact_piecewise_prefixcache_20260413.json
 ```

@@ -955,14 +955,64 @@ Benchmark hygiene note:
 - that invalidates TPS by introducing direct device contention
 - only the sequential reruns should be used as the current control rows
 
+### 19. Prefix caching and mixed prompt-length validation are now covered
+
+Correctness:
+
+- `tmp_rwkv7_compare.py --enable-prefix-caching --disable-compile-cache`
+- standard `3` prompts still match one-shot vs step-by-step
+- log:
+  - [vllm_rwkv7_compare_prefixcache_20260413.log](/tmp/vllm_rwkv7_compare_prefixcache_20260413.log)
+
+Prefix-caching throughput:
+
+- exact-long benchmark now supports `--enable-prefix-caching`
+- eager:
+  - `1024 + 64`, `c=8`: `130.217 / 210.408`, avg `170.313`
+  - `1984 + 64`, `c=8`: `155.799 / 270.292`, avg `213.046`
+- piecewise:
+  - `1024 + 64`, `c=8`: `149.130 / 208.119`, avg `178.625`
+  - `1984 + 64`, `c=8`: `165.642 / 256.278`, avg `210.960`
+
+Interpretation:
+
+- prefix caching is working
+- the serial baseline before the measured rounds warms the cache, so the large
+  round1 jump is expected and useful
+- once the prefix cache is hot, eager and `PIECEWISE` are in the same band on
+  this workload
+
+Mixed prompt-length throughput:
+
+- added:
+  - [tmp_rwkv7_mixed_exact_prompt_bench.py](/home/liu/vllm/tmp_rwkv7_mixed_exact_prompt_bench.py)
+- prompt lengths:
+  - `64/128/256/512/768/1024/1536/1984`
+- without prefix caching:
+  - eager: `149.064 / 150.716`, avg `149.890`
+  - piecewise: `87.009 / 134.828`, avg `110.918`
+- with prefix caching:
+  - eager: `225.201 / 231.280`, avg `228.240`
+  - piecewise: `228.883 / 229.894`, avg `229.388`
+
+Interpretation:
+
+- mixed prompt lengths without prefix caching still expose some first-round
+  `PIECEWISE` warmup cost
+- once prefix caching is enabled, eager and `PIECEWISE` are effectively tied
+  again on this mixed service-style workload
+- at this point, compile is better understood as:
+  - supported
+  - correct on the validated path
+  - not a guaranteed standalone speedup over an already-fixed eager path
+  - compatible with service features like prefix caching
+
 ## Current TODO List
 
 ### Highest priority
 
 1. Extend service validation beyond the current prompt set:
    - longer outputs
-   - prefix caching
-   - mixed prompt lengths
 2. Re-check `compile_no_cg` on:
    - `max_tokens=128`
    - concurrency `8`
@@ -1077,8 +1127,6 @@ The next concrete experiment should be:
 
 1. keep the decode-fused exact-long sequential rows as the current control
 2. validate:
-   - prefix caching
-   - mixed prompt lengths
    - longer outputs
 3. revisit `compile_no_cg` with `128 tokens + concurrency 8`
 4. if the service matrix is stable, move to feature-parity work instead of more
