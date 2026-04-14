@@ -182,6 +182,56 @@ def _make_cache_all_prefill_metadata(
     )
 
 
+def _make_cache_all_multi_prefill_metadata(
+    *,
+    query_lens: list[int],
+    total_seq_lens: list[int],
+    block_tables: list[list[int]],
+    num_computed_tokens: list[int],
+    block_size: int,
+    device: torch.device,
+) -> LinearAttentionMetadata:
+    query_start_loc = [0]
+    for query_len in query_lens:
+        query_start_loc.append(query_start_loc[-1] + query_len)
+    return LinearAttentionMetadata(
+        num_prefills=len(query_lens),
+        num_prefill_tokens=query_start_loc[-1],
+        num_decodes=0,
+        num_decode_tokens=0,
+        query_start_loc=torch.tensor(query_start_loc, dtype=torch.int32, device=device),
+        seq_lens=torch.tensor(total_seq_lens, dtype=torch.int32, device=device),
+        state_indices_tensor=torch.tensor(block_tables, dtype=torch.long, device=device),
+        num_computed_tokens=torch.tensor(
+            num_computed_tokens, dtype=torch.int32, device=device
+        ),
+        block_idx_last_computed_token=torch.tensor(
+            [
+                max((tokens + block_size - 1) // block_size - 1, 0)
+                for tokens in num_computed_tokens
+            ],
+            dtype=torch.int32,
+            device=device,
+        ),
+        block_idx_first_scheduled_token=torch.tensor(
+            [
+                ((tokens + 1) + block_size - 1) // block_size - 1
+                for tokens in num_computed_tokens
+            ],
+            dtype=torch.int32,
+            device=device,
+        ),
+        block_idx_last_scheduled_token=torch.tensor(
+            [
+                (total_seq_len + block_size - 1) // block_size - 1
+                for total_seq_len in total_seq_lens
+            ],
+            dtype=torch.int32,
+            device=device,
+        ),
+    )
+
+
 def _make_cache_all_decode_metadata(
     *,
     total_seq_len: int,
@@ -885,6 +935,104 @@ def test_rwkv7_block_cache_all_prefill_writes_aligned_states():
                 v_first_ref[start:end] = vf_out
                 block_ref._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
                 state = (attn_shift, recurrent, ffn_shift)
+
+            torch.testing.assert_close(output_all, output_ref)
+            torch.testing.assert_close(v_first_all, v_first_ref)
+            for cached_all, cached_ref in zip(block_all.kv_cache, block_ref.kv_cache):
+                torch.testing.assert_close(cached_all, cached_ref)
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+def test_rwkv7_block_cache_all_prefill_batches_multiple_sequences():
+    config = _make_config()
+    block_size = 8
+    cache_config = CacheConfig(
+        enable_prefix_caching=True,
+        mamba_cache_mode="all",
+        block_size=block_size,
+        mamba_block_size=block_size,
+    )
+    vllm_config = VllmConfig(
+        cache_config=cache_config,
+        device_config=DeviceConfig("cpu"),
+    )
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            block_all = RWKV7Block(
+                config=config,
+                layer_idx=0,
+                cache_config=cache_config,
+                prefix="model.layers.0",
+            )
+            _initialize_module_parameters(block_all)
+
+            block_ref = RWKV7Block(
+                config=config,
+                layer_idx=0,
+                cache_config=cache_config,
+                prefix="model.layers.1",
+            )
+            block_ref.load_state_dict(block_all.state_dict())
+
+            state_shapes = block_all.get_state_shape()
+            state_dtypes = block_all.get_state_dtype()
+            block_all.kv_cache = tuple(
+                torch.zeros((5, *shape), dtype=dtype)
+                for shape, dtype in zip(state_shapes, state_dtypes)
+            )
+            block_ref.kv_cache = tuple(cache.clone() for cache in block_all.kv_cache)
+
+            query_lens = [17, 10]
+            total_seq_lens = [17, 10]
+            block_tables = [[0, 1, 2], [3, 4, 4]]
+            hidden_states = torch.randn(
+                sum(query_lens), config.hidden_size, dtype=torch.float32
+            )
+            metadata = _make_cache_all_multi_prefill_metadata(
+                query_lens=query_lens,
+                total_seq_lens=total_seq_lens,
+                block_tables=block_tables,
+                num_computed_tokens=[0, 0],
+                block_size=block_size,
+                device=torch.device("cpu"),
+            )
+
+            output_all, v_first_all = block_all(hidden_states, None, metadata)
+
+            output_ref = torch.empty_like(hidden_states)
+            v_first_ref = torch.empty_like(hidden_states)
+            start = 0
+            ref_boundaries = [
+                [(0, 8, 0), (8, 16, 1), (16, 17, 2)],
+                [(0, 8, 3), (8, 10, 4)],
+            ]
+            for query_len, boundaries in zip(query_lens, ref_boundaries, strict=True):
+                seq_hidden = hidden_states[start:start + query_len]
+                state = (None, None, None)
+                seq_output = torch.empty_like(seq_hidden)
+                seq_v_first = torch.empty_like(seq_hidden)
+                for boundary_start, boundary_end, slot_id in boundaries:
+                    out, vf_out, attn_shift, recurrent, ffn_shift = block_ref._run_sequence(
+                        seq_hidden[boundary_start:boundary_end],
+                        None,
+                        *state,
+                    )
+                    seq_output[boundary_start:boundary_end] = out
+                    seq_v_first[boundary_start:boundary_end] = vf_out
+                    block_ref._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
+                    state = (attn_shift, recurrent, ffn_shift)
+                output_ref[start:start + query_len] = seq_output
+                v_first_ref[start:start + query_len] = seq_v_first
+                start += query_len
 
             torch.testing.assert_close(output_all, output_ref)
             torch.testing.assert_close(v_first_all, v_first_ref)

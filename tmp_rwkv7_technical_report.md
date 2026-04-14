@@ -1441,3 +1441,60 @@ New unit coverage includes:
   improves over the previous `align` baseline
 - if needed, optimize checkpoint-state extraction so `all` mode startup/prefill
   overhead is reduced
+
+### Serving validation (`all` vs `align`)
+
+Follow-up service validation was run on the local `0.4B` checkpoint using the
+existing repeated-prefix benchmark harness under `PIECEWISE` with prefix
+caching enabled. The harness was extended to:
+
+- accept `--mamba-cache-mode`
+- capture startup log signals in the emitted JSON
+
+This confirmed that default RWKV7 startup now really selects `all`:
+
+- `Mamba cache mode is set to 'all' for RWKV7ForCausalLM by default when prefix caching is enabled`
+
+and that a forced `--mamba-cache-mode align` run stays in `align`.
+
+Benchmark summary (`shared_prefix_len=1024`, `tail_len=128`, `max_tokens=64`,
+`concurrency=8`, `rounds=3`):
+
+| mode | hit ratio | avg aggregate TPS |
+|---|---:|---:|
+| `all` | `0.0` | `19.404` |
+| `all` | `0.5` | `29.758` |
+| `all` | `1.0` | `120.398` |
+| `align` | `0.0` | `112.421` |
+| `align` | `0.5` | `164.175` |
+| `align` | `1.0` | `238.235` |
+
+All rounds in both modes still matched the serial baseline.
+
+The service logs also showed that prefix caching is now active in both modes:
+
+- `all` run: prefix-cache hit rate climbed to about `59.2%`
+- `align` run: prefix-cache hit rate climbed to about `50.5%`
+
+This is an important result: the new RWKV7 `all`-mode plumbing is not broken
+from a correctness or cache-hit perspective, but it is currently much slower
+than `align`.
+
+### Revised performance interpretation
+
+The dominant issue is not cache-hit plumbing. The dominant issue is that the
+current `all`-mode recurrent checkpoint writeback still requires explicit
+checkpoint-state materialization for aligned block boundaries.
+
+I also tried a follow-up packed-prefill refactor after the first service run,
+but it did not materially recover throughput and was reverted. That points to
+the checkpoint-state extraction itself as the main bottleneck, not just
+per-sequence scheduling.
+
+So the updated recommendation is:
+
+- keep the current `all` implementation as correctness-complete and
+  experimentally usable
+- keep `align` as the throughput recommendation for now
+- treat fused/direct checkpoint-state emission as the next real optimization
+  milestone for RWKV7 `all` mode

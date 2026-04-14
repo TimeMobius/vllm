@@ -852,3 +852,66 @@ Notes:
   collapse at `128` is not a short-output artifact
 - `PIECEWISE` keeps scaling at `128`, while eager shows a clear throughput cliff
   and large queueing latency jump
+
+### `2026-04-14_piecewise_prefix_cache_all_vs_align_0p4b_c8`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 3 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_20260414.log \
+  > /tmp/rwkv7_prefix_hit_all_20260414.json
+
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 3 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_20260414.log \
+  > /tmp/rwkv7_prefix_hit_align_20260414.json
+```
+
+Results:
+
+| mode | hit ratio | avg aggregate TPS | min | max | all-match |
+|---|---:|---:|---:|---:|---|
+| `all` | `0.0` | `19.404` | `19.100` | `19.764` | `true` |
+| `all` | `0.5` | `29.758` | `23.857` | `32.765` | `true` |
+| `all` | `1.0` | `120.398` | `111.701` | `133.172` | `true` |
+| `align` | `0.0` | `112.421` | `111.394` | `113.469` | `true` |
+| `align` | `0.5` | `164.175` | `157.867` | `169.981` | `true` |
+| `align` | `1.0` | `238.235` | `230.381` | `248.784` | `true` |
+
+Signals:
+
+- default startup now explicitly selects `all` for RWKV7:
+  - `Mamba cache mode is set to 'all' for RWKV7ForCausalLM by default when prefix caching is enabled`
+- forced `align` startup stays in `align` mode with no fallback
+- prefix-cache hit rate is no longer stuck at `0.0%` in this repeated-prefix workload
+  - `all` log peaked around `59.2%`
+  - `align` log peaked around `50.5%`
+
+Interpretation:
+
+- the `all` implementation is functionally correct and does participate in
+  prefix caching
+- however, current `all` mode has a large throughput regression versus `align`
+  even though observed hit rate is non-zero and eventually higher
+- this points to checkpoint-state writeback overhead, not a cache-hit plumbing
+  failure

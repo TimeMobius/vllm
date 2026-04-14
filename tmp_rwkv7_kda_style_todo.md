@@ -932,8 +932,23 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - `python -m py_compile vllm/v1/attention/backends/linear_attn.py vllm/model_executor/models/rwkv7.py tests/model_executor/test_rwkv7.py`
     - `python -m pytest -q tests/model_executor/test_rwkv7.py`
     - `17 passed, 2 skipped`
-- [ ] 补 `all mode` 的服务级验证：
-  - [ ] 起服务确认日志里不再把 RWKV7 降回 `align`
-  - [ ] repeated-prefix workload 对比 `all` vs 之前 `align`
-  - [ ] 观察 `Prefix cache hit rate` 是否从常见 `0.0%` 提升
-  - [ ] 补 benchmark records / handoff 里的真实收益数据
+- [x] 补 `all mode` 的服务级验证：
+  - [x] 起服务确认日志里不再把 RWKV7 降回 `align`
+  - [x] repeated-prefix workload 对比 `all` vs `align`
+  - [x] 观察到 `Prefix cache hit rate` 不再长期卡在 `0.0%`
+  - [x] benchmark / handoff 已回填真实数据
+  - [x] 结果结论：
+    - `all` 确实生效，但当前吞吐显著差于 `align`
+    - `all` repeated-prefix avg TPS：
+      - hit ratio `0.0 / 0.5 / 1.0` = `19.404 / 29.758 / 120.398`
+    - `align` repeated-prefix avg TPS：
+      - hit ratio `0.0 / 0.5 / 1.0` = `112.421 / 164.175 / 238.235`
+    - `all` 的日志 hit rate 峰值约 `59.2%`，`align` 约 `50.5%`
+    - 因此当前瓶颈不是“命中没接通”，而是 `all` 的 checkpoint
+      writeback 成本
+- [ ] `all mode` 性能化：
+  - [ ] 设计 fused/direct checkpoint-state emission，避免为 block-boundary
+    state writeback 再做一遍显式 recurrent pass
+  - [ ] 在完成上述优化前，吞吐敏感场景继续推荐 `align`
+  - [ ] 优化完成后重跑 repeated-prefix / partial-hit / mixed-length serving
+    benchmark

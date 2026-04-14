@@ -29,6 +29,23 @@ def is_healthy(base: str) -> bool:
         return False
 
 
+def extract_server_log_signals(log_path: Path) -> list[str]:
+    if not log_path.exists():
+        return []
+
+    patterns = (
+        "Mamba cache mode",
+        "Prefix caching in Mamba cache",
+        "falling back to 'align' mode",
+    )
+    signals: list[str] = []
+    for line in log_path.read_text(encoding="utf-8",
+                                   errors="replace").splitlines():
+        if any(pattern in line for pattern in patterns):
+            signals.append(line.strip())
+    return signals
+
+
 def tokenize(base: str, model: str, prompt: str) -> list[int]:
     return post(base, "/tokenize", {"model": model, "prompt": prompt})["tokens"]
 
@@ -204,6 +221,11 @@ def main() -> int:
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--no-async-scheduling", action="store_true")
     parser.add_argument("--enable-prefix-caching", action="store_true")
+    parser.add_argument(
+        "--mamba-cache-mode",
+        choices=["default", "none", "align", "all"],
+        default="default",
+    )
     parser.add_argument("--no-enable-chunked-prefill", action="store_true")
     parser.add_argument(
         "--cudagraph-mode",
@@ -291,6 +313,8 @@ def main() -> int:
         cmd.append("--no-async-scheduling")
     if args.enable_prefix_caching:
         cmd.append("--enable-prefix-caching")
+    if args.mamba_cache_mode != "default":
+        cmd.extend(["--mamba-cache-mode", args.mamba_cache_mode])
     if args.no_enable_chunked_prefill:
         cmd.append("--no-enable-chunked-prefill")
 
@@ -460,6 +484,7 @@ def main() -> int:
                         "dtype": args.dtype,
                         "enforce_eager": args.enforce_eager,
                         "enable_prefix_caching": args.enable_prefix_caching,
+                        "mamba_cache_mode": args.mamba_cache_mode,
                         "cudagraph_mode": args.cudagraph_mode,
                         "compile_no_cg": args.compile_no_cg,
                         "cudagraph_copy_inputs": args.cudagraph_copy_inputs,
@@ -473,6 +498,7 @@ def main() -> int:
                         "tail_len": args.tail_len,
                         "shared_prefix_count": args.shared_prefix_count,
                         "server_log": str(log_path),
+                        "server_log_signals": extract_server_log_signals(log_path),
                         "scenarios": scenarios,
                     },
                     ensure_ascii=False,

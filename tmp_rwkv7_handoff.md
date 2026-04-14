@@ -1565,7 +1565,109 @@ New unit coverage:
 
 Still pending:
 
-- remote/local serving smoke that confirms startup logs no longer report
-  `align` fallback for RWKV7
-- repeated-prefix benchmark to measure whether `all` mode raises observed
-  prefix-cache hit rate and throughput
+- optimize `all`-mode checkpoint-state writeback so throughput is competitive
+  with `align`
+- re-run repeated-prefix / mixed-length serving benchmark after a fused or
+  direct-write checkpoint-state path exists
+
+## 2026-04-14: RWKV7 `all` mode serving validation
+
+What was added:
+
+- `tmp_rwkv7_prefix_hit_bench.py` now supports:
+  - `--mamba-cache-mode`
+  - startup log signal extraction in the JSON output
+- `tests/model_executor/test_rwkv7.py` now also covers multi-sequence cache-all
+  prefill correctness
+
+Validation run:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m py_compile tmp_rwkv7_prefix_hit_bench.py tests/model_executor/test_rwkv7.py
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `18 passed, 2 skipped`
+
+Serving benchmark:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 3 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_20260414.log \
+  > /tmp/rwkv7_prefix_hit_all_20260414.json
+
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 3 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_20260414.log \
+  > /tmp/rwkv7_prefix_hit_align_20260414.json
+```
+
+Observed startup signals:
+
+- default RWKV7 startup now says:
+  - `Mamba cache mode is set to 'all' for RWKV7ForCausalLM by default when prefix caching is enabled`
+- forced `align` stays in `align`
+
+Benchmark summary:
+
+- `all`, hit ratio `0.0 / 0.5 / 1.0`
+  - avg aggregate TPS: `19.404 / 29.758 / 120.398`
+- `align`, hit ratio `0.0 / 0.5 / 1.0`
+  - avg aggregate TPS: `112.421 / 164.175 / 238.235`
+- both modes stayed `all_match_serial_baseline=true` in every round
+
+Prefix-cache hit-rate notes from service logs:
+
+- `all` no longer stays at `0.0%`; this repeated-prefix run climbed to about
+  `59.2%`
+- `align` also no longer stays at `0.0%`; the same workload climbed to about
+  `50.5%`
+
+Interpretation:
+
+- the new RWKV7 `all` mode plumbing is functionally live:
+  - default config selects `all`
+  - repeated-prefix serving yields non-zero prefix-cache hit rate
+  - outputs remain correct
+- but current throughput is much worse than `align`
+- the most likely cause is the current cache-all recurrent checkpoint writeback,
+  which still requires an explicit second recurrent pass to materialize aligned
+  block-boundary states
+
+Important implementation note:
+
+- I tried a follow-up packed-prefill refactor locally after this run
+- it did not recover throughput because the dominant cost appears to be the
+  checkpoint-state extraction itself
+- that attempt was reverted and not kept in the working tree
+
+Updated recommendation:
+
+- keep RWKV7 `all` mode as implemented and tested for correctness
+- do not switch throughput-sensitive serving guidance from `align` to `all`
+  yet
+- the next real optimization target is a fused or direct-write path for
+  checkpoint-state emission at cache block boundaries
