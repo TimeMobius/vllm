@@ -21,6 +21,10 @@ Added:
     rather than keeping it in the client-side worker pool
 - explicit throughput fields:
   - `token_throughput_tps`
+    - flat aliases:
+      - `token_throughput_tps_avg`
+      - `token_throughput_tps_min`
+      - `token_throughput_tps_max`
   - `active_output_tps`
   - `token_throughput_tps_stats`
     - 1-second bucketed `min / avg / max` token throughput during the active
@@ -29,6 +33,8 @@ Added:
     - per-request token throughput
     - stored per row in `requests.jsonl`
     - summarized as `avg / p50 / p95 / min / max`
+    - plus `weighted_avg` for a more stable per-request view when heavy
+      long-tail latency skews the plain arithmetic mean
 - explicit queue/pressure diagnostics:
   - `worker_count`
   - `peak_inflight_requests`

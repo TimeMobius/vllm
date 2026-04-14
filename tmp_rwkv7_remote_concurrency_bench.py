@@ -378,12 +378,24 @@ def summarize_request_token_tps(
         for row in records
         if row.get("request_token_throughput_tps") is not None
     ]
+    total_tokens = 0
+    total_latency = 0.0
+    for row in records:
+        token_count = row.get("completion_tokens")
+        if token_count is None:
+            token_count = row.get("output_tokens")
+        latency_sec = row.get("latency_sec")
+        if token_count is None or latency_sec is None or float(latency_sec) <= 0:
+            continue
+        total_tokens += int(token_count)
+        total_latency += float(latency_sec)
     return {
         "avg": safe_float_mean(request_tps_values),
         "p50": percentile(request_tps_values, 0.50),
         "p95": percentile(request_tps_values, 0.95),
         "min": min(request_tps_values) if request_tps_values else None,
         "max": max(request_tps_values) if request_tps_values else None,
+        "weighted_avg": (total_tokens / total_latency) if total_latency > 0 else None,
     }
 
 
@@ -550,7 +562,15 @@ def summarize(
         "known_completion_token_requests": len(known_output_tokens),
         "known_completion_tokens": sum(known_output_tokens) if known_output_tokens else None,
         "token_throughput_tps_stats": token_tps_stats,
+        "token_throughput_tps_avg": token_tps_stats["avg"],
+        "token_throughput_tps_min": token_tps_stats["min"],
+        "token_throughput_tps_max": token_tps_stats["max"],
         "request_token_throughput_tps_stats": request_token_tps_stats,
+        "request_token_throughput_tps_avg": request_token_tps_stats["avg"],
+        "request_token_throughput_tps_min": request_token_tps_stats["min"],
+        "request_token_throughput_tps_max": request_token_tps_stats["max"],
+        "request_token_throughput_tps_weighted_avg":
+            request_token_tps_stats["weighted_avg"],
         **inflight,
     }
 
@@ -596,12 +616,13 @@ def render_markdown(
         f"- active_request_throughput_rps: `{summary['active_request_throughput_rps']}`",
         f"- token_throughput_tps: `{summary['token_throughput_tps']}`",
         f"- active_output_tps: `{summary['active_output_tps']}`",
-        f"- token_tps_avg_1s: `{summary['token_throughput_tps_stats']['avg']}`",
-        f"- token_tps_min_1s: `{summary['token_throughput_tps_stats']['min']}`",
-        f"- token_tps_max_1s: `{summary['token_throughput_tps_stats']['max']}`",
-        f"- request_token_tps_avg: `{summary['request_token_throughput_tps_stats']['avg']}`",
+        f"- token_throughput_tps_avg: `{summary['token_throughput_tps_avg']}`",
+        f"- token_throughput_tps_min: `{summary['token_throughput_tps_min']}`",
+        f"- token_throughput_tps_max: `{summary['token_throughput_tps_max']}`",
+        f"- request_token_tps_avg: `{summary['request_token_throughput_tps_avg']}`",
         f"- request_token_tps_p50: `{summary['request_token_throughput_tps_stats']['p50']}`",
         f"- request_token_tps_p95: `{summary['request_token_throughput_tps_stats']['p95']}`",
+        f"- request_token_tps_weighted_avg: `{summary['request_token_throughput_tps_weighted_avg']}`",
         "",
         "| metric | value |",
         "|---|---:|",
@@ -613,8 +634,8 @@ def render_markdown(
         f"| avg_inflight_requests | `{summary['avg_inflight_requests']}` |",
         f"| client_queue_before_first_start_sec | `{summary['client_queue_delay_before_first_start_sec']}` |",
         f"| token_tps_bucket_sec | `{summary['token_throughput_tps_stats']['bucket_sec']}` |",
-        f"| request_token_tps_min | `{summary['request_token_throughput_tps_stats']['min']}` |",
-        f"| request_token_tps_max | `{summary['request_token_throughput_tps_stats']['max']}` |",
+        f"| request_token_tps_min | `{summary['request_token_throughput_tps_min']}` |",
+        f"| request_token_tps_max | `{summary['request_token_throughput_tps_max']}` |",
         f"| start_delay_avg_sec | `{summary['start_delay_sec']['avg']}` |",
         f"| start_delay_p95_sec | `{summary['start_delay_sec']['p95']}` |",
         "",
