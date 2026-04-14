@@ -1345,3 +1345,99 @@ Remote follow-up still required:
 
 - rerun `PP=2 + eager`
 - then rerun `PP=2 + PIECEWISE` if eager startup succeeds
+
+## 11. RWKV7 Mamba Prefix Cache All-Mode Support
+
+### Motivation
+
+RWKV7 had working prefix caching only through the experimental Mamba `align`
+mode. That mode is correctness-oriented but relatively strict about when a
+request can reuse cached state, which matches the observation that some more
+realistic workloads still reported `Prefix cache hit rate: 0.0%` for long
+stretches.
+
+The next structural step was therefore to move RWKV7 from:
+
+- `align` mode only
+
+to:
+
+- full `all`-mode support at the model/runtime level
+
+### What changed
+
+1. Model capability
+
+- `RWKV7ForCausalLM` now implements `SupportsMambaPrefixCaching`
+
+2. Metadata path
+
+- `vllm/v1/attention/backends/linear_attn.py` was extended so that in
+  `mamba_cache_mode == "all"` it no longer collapses the block table down to a
+  single slot id
+- the builder now propagates:
+  - `num_computed_tokens`
+  - `block_idx_last_computed_token`
+  - `block_idx_first_scheduled_token`
+  - `block_idx_last_scheduled_token`
+
+3. Decode path
+
+- RWKV7 decode now reads initial state from the last computed block and writes
+  the updated state into the last scheduled block
+- this is the key requirement when a one-token decode crosses a mamba cache
+  block boundary
+
+4. Prefill path
+
+- RWKV7 prefill now writes additional aligned states for every fully completed
+  block crossed during the current scheduled prefill segment
+- it also continues to write the final state for the final scheduled block
+
+### Implementation note
+
+The aligned writeback for recurrent states is currently implemented by:
+
+- keeping the normal recurrent output/final-state path on the existing fused
+  recurrent op
+- explicitly collecting recurrent checkpoint states for aligned block
+  boundaries during cache-all prefill handling
+
+This prioritizes correctness and integration with the current RWKV7 runtime
+structure. A later optimization pass can revisit whether those checkpoint
+states should be produced directly by the fused kernel.
+
+### Validation
+
+Local verification:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m py_compile \
+  vllm/v1/attention/backends/linear_attn.py \
+  vllm/model_executor/models/rwkv7.py \
+  tests/model_executor/test_rwkv7.py
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `17 passed, 2 skipped`
+
+New unit coverage includes:
+
+- RWKV7 declares mamba prefix caching support
+- config chooses `mamba_cache_mode='all'`
+- all-mode prefill writes aligned block states correctly
+- all-mode decode writes across cache-block boundaries correctly
+
+### Remaining work
+
+- serving smoke to confirm the runtime now selects `all` for RWKV7 with prefix
+  caching enabled
+- repeated-prefix benchmark to quantify whether real observed hit rate
+  improves over the previous `align` baseline
+- if needed, optimize checkpoint-state extraction so `all` mode startup/prefill
+  overhead is reduced

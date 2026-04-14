@@ -1515,3 +1515,57 @@ CUDA_VISIBLE_DEVICES=0,1 vllm serve /mnt/data/Models/Huggingface/RWKV7-Goose-Wor
   --distributed-executor-backend mp \
   --enforce-eager
 ```
+
+## 2026-04-14: RWKV7 Mamba prefix cache `all` mode
+
+RWKV7 now advertises `SupportsMambaPrefixCaching`, so when prefix caching is
+enabled the config path no longer falls back from `all` to `align`.
+
+Implementation summary:
+
+- extended `LinearAttentionMetadata` so `mamba_cache_mode=all` can carry:
+  - `num_computed_tokens`
+  - `block_idx_last_computed_token`
+  - `block_idx_first_scheduled_token`
+  - `block_idx_last_scheduled_token`
+- `LinearAttentionMetadataBuilder` now emits the full block table in `all`
+  mode instead of collapsing to a single slot id
+- RWKV7 decode runtime now reads from the last computed block and writes to the
+  last scheduled block when a decode step crosses a cache block boundary
+- RWKV7 prefill runtime now writes:
+  - intermediate aligned block-boundary states
+  - plus the final per-sequence state
+- the block-boundary writeback currently reuses the existing fused recurrent
+  output path for normal outputs/final state and computes checkpoint recurrent
+  states explicitly for cache writeback correctness
+
+Validation completed locally:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m py_compile \
+  vllm/v1/attention/backends/linear_attn.py \
+  vllm/model_executor/models/rwkv7.py \
+  tests/model_executor/test_rwkv7.py
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `17 passed, 2 skipped`
+
+New unit coverage:
+
+- RWKV7 now declares mamba prefix caching support
+- config chooses `mamba_cache_mode='all'` when prefix caching is enabled
+- cache-all prefill writes aligned block states correctly
+- cache-all decode writes into the next block slot correctly at boundaries
+
+Still pending:
+
+- remote/local serving smoke that confirms startup logs no longer report
+  `align` fallback for RWKV7
+- repeated-prefix benchmark to measure whether `all` mode raises observed
+  prefix-cache hit rate and throughput

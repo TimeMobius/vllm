@@ -923,3 +923,17 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
   - 目标：确认 engine 能完整启动并通过 `/health`
   - 然后补一条 completion smoke
 - [ ] 若 `PP=2 + eager` 通过，再测 `PP=2 + PIECEWISE`
+- [x] RWKV7 Mamba prefix cache `align -> all` plumbing：
+  - [x] RWKV7 挂 `SupportsMambaPrefixCaching`
+  - [x] `LinearAttentionMetadata` 补 `all mode` 所需 block-index 元数据
+  - [x] decode 路径支持跨 block 读旧 slot / 写新 slot
+  - [x] prefill 路径支持 aligned block-boundary state writeback
+  - [x] 本地验证：
+    - `python -m py_compile vllm/v1/attention/backends/linear_attn.py vllm/model_executor/models/rwkv7.py tests/model_executor/test_rwkv7.py`
+    - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - `17 passed, 2 skipped`
+- [ ] 补 `all mode` 的服务级验证：
+  - [ ] 起服务确认日志里不再把 RWKV7 降回 `align`
+  - [ ] repeated-prefix workload 对比 `all` vs 之前 `align`
+  - [ ] 观察 `Prefix cache hit rate` 是否从常见 `0.0%` 提升
+  - [ ] 补 benchmark records / handoff 里的真实收益数据
