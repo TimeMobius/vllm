@@ -17,6 +17,25 @@
 
 ## Latest Update (2026-04-13)
 
+- Upgraded the remote serving benchmark utility:
+  - [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
+  - new capabilities:
+    - `--dispatch-mode burst`
+      - launches all requests immediately so queueing moves from the client
+        worker pool to the remote vLLM service
+    - explicit `token_throughput_tps`
+    - `active_output_tps`
+      - measured from first request start to last request finish
+      - helps separate client-side submission queue time from server busy time
+    - `worker_count`
+    - `peak_inflight_requests`
+    - `avg_inflight_requests`
+  - intended usage:
+    - `closed_loop`:
+      - fixed client concurrency benchmark
+    - `burst`:
+      - better for finding the remote service saturation point
+
 - Added a dedicated benchmark ledger:
   - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
   - it stores:

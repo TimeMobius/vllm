@@ -6,6 +6,20 @@
 
 ## Progress Update (2026-04-13)
 
+- 远程压测脚本已升级：
+  - [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
+  - 已补：
+    - `burst` 发压模式
+    - 显式 `token_throughput_tps`
+    - `active_output_tps`
+    - `peak_inflight_requests`
+  - 现在可以区分：
+    - 固定 client worker 的 closed-loop benchmark
+    - 更像“把请求直接压到 vLLM 队列里”的 burst benchmark
+  - 这更适合继续测：
+    - 远程服务真正的饱和并发点
+    - 队列积压后的尾延迟
+
 - 新增了独立 benchmark 台账文件：
   - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
 - 这份台账现在固定记录：

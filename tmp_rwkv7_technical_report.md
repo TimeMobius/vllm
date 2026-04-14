@@ -4,6 +4,41 @@ Date: 2026-03-31
 
 Branch: `codex/rwkv7-adapter-align`
 
+## 0. Latest Tooling Update (2026-04-14)
+
+The remote serving benchmark utility was upgraded to better measure remote
+vLLM saturation instead of the benchmark client's own fixed worker limit.
+
+File:
+
+- [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
+
+Added:
+
+- `--dispatch-mode burst`
+  - launches all benchmark requests immediately
+  - useful when the goal is to push queueing into the remote vLLM service
+    rather than keeping it in the client-side worker pool
+- explicit throughput fields:
+  - `token_throughput_tps`
+  - `active_output_tps`
+- explicit queue/pressure diagnostics:
+  - `worker_count`
+  - `peak_inflight_requests`
+  - `avg_inflight_requests`
+  - `active_window_sec`
+  - `client_queue_delay_before_first_start_sec`
+
+Interpretation:
+
+- `token_throughput_tps` remains the end-to-end wall-clock token throughput.
+- `active_output_tps` is measured from the first actual request start to the
+  last request finish, which helps distinguish client queueing from remote
+  service processing.
+- `closed_loop` remains useful for fixed-concurrency benchmarking.
+- `burst` is now the preferred mode when the goal is to locate remote service
+  saturation points.
+
 ## 1. Objective
 
 The goal of this work was to adapt RWKV7 to the vLLM v1 engine so that:

@@ -46,6 +46,12 @@ def safe_float_mean(values: list[float]) -> float | None:
     return statistics.fmean(values)
 
 
+def safe_rate(count: int, window_sec: float) -> float | None:
+    if window_sec <= 0:
+        return None
+    return count / window_sec
+
+
 def json_dump(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8")
@@ -249,6 +255,45 @@ def extract_output_tokens(response: dict[str, Any] | None) -> int | None:
     return None
 
 
+def summarize_inflight(records: list[dict[str, Any]]) -> dict[str, float | int | None]:
+    if not records:
+        return {
+            "peak_inflight_requests": 0,
+            "avg_inflight_requests": None,
+        }
+
+    events: list[tuple[float, int]] = []
+    for row in records:
+        events.append((float(row["started_at"]), 1))
+        events.append((float(row["finished_at"]), -1))
+
+    # Process start events before finish events when timestamps tie so
+    # "all-at-once" burst launches do not undercount peak in-flight requests.
+    events.sort(key=lambda item: (item[0], -item[1]))
+
+    current = 0
+    peak = 0
+    area = 0.0
+    window_start = events[0][0]
+    window_end = events[-1][0]
+    last_ts = window_start
+
+    for ts, delta in events:
+        if ts > last_ts:
+            area += current * (ts - last_ts)
+        current += delta
+        peak = max(peak, current)
+        last_ts = ts
+
+    active_window_sec = max(window_end - window_start, 0.0)
+    avg_inflight = (area / active_window_sec) if active_window_sec > 0 else float(peak)
+
+    return {
+        "peak_inflight_requests": peak,
+        "avg_inflight_requests": avg_inflight,
+    }
+
+
 def issue_request(
     *,
     endpoint: str,
@@ -307,8 +352,13 @@ def issue_request(
     }
 
 
-def summarize(records: list[dict[str, Any]], configured_concurrency: int,
-              arrival_rate: float | None) -> dict[str, Any]:
+def summarize(
+    records: list[dict[str, Any]],
+    configured_concurrency: int,
+    arrival_rate: float | None,
+    dispatch_mode: str,
+    worker_count: int,
+) -> dict[str, Any]:
     success_records = [row for row in records if row["success"]]
     latency_values = [float(row["latency_sec"]) for row in records]
     start_delay_values = [float(row["start_delay_sec"]) for row in records]
@@ -322,18 +372,28 @@ def summarize(records: list[dict[str, Any]], configured_concurrency: int,
     ]
     if records:
         wall_start = min(float(row["release_at"]) for row in records)
+        active_start = min(float(row["started_at"]) for row in records)
         wall_end = max(float(row["finished_at"]) for row in records)
         wall_time_sec = wall_end - wall_start
+        active_window_sec = wall_end - active_start
+        client_queue_delay_sec = active_start - wall_start
     else:
         wall_time_sec = 0.0
+        active_window_sec = 0.0
+        client_queue_delay_sec = 0.0
 
     status_counts = Counter(str(row["status_code"]) for row in records)
     error_counts = Counter(row["error"] for row in records if row["error"])
+    inflight = summarize_inflight(records)
 
     known_output_tokens = completion_tokens if completion_tokens else output_tokens
     aggregate_output_tps = (
         sum(known_output_tokens) / wall_time_sec
         if wall_time_sec > 0 and known_output_tokens else None
+    )
+    active_output_tps = (
+        sum(known_output_tokens) / active_window_sec
+        if active_window_sec > 0 and known_output_tokens else None
     )
 
     return {
@@ -342,12 +402,18 @@ def summarize(records: list[dict[str, Any]], configured_concurrency: int,
         "error_count": len(records) - len(success_records),
         "success_rate": (len(success_records) / len(records)) if records else None,
         "configured_concurrency": configured_concurrency,
+        "dispatch_mode": dispatch_mode,
+        "worker_count": worker_count,
         "arrival_rate_rps": arrival_rate,
         "wall_time_sec": wall_time_sec,
-        "request_throughput_rps": (
-            len(success_records) / wall_time_sec if wall_time_sec > 0 else None
-        ),
+        "active_window_sec": active_window_sec,
+        "client_queue_delay_before_first_start_sec": client_queue_delay_sec,
+        "request_throughput_rps": safe_rate(len(success_records), wall_time_sec),
+        "active_request_throughput_rps": safe_rate(len(success_records),
+                                                    active_window_sec),
         "aggregate_output_tps": aggregate_output_tps,
+        "token_throughput_tps": aggregate_output_tps,
+        "active_output_tps": active_output_tps,
         "latency_sec": {
             "avg": safe_float_mean(latency_values),
             "p50": percentile(latency_values, 0.50),
@@ -367,6 +433,7 @@ def summarize(records: list[dict[str, Any]], configured_concurrency: int,
                         for key, value in error_counts.most_common(5)],
         "known_completion_token_requests": len(known_output_tokens),
         "known_completion_tokens": sum(known_output_tokens) if known_output_tokens else None,
+        **inflight,
     }
 
 
@@ -386,8 +453,10 @@ def render_markdown(
         f"- base_url: `{args.base_url}`",
         f"- endpoint: `{args.endpoint}`",
         f"- model: `{args.model}`",
+        f"- dispatch_mode: `{summary['dispatch_mode']}`",
         f"- request_count: `{args.num_requests}`",
         f"- concurrency: `{args.concurrency}`",
+        f"- worker_count: `{summary['worker_count']}`",
         f"- arrival_rate_rps: `{args.arrival_rate}`",
         f"- max_tokens: `{args.max_tokens}`",
         f"- prompt_file: `{args.prompt_file}`",
@@ -403,8 +472,11 @@ def render_markdown(
         f"- success_count: `{summary['success_count']}` / `{summary['request_count']}`",
         f"- success_rate: `{summary['success_rate']}`",
         f"- wall_time_sec: `{summary['wall_time_sec']}`",
+        f"- active_window_sec: `{summary['active_window_sec']}`",
         f"- request_throughput_rps: `{summary['request_throughput_rps']}`",
-        f"- aggregate_output_tps: `{summary['aggregate_output_tps']}`",
+        f"- active_request_throughput_rps: `{summary['active_request_throughput_rps']}`",
+        f"- token_throughput_tps: `{summary['token_throughput_tps']}`",
+        f"- active_output_tps: `{summary['active_output_tps']}`",
         "",
         "| metric | value |",
         "|---|---:|",
@@ -412,6 +484,9 @@ def render_markdown(
         f"| latency_p50_sec | `{summary['latency_sec']['p50']}` |",
         f"| latency_p95_sec | `{summary['latency_sec']['p95']}` |",
         f"| latency_p99_sec | `{summary['latency_sec']['p99']}` |",
+        f"| peak_inflight_requests | `{summary['peak_inflight_requests']}` |",
+        f"| avg_inflight_requests | `{summary['avg_inflight_requests']}` |",
+        f"| client_queue_before_first_start_sec | `{summary['client_queue_delay_before_first_start_sec']}` |",
         f"| start_delay_avg_sec | `{summary['start_delay_sec']['avg']}` |",
         f"| start_delay_p95_sec | `{summary['start_delay_sec']['p95']}` |",
         "",
@@ -446,6 +521,24 @@ def main() -> int:
     parser.add_argument("--prompts", nargs="+", default=DEFAULT_PROMPTS)
     parser.add_argument("--num-requests", type=int, default=128)
     parser.add_argument("--concurrency", type=int, default=16)
+    parser.add_argument(
+        "--dispatch-mode",
+        choices=["closed_loop", "burst"],
+        default="closed_loop",
+        help=(
+            "closed_loop keeps at most --concurrency client requests in flight. "
+            "burst launches all requests immediately so queueing happens mainly inside the server."
+        ),
+    )
+    parser.add_argument(
+        "--burst-workers",
+        type=int,
+        default=None,
+        help=(
+            "Optional thread count override for --dispatch-mode burst. "
+            "Defaults to --num-requests."
+        ),
+    )
     parser.add_argument("--arrival-rate", type=float, default=None,
                         help="If set, stagger request releases at this requests/sec rate.")
     parser.add_argument("--arrival-jitter-sec", type=float, default=0.0,
@@ -468,6 +561,8 @@ def main() -> int:
         raise ValueError("--num-requests must be positive.")
     if args.concurrency <= 0:
         raise ValueError("--concurrency must be positive.")
+    if args.burst_workers is not None and args.burst_workers <= 0:
+        raise ValueError("--burst-workers must be positive when provided.")
     if args.arrival_rate is not None and args.arrival_rate <= 0:
         raise ValueError("--arrival-rate must be positive when provided.")
     if args.arrival_jitter_sec < 0:
@@ -497,6 +592,10 @@ def main() -> int:
     }
     if not args.skip_health_check:
         health = health_check(args.base_url, headers, timeout=min(args.timeout_sec, 10.0))
+
+    worker_count = args.concurrency
+    if args.dispatch_mode == "burst":
+        worker_count = args.burst_workers or args.num_requests
 
     bench_start = time.perf_counter() + 0.2
     tasks = []
@@ -528,7 +627,7 @@ def main() -> int:
         })
 
     records = []
-    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures = [
             pool.submit(
                 issue_request,
@@ -547,7 +646,8 @@ def main() -> int:
             records.append(future.result())
 
     records.sort(key=lambda row: row["request_idx"])
-    summary = summarize(records, args.concurrency, args.arrival_rate)
+    summary = summarize(records, args.concurrency, args.arrival_rate,
+                        args.dispatch_mode, worker_count)
 
     config_payload = {
         "run_name": run_name,
@@ -556,6 +656,9 @@ def main() -> int:
         "model": args.model,
         "num_requests": args.num_requests,
         "concurrency": args.concurrency,
+        "dispatch_mode": args.dispatch_mode,
+        "worker_count": worker_count,
+        "burst_workers": args.burst_workers,
         "arrival_rate": args.arrival_rate,
         "arrival_jitter_sec": args.arrival_jitter_sec,
         "max_tokens": args.max_tokens,
