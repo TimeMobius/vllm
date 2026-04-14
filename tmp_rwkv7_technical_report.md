@@ -1288,3 +1288,60 @@ Important commits on this branch:
 Current branch:
 
 - `codex/rwkv7-adapter-align`
+
+## 10. PP Startup Fix
+
+### Symptom
+
+The first remote `pipeline_parallel_size=2` eager smoke for
+`RWKV7-Goose-World3-2.9B-HF` failed during startup profiling on PP rank 1 with:
+
+- `RuntimeError: expected scalar type BFloat16 but found Float`
+
+The failure happened in the first local block on rank 1:
+
+- `RWKV7Block._run_sequence()`
+- `attn_input = self.attn_norm(residual)`
+
+### Root Cause
+
+RWKV7 uses `RWKV7_RUNTIME_DTYPE = torch.float32` for its block/runtime path.
+However, non-first PP ranks allocate empty intermediate tensors for dummy/profile
+runs through `make_empty_intermediate_tensors(batch_size, dtype, device)`, and
+vLLM passed `model_config.dtype` (`bfloat16`) there.
+
+That meant:
+
+- PP rank 1 dummy/profile input `hidden_states` / `v_first` were bf16
+- RWKV7 block `LayerNorm` parameters were still float32 in this path
+- startup failed before the engine could finish memory profiling
+
+### Fix
+
+The PP boundary handling in `vllm/model_executor/models/rwkv7.py` was updated:
+
+- `RWKV7Model.make_empty_intermediate_tensors()` now allocates PP activations
+  in `RWKV7_RUNTIME_DTYPE`
+- `RWKV7Model.forward()` now normalizes received and returned PP
+  `hidden_states` / `v_first` tensors to `RWKV7_RUNTIME_DTYPE`
+
+### Validation
+
+Local validation after the fix:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m py_compile vllm/model_executor/models/rwkv7.py
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `13 passed, 2 skipped`
+
+Remote follow-up still required:
+
+- rerun `PP=2 + eager`
+- then rerun `PP=2 + PIECEWISE` if eager startup succeeds

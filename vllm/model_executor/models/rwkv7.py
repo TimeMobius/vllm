@@ -1350,16 +1350,28 @@ class RWKV7Model(nn.Module):
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
+    @staticmethod
+    def _pp_runtime_dtype() -> torch.dtype:
+        # RWKV7 keeps inter-stage activations in runtime dtype so PP dummy runs
+        # and stage-to-stage transfers match the numerics used inside blocks.
+        return RWKV7_RUNTIME_DTYPE
+
     def make_empty_intermediate_tensors(
         self, batch_size: int, dtype: torch.dtype, device: torch.device
     ) -> IntermediateTensors:
+        del dtype
+        runtime_dtype = self._pp_runtime_dtype()
         return IntermediateTensors(
             {
                 "hidden_states": torch.zeros(
-                    (batch_size, self.config.hidden_size), dtype=dtype, device=device
+                    (batch_size, self.config.hidden_size),
+                    dtype=runtime_dtype,
+                    device=device,
                 ),
                 "v_first": torch.zeros(
-                    (batch_size, self.local_value_dim), dtype=dtype, device=device
+                    (batch_size, self.local_value_dim),
+                    dtype=runtime_dtype,
+                    device=device,
                 ),
             }
         )
@@ -1387,6 +1399,11 @@ class RWKV7Model(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             v_first = intermediate_tensors["v_first"]
+            runtime_dtype = self._pp_runtime_dtype()
+            if hidden_states.dtype != runtime_dtype:
+                hidden_states = hidden_states.to(runtime_dtype)
+            if v_first.dtype != runtime_dtype:
+                v_first = v_first.to(runtime_dtype)
 
         for layer in islice(self.layers, self.start_layer, self.end_layer):
             layer_metadata = (
@@ -1403,6 +1420,11 @@ class RWKV7Model(nn.Module):
 
         if not get_pp_group().is_last_rank:
             assert v_first is not None
+            runtime_dtype = self._pp_runtime_dtype()
+            if hidden_states.dtype != runtime_dtype:
+                hidden_states = hidden_states.to(runtime_dtype)
+            if v_first.dtype != runtime_dtype:
+                v_first = v_first.to(runtime_dtype)
             return IntermediateTensors(
                 {"hidden_states": hidden_states, "v_first": v_first}
             )

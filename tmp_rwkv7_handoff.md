@@ -1469,3 +1469,49 @@ Notes:
 - if the remote stack does not expose `/health`, add `--skip-health-check`
 - if usage is not returned, `--return-token-ids` helps recover output token
   counts for `/v1/completions`
+
+## 2026-04-14: PP smoke failure diagnosis
+
+Remote `PP=2` eager smoke on `RWKV7-Goose-World3-2.9B-HF` failed during
+engine startup profiling with:
+
+- `RuntimeError: expected scalar type BFloat16 but found Float`
+
+The stack pointed to the first local `LayerNorm` on PP rank 1:
+
+- `RWKV7Block._run_sequence()` -> `self.attn_norm(residual)`
+
+Root cause:
+
+- RWKV7 keeps block/runtime activations in `RWKV7_RUNTIME_DTYPE`
+  (`torch.float32`)
+- PP dummy/profile runs for non-first ranks were allocating
+  `IntermediateTensors` with `model_config.dtype` (`bfloat16`)
+- rank 1 therefore entered the first block with bf16 intermediate tensors,
+  while RWKV7 `LayerNorm` weights are still float32 in this path
+
+Fix applied:
+
+- `RWKV7Model.make_empty_intermediate_tensors()` now allocates
+  `hidden_states` and `v_first` in `RWKV7_RUNTIME_DTYPE`
+- PP receive/return boundaries in `RWKV7Model.forward()` now normalize
+  `hidden_states` and `v_first` to `RWKV7_RUNTIME_DTYPE`
+
+Local verification:
+
+- `python -m py_compile vllm/model_executor/models/rwkv7.py`
+- `python -m pytest -q tests/model_executor/test_rwkv7.py`
+- result: `13 passed, 2 skipped`
+
+Next remote retry:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 vllm serve /mnt/data/Models/Huggingface/RWKV7-Goose-World3-2.9B-HF \
+  --trust-remote-code \
+  --host 0.0.0.0 \
+  --port 8033 \
+  --gpu-memory-utilization 0.8 \
+  --pipeline-parallel-size 2 \
+  --distributed-executor-backend mp \
+  --enforce-eager
+```

@@ -910,3 +910,16 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - `16/32/64/128` = `466.835 / 857.579 / 1275.735 / 1668.700`
   - 单卡上 `PIECEWISE` 到 `128` 仍然健康，eager 在 `128` 出现明显 cliff
 - 模型特定热点已经不像之前那样突出，接下来更需要补服务矩阵和特性覆盖
+- [x] PP 启动 smoke 首轮排障：
+  - 远端 `PP=2 + eager` 首次启动失败，报错
+    `expected scalar type BFloat16 but found Float`
+  - 已定位到 RWKV7 PP dummy/profile run 的 `IntermediateTensors` dtype
+    与模型 runtime dtype 不一致
+  - 已补 PP 边界 dtype 护栏，本地验证：
+    - `python -m py_compile vllm/model_executor/models/rwkv7.py`
+    - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - `13 passed, 2 skipped`
+- [ ] 远端复测 `PP=2 + eager`：
+  - 目标：确认 engine 能完整启动并通过 `/health`
+  - 然后补一条 completion smoke
+- [ ] 若 `PP=2 + eager` 通过，再测 `PP=2 + PIECEWISE`
