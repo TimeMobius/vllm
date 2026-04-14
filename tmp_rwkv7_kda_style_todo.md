@@ -816,6 +816,21 @@ python -m pytest -q tests/model_executor/test_rwkv7.py
   - [x] 结论：
     - `PIECEWISE` 可以稳定扛到 `128`
     - eager 在 `128` 出现明显吞吐 cliff 和队列延迟上升
+- [x] 远程并发压测工具：
+  - [x] 新增 [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
+  - [x] 支持 remote OpenAI-compatible vLLM endpoint
+  - [x] 支持 `/v1/completions` 和 `/v1/chat/completions`
+  - [x] 支持固定并发和 arrival-rate staggered workload
+  - [x] 自动保存：
+    - config.json
+    - summary.json
+    - summary.md
+    - requests.jsonl
+- [ ] 用新脚本对远程 RWKV7 实例补真实服务压测：
+  - [ ] closed-loop saturation
+  - [ ] arrival-staggered workload
+  - [ ] repeated-prefix prompt set
+  - [ ] 把远程结果补回 benchmark records
 
 compile 路径已经不是“能不能跑通”的问题了。现在最该区分的是：
 - 纯 `PIECEWISE` 已经是可用且正确的主线

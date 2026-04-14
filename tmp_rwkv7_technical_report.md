@@ -1182,6 +1182,47 @@ This does not yet mean "RWKV7 is solved for all large-scale traffic":
 - but as a single-GPU stress result, the current adaptation already shows a
   meaningful operational distinction between eager and `PIECEWISE`
 
+### 8.7.12 Remote Concurrency Benchmark Tooling
+
+To make the next validation stage easier, a reusable remote benchmark helper
+was added:
+
+- [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
+
+Its purpose is not to replace the local benchmark helpers, but to bridge the
+gap between:
+
+- local isolated benchmarking
+- and real remote deployment checks
+
+Key capabilities:
+
+- targets a remote OpenAI-compatible vLLM endpoint
+- supports both:
+  - `/v1/completions`
+  - `/v1/chat/completions`
+- supports both:
+  - fixed-concurrency closed-loop load
+  - staggered arrival-rate-driven load
+- loads prompts from inline args or from `.txt`, `.json`, `.jsonl`
+- writes durable artifacts for each run:
+  - `config.json`
+  - `summary.json`
+  - `summary.md`
+  - `requests.jsonl`
+
+Why this matters:
+
+- the current local results already show that synchronized burst traffic can
+  differentiate eager vs `PIECEWISE`
+- the next important question is whether a real remote deployment shows the
+  same behavior under more production-like arrivals
+- this utility makes that next step repeatable and recordable without needing
+  to keep rewriting ad hoc shell loops
+
+No remote run was recorded in this iteration because the task here was to add
+the tool itself, not to benchmark a specific remote endpoint yet.
+
 ## 9. Version Checkpoints
 
 Important commits on this branch:

@@ -1360,3 +1360,80 @@ Practical deployment readout from this round:
 2. if you expect larger bursts, `PIECEWISE` is now the safer path
 3. the next realism upgrade should be arrival-staggered high-concurrency traffic
    rather than another synchronized burst-only sweep
+
+## Remote Concurrency Benchmark Utility (2026-04-14)
+
+To make it easier to validate a remote vLLM deployment under more realistic
+traffic, a reusable helper was added:
+
+- [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
+
+What it does:
+
+- targets a remote OpenAI-compatible vLLM endpoint
+- supports:
+  - `/v1/completions`
+  - `/v1/chat/completions`
+- supports:
+  - fixed-concurrency closed-loop load
+  - arrival-rate-based staggered load for more production-like traffic
+- accepts prompts from:
+  - inline CLI args
+  - `.txt`
+  - `.json`
+  - `.jsonl`
+- saves:
+  - per-run config
+  - summary JSON
+  - summary Markdown
+  - per-request JSONL records
+
+Default output directory:
+
+- `/home/liu/vllm/tmp_rwkv7_remote_bench_runs/<run_name>/`
+
+Recommended usage patterns:
+
+1. closed-loop saturation test:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_remote_concurrency_bench.py \
+  --base-url http://YOUR_HOST:8000 \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --endpoint completions \
+  --num-requests 256 \
+  --concurrency 32 \
+  --max-tokens 64 \
+  --return-token-ids
+```
+
+2. staggered "more real" serving test:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_remote_concurrency_bench.py \
+  --base-url http://YOUR_HOST:8000 \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --endpoint completions \
+  --prompt-file /path/to/prompts.jsonl \
+  --num-requests 512 \
+  --concurrency 64 \
+  --arrival-rate 12 \
+  --arrival-jitter-sec 0.2 \
+  --max-tokens 64 \
+  --return-token-ids
+```
+
+Notes:
+
+- this helper does not launch a local server; it assumes the remote vLLM
+  instance is already up
+- if the endpoint sits behind an API gateway, `--api-key` can be provided
+- if the remote stack does not expose `/health`, add `--skip-health-check`
+- if usage is not returned, `--return-token-ids` helps recover output token
+  counts for `/v1/completions`
