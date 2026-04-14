@@ -11,6 +11,8 @@
   - 已补：
     - `burst` 发压模式
     - 显式 `token_throughput_tps`
+    - `token_throughput_tps_stats`
+      - 1 秒桶的 `min / avg / max tok/s`
     - `active_output_tps`
     - `peak_inflight_requests`
   - 现在可以区分：

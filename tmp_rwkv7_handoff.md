@@ -24,12 +24,16 @@
       - launches all requests immediately so queueing moves from the client
         worker pool to the remote vLLM service
     - explicit `token_throughput_tps`
+    - `token_throughput_tps_stats`
+      - 1-second bucketed `min / avg / max` token TPS within the active window
     - `active_output_tps`
       - measured from first request start to last request finish
       - helps separate client-side submission queue time from server busy time
     - `worker_count`
     - `peak_inflight_requests`
     - `avg_inflight_requests`
+    - `configured_concurrency` is now only meaningful in `closed_loop`
+      mode; in `burst` mode it will be `null`
   - intended usage:
     - `closed_loop`:
       - fixed client concurrency benchmark

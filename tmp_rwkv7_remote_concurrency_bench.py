@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import random
 import statistics
 import time
@@ -294,6 +295,81 @@ def summarize_inflight(records: list[dict[str, Any]]) -> dict[str, float | int |
     }
 
 
+def summarize_token_tps_buckets(
+    records: list[dict[str, Any]],
+    *,
+    window_start: float,
+    window_end: float,
+    bucket_sec: float = 1.0,
+) -> dict[str, float | None]:
+    if window_end <= window_start or bucket_sec <= 0:
+        return {
+            "bucket_sec": bucket_sec,
+            "avg": None,
+            "min": None,
+            "max": None,
+        }
+
+    token_records: list[tuple[float, float, int]] = []
+    for row in records:
+        if not row["success"]:
+            continue
+        token_count = row["completion_tokens"]
+        if token_count is None:
+            token_count = row["output_tokens"]
+        if token_count is None:
+            continue
+        started_at = float(row["started_at"])
+        finished_at = float(row["finished_at"])
+        if finished_at <= started_at:
+            continue
+        token_records.append((started_at, finished_at, int(token_count)))
+
+    if not token_records:
+        return {
+            "bucket_sec": bucket_sec,
+            "avg": None,
+            "min": None,
+            "max": None,
+        }
+
+    num_buckets = max(1, math.ceil((window_end - window_start) / bucket_sec))
+    bucket_tokens = [0.0] * num_buckets
+
+    for started_at, finished_at, token_count in token_records:
+        duration = finished_at - started_at
+        start_idx = max(0, int((started_at - window_start) // bucket_sec))
+        end_idx = min(
+            num_buckets - 1,
+            max(0, int(math.ceil((finished_at - window_start) / bucket_sec)) - 1),
+        )
+        for bucket_idx in range(start_idx, end_idx + 1):
+            bucket_start = window_start + bucket_idx * bucket_sec
+            bucket_end = min(bucket_start + bucket_sec, window_end)
+            overlap = max(
+                0.0,
+                min(finished_at, bucket_end) - max(started_at, bucket_start),
+            )
+            if overlap <= 0:
+                continue
+            bucket_tokens[bucket_idx] += token_count * (overlap / duration)
+
+    bucket_tps_values = []
+    for bucket_idx, token_count in enumerate(bucket_tokens):
+        bucket_start = window_start + bucket_idx * bucket_sec
+        bucket_end = min(bucket_start + bucket_sec, window_end)
+        bucket_duration = bucket_end - bucket_start
+        if bucket_duration > 0:
+            bucket_tps_values.append(token_count / bucket_duration)
+
+    return {
+        "bucket_sec": bucket_sec,
+        "avg": safe_float_mean(bucket_tps_values),
+        "min": min(bucket_tps_values) if bucket_tps_values else None,
+        "max": max(bucket_tps_values) if bucket_tps_values else None,
+    }
+
+
 def issue_request(
     *,
     endpoint: str,
@@ -385,6 +461,11 @@ def summarize(
     status_counts = Counter(str(row["status_code"]) for row in records)
     error_counts = Counter(row["error"] for row in records if row["error"])
     inflight = summarize_inflight(records)
+    token_tps_stats = summarize_token_tps_buckets(
+        records,
+        window_start=active_start if records else 0.0,
+        window_end=wall_end if records else 0.0,
+    )
 
     known_output_tokens = completion_tokens if completion_tokens else output_tokens
     aggregate_output_tps = (
@@ -401,7 +482,13 @@ def summarize(
         "success_count": len(success_records),
         "error_count": len(records) - len(success_records),
         "success_rate": (len(success_records) / len(records)) if records else None,
-        "configured_concurrency": configured_concurrency,
+        "requested_concurrency_arg": configured_concurrency,
+        "configured_concurrency": (
+            configured_concurrency if dispatch_mode == "closed_loop" else None
+        ),
+        "client_concurrency_limit": (
+            configured_concurrency if dispatch_mode == "closed_loop" else None
+        ),
         "dispatch_mode": dispatch_mode,
         "worker_count": worker_count,
         "arrival_rate_rps": arrival_rate,
@@ -433,6 +520,7 @@ def summarize(
                         for key, value in error_counts.most_common(5)],
         "known_completion_token_requests": len(known_output_tokens),
         "known_completion_tokens": sum(known_output_tokens) if known_output_tokens else None,
+        "token_throughput_tps_stats": token_tps_stats,
         **inflight,
     }
 
@@ -455,7 +543,8 @@ def render_markdown(
         f"- model: `{args.model}`",
         f"- dispatch_mode: `{summary['dispatch_mode']}`",
         f"- request_count: `{args.num_requests}`",
-        f"- concurrency: `{args.concurrency}`",
+        f"- requested_concurrency_arg: `{summary['requested_concurrency_arg']}`",
+        f"- client_concurrency_limit: `{summary['client_concurrency_limit']}`",
         f"- worker_count: `{summary['worker_count']}`",
         f"- arrival_rate_rps: `{args.arrival_rate}`",
         f"- max_tokens: `{args.max_tokens}`",
@@ -477,6 +566,9 @@ def render_markdown(
         f"- active_request_throughput_rps: `{summary['active_request_throughput_rps']}`",
         f"- token_throughput_tps: `{summary['token_throughput_tps']}`",
         f"- active_output_tps: `{summary['active_output_tps']}`",
+        f"- token_tps_avg_1s: `{summary['token_throughput_tps_stats']['avg']}`",
+        f"- token_tps_min_1s: `{summary['token_throughput_tps_stats']['min']}`",
+        f"- token_tps_max_1s: `{summary['token_throughput_tps_stats']['max']}`",
         "",
         "| metric | value |",
         "|---|---:|",
@@ -487,6 +579,7 @@ def render_markdown(
         f"| peak_inflight_requests | `{summary['peak_inflight_requests']}` |",
         f"| avg_inflight_requests | `{summary['avg_inflight_requests']}` |",
         f"| client_queue_before_first_start_sec | `{summary['client_queue_delay_before_first_start_sec']}` |",
+        f"| token_tps_bucket_sec | `{summary['token_throughput_tps_stats']['bucket_sec']}` |",
         f"| start_delay_avg_sec | `{summary['start_delay_sec']['avg']}` |",
         f"| start_delay_p95_sec | `{summary['start_delay_sec']['p95']}` |",
         "",

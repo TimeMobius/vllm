@@ -22,12 +22,18 @@ Added:
 - explicit throughput fields:
   - `token_throughput_tps`
   - `active_output_tps`
+  - `token_throughput_tps_stats`
+    - 1-second bucketed `min / avg / max` token throughput during the active
+      request window
 - explicit queue/pressure diagnostics:
   - `worker_count`
   - `peak_inflight_requests`
   - `avg_inflight_requests`
   - `active_window_sec`
   - `client_queue_delay_before_first_start_sec`
+  - `configured_concurrency`
+    - only meaningful in `closed_loop`
+    - intentionally `null` in `burst`
 
 Interpretation:
 
