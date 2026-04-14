@@ -25,6 +25,10 @@ Added:
   - `token_throughput_tps_stats`
     - 1-second bucketed `min / avg / max` token throughput during the active
       request window
+  - `request_token_throughput_tps`
+    - per-request token throughput
+    - stored per row in `requests.jsonl`
+    - summarized as `avg / p50 / p95 / min / max`
 - explicit queue/pressure diagnostics:
   - `worker_count`
   - `peak_inflight_requests`

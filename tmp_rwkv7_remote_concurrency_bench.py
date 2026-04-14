@@ -370,6 +370,23 @@ def summarize_token_tps_buckets(
     }
 
 
+def summarize_request_token_tps(
+    records: list[dict[str, Any]],
+) -> dict[str, float | None]:
+    request_tps_values = [
+        float(row["request_token_throughput_tps"])
+        for row in records
+        if row.get("request_token_throughput_tps") is not None
+    ]
+    return {
+        "avg": safe_float_mean(request_tps_values),
+        "p50": percentile(request_tps_values, 0.50),
+        "p95": percentile(request_tps_values, 0.95),
+        "min": min(request_tps_values) if request_tps_values else None,
+        "max": max(request_tps_values) if request_tps_values else None,
+    }
+
+
 def issue_request(
     *,
     endpoint: str,
@@ -406,6 +423,16 @@ def issue_request(
             error_message = error_text
 
     usage = response.get("usage") if isinstance(response, dict) else None
+    completion_tokens = (
+        None if not isinstance(usage, dict) else usage.get("completion_tokens")
+    )
+    known_completion_tokens = completion_tokens
+    if known_completion_tokens is None:
+        known_completion_tokens = output_tokens
+    latency_sec = finished_at - started_at
+    request_token_throughput_tps = None
+    if known_completion_tokens is not None and latency_sec > 0:
+        request_token_throughput_tps = float(known_completion_tokens) / latency_sec
 
     return {
         "request_idx": request_idx,
@@ -414,14 +441,15 @@ def issue_request(
         "started_at": started_at,
         "finished_at": finished_at,
         "start_delay_sec": started_at - release_at,
-        "latency_sec": finished_at - started_at,
+        "latency_sec": latency_sec,
         "status_code": status_code,
         "success": success,
         "finish_reason": extract_finish_reason(response),
         "output_tokens": output_tokens,
         "prompt_tokens": None if not isinstance(usage, dict) else usage.get("prompt_tokens"),
-        "completion_tokens": None if not isinstance(usage, dict) else usage.get("completion_tokens"),
+        "completion_tokens": completion_tokens,
         "total_tokens": None if not isinstance(usage, dict) else usage.get("total_tokens"),
+        "request_token_throughput_tps": request_token_throughput_tps,
         "response_chars": None if response_text is None else len(response_text),
         "response_preview": None if response_text is None else response_text[:160],
         "error": error_message,
@@ -466,6 +494,7 @@ def summarize(
         window_start=active_start if records else 0.0,
         window_end=wall_end if records else 0.0,
     )
+    request_token_tps_stats = summarize_request_token_tps(success_records)
 
     known_output_tokens = completion_tokens if completion_tokens else output_tokens
     aggregate_output_tps = (
@@ -521,6 +550,7 @@ def summarize(
         "known_completion_token_requests": len(known_output_tokens),
         "known_completion_tokens": sum(known_output_tokens) if known_output_tokens else None,
         "token_throughput_tps_stats": token_tps_stats,
+        "request_token_throughput_tps_stats": request_token_tps_stats,
         **inflight,
     }
 
@@ -569,6 +599,9 @@ def render_markdown(
         f"- token_tps_avg_1s: `{summary['token_throughput_tps_stats']['avg']}`",
         f"- token_tps_min_1s: `{summary['token_throughput_tps_stats']['min']}`",
         f"- token_tps_max_1s: `{summary['token_throughput_tps_stats']['max']}`",
+        f"- request_token_tps_avg: `{summary['request_token_throughput_tps_stats']['avg']}`",
+        f"- request_token_tps_p50: `{summary['request_token_throughput_tps_stats']['p50']}`",
+        f"- request_token_tps_p95: `{summary['request_token_throughput_tps_stats']['p95']}`",
         "",
         "| metric | value |",
         "|---|---:|",
@@ -580,6 +613,8 @@ def render_markdown(
         f"| avg_inflight_requests | `{summary['avg_inflight_requests']}` |",
         f"| client_queue_before_first_start_sec | `{summary['client_queue_delay_before_first_start_sec']}` |",
         f"| token_tps_bucket_sec | `{summary['token_throughput_tps_stats']['bucket_sec']}` |",
+        f"| request_token_tps_min | `{summary['request_token_throughput_tps_stats']['min']}` |",
+        f"| request_token_tps_max | `{summary['request_token_throughput_tps_stats']['max']}` |",
         f"| start_delay_avg_sec | `{summary['start_delay_sec']['avg']}` |",
         f"| start_delay_p95_sec | `{summary['start_delay_sec']['p95']}` |",
         "",

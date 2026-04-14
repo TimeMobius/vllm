@@ -24,6 +24,9 @@
       - launches all requests immediately so queueing moves from the client
         worker pool to the remote vLLM service
     - explicit `token_throughput_tps`
+    - per-request `request_token_throughput_tps`
+      - stored on every row in `requests.jsonl`
+      - summary stats include `avg / p50 / p95 / min / max`
     - `token_throughput_tps_stats`
       - 1-second bucketed `min / avg / max` token TPS within the active window
     - `active_output_tps`

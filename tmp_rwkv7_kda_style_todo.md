@@ -11,6 +11,9 @@
   - 已补：
     - `burst` 发压模式
     - 显式 `token_throughput_tps`
+    - 单请求 `request_token_throughput_tps`
+      - 每条请求记录都有
+      - summary 会给 `avg / p50 / p95 / min / max`
     - `token_throughput_tps_stats`
       - 1 秒桶的 `min / avg / max tok/s`
     - `active_output_tps`
