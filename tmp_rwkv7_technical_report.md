@@ -1828,3 +1828,55 @@ Interpretation:
 
 If a stricter answer is needed later, the right follow-up is to rerun `align`
 with multiple rounds and compare medians / spread instead of one-shot values.
+
+### Conservative revert to the `be29a1808`-equivalent code state
+
+After the above experiments, the branch decision was to keep the conservative
+`align`-first runtime as the active code path and preserve the later `all`
+work only in history. Concretely, I reverted `3218256c8` so the retained code
+matches the earlier `be29a1808`-equivalent RWKV7 runtime behavior again, while
+leaving the benchmark/report record intact.
+
+Post-revert verification:
+
+```bash
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `20 passed, 2 skipped`
+
+Post-revert `align` serving smoke:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_postrevert_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_postrevert_20260415.json
+```
+
+Observed result:
+
+| hit ratio | avg aggregate TPS | all-match |
+|---|---:|---|
+| `0.0` | `115.775` | `true` |
+| `0.5` | `165.857` | `true` |
+| `1.0` | `221.106` | `true` |
+
+Interpretation:
+
+- the revert preserved correctness
+- the post-revert `align` numbers stay in the same overall band as the earlier
+  recheck
+- current evidence still points to one-shot variance rather than a material
+  regression caused by the now-removed `all` experiment code

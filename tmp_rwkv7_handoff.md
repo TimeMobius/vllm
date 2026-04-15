@@ -1884,3 +1884,68 @@ Interpretation:
   this is not enough evidence to call it a confirmed align-path regression
 - if we need a stronger answer later, we should rerun `align` with
   `rounds>=3, warmup>=1` and compare medians rather than one-shot values
+
+## 2026-04-15 Update: reverted `3218256c8` for a more conservative align-first state
+
+Per the latest decision, I reverted the code changes from `3218256c8`
+(`Keep RWKV7 all-mode checkpoint writes atomic`) so the codebase is back to the
+more conservative `be29a1808`-equivalent runtime state for RWKV7 prefix cache
+behavior.
+
+Important note:
+
+- I preserved the benchmark / report history from the reverted experiment in
+  the docs
+- only the code path was reverted
+
+Post-revert local verification:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `20 passed, 2 skipped`
+
+Post-revert `align` serving smoke:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_postrevert_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_postrevert_20260415.json
+```
+
+Observed result:
+
+- `align`, hit `0.0 / 0.5 / 1.0`
+  - `115.775 / 165.857 / 221.106`
+- all requests matched the serial baseline
+
+Interpretation:
+
+- the revert does not introduce a correctness issue
+- the post-revert numbers remain in the same rough band as the earlier
+  `align` recheck
+- the current evidence still points to run-to-run variance, not a strong
+  align-path regression caused by the now-reverted `all` experiment code
+
+Current practical state:
+
+- if we want the most conservative branch state for ongoing `align` work,
+  this revert is the cleaner baseline
+- if we revisit `all` later, the experiment history is still preserved in the
+  docs and commit history

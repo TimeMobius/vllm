@@ -967,6 +967,13 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - `117.205 / 160.097 / 230.063`
     - correctness 正常
     - 单轮略低于旧基线，但还不足以认定为 confirmed regression
+  - [x] 代码回退到 `be29a1808` 等价稳态：
+    - 已 revert `3218256c8`
+    - 文档保留实验历史，代码回到更保守的 `align`-first 状态
+  - [x] post-revert `align` smoke：
+    - `115.775 / 165.857 / 221.106`
+    - correctness 正常
+    - 仍然更像 run-to-run 波动，而不是回退前实验代码留下的确定性影响
   - [ ] 设计真正 atomic 的 multi-state checkpoint publication：
     - 要么一次性发布 attn/recurrent/ffn 三段状态
     - 要么引入不会暴露 partial slot 的 staging/commit 机制

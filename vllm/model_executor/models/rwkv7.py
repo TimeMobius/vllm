@@ -646,7 +646,6 @@ class RWKV7Attention(nn.Module):
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
-        torch.Tensor | None,
         torch.Tensor,
     ]:
         x_r = self.x_r.squeeze(0).squeeze(0)
@@ -928,15 +927,7 @@ class RWKV7Attention(nn.Module):
         cached_shift_state: torch.Tensor | None,
         recurrent_state: torch.Tensor | None,
         v_first: torch.Tensor | None,
-        checkpoint_state_cache: torch.Tensor | None = None,
-        checkpoint_slot_ids: torch.Tensor | None = None,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor | None,
-    ]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         delta, final_shift_state = token_shift_with_cache(hidden_states, cached_shift_state)
         r, w, k, v, kk, a, g, v_first_out = self._project_recurrent_inputs(
             hidden_states,
@@ -970,8 +961,6 @@ class RWKV7Attention(nn.Module):
                 else initial_recurrent_state.unsqueeze(0)
             ),
             output_final_state=True,
-            checkpoint_state_cache=checkpoint_state_cache,
-            checkpoint_slot_ids=checkpoint_slot_ids,
         )
         output = self._finalize_attention_output(
             recurrent_output.squeeze(0),
@@ -999,15 +988,7 @@ class RWKV7Attention(nn.Module):
         cached_shift_state: torch.Tensor | None,
         recurrent_state: torch.Tensor | None,
         v_first: torch.Tensor | None,
-        checkpoint_state_cache: torch.Tensor | None = None,
-        checkpoint_slot_ids: torch.Tensor | None = None,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor | None,
-    ]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         delta, final_shift_state = token_shift_with_cache_varlen(
             hidden_states,
             query_start_loc,
@@ -1037,8 +1018,6 @@ class RWKV7Attention(nn.Module):
             ),
             output_final_state=True,
             cu_seqlens=query_start_loc,
-            checkpoint_state_cache=checkpoint_state_cache,
-            checkpoint_slot_ids=checkpoint_slot_ids,
         )
         output = self._finalize_attention_output(
             recurrent_output.squeeze(0),
@@ -1049,13 +1028,7 @@ class RWKV7Attention(nn.Module):
             hidden_states.dtype,
         )
         assert final_recurrent_state is not None
-        return (
-            output,
-            final_shift_state,
-            final_recurrent_state,
-            v_first_out,
-            checkpoint_states,
-        )
+        return output, final_shift_state, final_recurrent_state, v_first_out, checkpoint_states
 
 
 class RWKV7Block(nn.Module, MambaBase):
@@ -1368,6 +1341,7 @@ class RWKV7Block(nn.Module, MambaBase):
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
+        torch.Tensor,
     ]:
         assert self.cache_config is not None
         assert self.cache_config.mamba_block_size is not None
@@ -1385,9 +1359,6 @@ class RWKV7Block(nn.Module, MambaBase):
             residual = self.pre_norm(residual)
 
         attn_input = self.attn_norm(residual)
-        block_slot_ids = state_indices_row[
-            block_idx_first_scheduled_token:block_idx_last_scheduled_token
-        ].to(dtype=torch.long)
         (
             attn_out,
             attn_shift_state,
@@ -1407,6 +1378,9 @@ class RWKV7Block(nn.Module, MambaBase):
         ffn_out, ffn_shift_state = self.ffn(ffn_input, ffn_shift_state)
         hidden_states = hidden_states + ffn_out
 
+        block_slot_ids = state_indices_row[
+            block_idx_first_scheduled_token:block_idx_last_scheduled_token
+        ].to(dtype=torch.long)
         block_attn_shift_states = attn_input.index_select(0, block_boundary_positions)
         block_ffn_shift_states = ffn_input.index_select(0, block_boundary_positions)
         return (
@@ -1429,7 +1403,6 @@ class RWKV7Block(nn.Module, MambaBase):
         checkpoint_positions: torch.Tensor,
         checkpoint_offsets: torch.Tensor,
         checkpoint_absolute_positions: torch.Tensor,
-        checkpoint_slot_ids: torch.Tensor,
         attn_shift_state: torch.Tensor,
         recurrent_state: torch.Tensor,
         ffn_shift_state: torch.Tensor,
@@ -1440,7 +1413,7 @@ class RWKV7Block(nn.Module, MambaBase):
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
-        torch.Tensor | None,
+        torch.Tensor,
         torch.Tensor,
     ]:
         residual = hidden_states
@@ -1684,13 +1657,6 @@ class RWKV7Block(nn.Module, MambaBase):
                     checkpoint_offsets = _rwkv7_checkpoint_offsets_from_counts(
                         checkpoint_counts_tensor
                     )
-                    block_slot_ids = (
-                        torch.cat(block_slot_ids_parts, dim=0)
-                        if block_slot_ids_parts
-                        else torch.empty(
-                            (0,), device=hidden_states.device, dtype=torch.long
-                        )
-                    )
                     states = self._get_prefill_kv_states(
                         input_slot_ids,
                         has_initial_state,
@@ -1715,24 +1681,36 @@ class RWKV7Block(nn.Module, MambaBase):
                         checkpoint_positions,
                         checkpoint_offsets,
                         checkpoint_absolute_positions,
-                        block_slot_ids,
                         *states,
                     )
                     output_slice[prefill_token_offset:num_actual_tokens] = out
                     v_first_slice[prefill_token_offset:num_actual_tokens] = vf_out
-                    if block_slot_ids.numel() > 0:
-                        assert checkpoint_recurrent_states is not None
-                        self._store_kv_states(
-                            block_slot_ids,
-                            block_attn_shift_states,
-                            checkpoint_recurrent_states,
-                            block_ffn_shift_states,
+
+                    block_slot_ids = (
+                        torch.cat(block_slot_ids_parts, dim=0)
+                        if block_slot_ids_parts
+                        else torch.empty(
+                            (0,), device=hidden_states.device, dtype=torch.long
                         )
+                    )
+                    store_slot_ids = torch.cat((block_slot_ids, output_slot_ids), dim=0)
+                    store_attn_shift = torch.cat(
+                        (block_attn_shift_states, attn_shift),
+                        dim=0,
+                    )
+                    store_recurrent = torch.cat(
+                        (checkpoint_recurrent_states, recurrent),
+                        dim=0,
+                    )
+                    store_ffn_shift = torch.cat(
+                        (block_ffn_shift_states, ffn_shift),
+                        dim=0,
+                    )
                     self._store_kv_states(
-                        output_slot_ids,
-                        attn_shift,
-                        recurrent,
-                        ffn_shift,
+                        store_slot_ids,
+                        store_attn_shift,
+                        store_recurrent,
+                        store_ffn_shift,
                     )
                 else:
                     for prefill_idx in range(attn_metadata.num_prefills):
@@ -1784,19 +1762,24 @@ class RWKV7Block(nn.Module, MambaBase):
                         output_slot_id = state_indices_row[
                             block_idx_last_scheduled_token
                         ].to(dtype=torch.long).view(1)
-                        if block_slot_ids.numel() > 0:
-                            assert checkpoint_recurrent_states is not None
-                            self._store_kv_states(
-                                block_slot_ids,
-                                block_attn_shift_states,
-                                checkpoint_recurrent_states,
-                                block_ffn_shift_states,
-                            )
+                        store_slot_ids = torch.cat((block_slot_ids, output_slot_id), dim=0)
+                        store_attn_shift = torch.cat(
+                            (block_attn_shift_states, attn_shift.unsqueeze(0)),
+                            dim=0,
+                        )
+                        store_recurrent = torch.cat(
+                            (checkpoint_recurrent_states, recurrent.unsqueeze(0)),
+                            dim=0,
+                        )
+                        store_ffn_shift = torch.cat(
+                            (block_ffn_shift_states, ffn_shift.unsqueeze(0)),
+                            dim=0,
+                        )
                         self._store_kv_states(
-                            output_slot_id,
-                            attn_shift.unsqueeze(0),
-                            recurrent.unsqueeze(0),
-                            ffn_shift.unsqueeze(0),
+                            store_slot_ids,
+                            store_attn_shift,
+                            store_recurrent,
+                            store_ffn_shift,
                         )
             else:
                 prefill_slot_ids = state_indices[

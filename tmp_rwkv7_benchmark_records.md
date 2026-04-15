@@ -1070,3 +1070,44 @@ Interpretation:
   - `align` remains the faster serving choice than `all`
   - but any claim of a small regression should be based on repeated runs, not
     this single recheck alone
+
+### `2026-04-15_rwkv7_prefix_cache_align_postrevert_0p4b_c8`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_postrevert_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_postrevert_20260415.json
+```
+
+Results:
+
+| mode | hit ratio | avg aggregate TPS | avg request TPS | avg request latency (s) | all-match |
+|---|---:|---:|---:|---:|---|
+| `align` (`post-revert`) | `0.0` | `115.775` | `14.562` | `4.395` | `true` |
+| `align` (`post-revert`) | `0.5` | `165.857` | `20.848` | `3.070` | `true` |
+| `align` (`post-revert`) | `1.0` | `221.106` | `27.672` | `2.313` | `true` |
+
+Interpretation:
+
+- code was reverted back to the pre-`3218256c8` stable state while preserving
+  document history
+- correctness stayed clean after the revert
+- versus the immediate pre-revert recheck:
+  - `0.0`: `117.205 -> 115.775` (`-1.2%`)
+  - `0.5`: `160.097 -> 165.857` (`+3.6%`)
+  - `1.0`: `230.063 -> 221.106` (`-3.9%`)
+- this still looks like ordinary one-shot run variance rather than a strong
+  signal that the reverted code materially changes the `align` path

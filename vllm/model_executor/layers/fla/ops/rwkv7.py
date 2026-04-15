@@ -28,7 +28,6 @@ def _rwkv7_fused_recurrent_disabled() -> bool:
         "USE_INITIAL_STATE": lambda args: args["h0"] is not None,
         "STORE_FINAL_STATE": lambda args: args["ht"] is not None,
         "STORE_CHECKPOINT_STATE": lambda args: args["hc"] is not None,
-        "DIRECT_CHECKPOINT_WRITE": lambda args: args["checkpoint_slot_ids"] is not None,
         "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
     }
 )
@@ -45,7 +44,6 @@ def fused_recurrent_rwkv7_fwd_kernel(
     ht,
     checkpoint_positions,
     checkpoint_offsets,
-    checkpoint_slot_ids,
     hc,
     cu_seqlens,
     scale,
@@ -59,7 +57,6 @@ def fused_recurrent_rwkv7_fwd_kernel(
     USE_INITIAL_STATE: tl.constexpr,
     STORE_FINAL_STATE: tl.constexpr,
     STORE_CHECKPOINT_STATE: tl.constexpr,
-    DIRECT_CHECKPOINT_WRITE: tl.constexpr,
     IS_VARLEN: tl.constexpr,
 ):
     i_v, i_nh = tl.program_id(0).to(tl.int64), tl.program_id(1).to(tl.int64)
@@ -122,15 +119,7 @@ def fused_recurrent_rwkv7_fwd_kernel(
         if STORE_CHECKPOINT_STATE:
             should_store = has_checkpoint & (t == checkpoint_pos)
             safe_checkpoint_idx = tl.where(has_checkpoint, checkpoint_idx, 0)
-            if DIRECT_CHECKPOINT_WRITE:
-                checkpoint_slot_id = tl.load(
-                    checkpoint_slot_ids + safe_checkpoint_idx,
-                    mask=has_checkpoint,
-                    other=0,
-                ).to(tl.int64)
-                p_hc = hc + (checkpoint_slot_id * H + i_h) * K * V + o_k[:, None] * V + o_v
-            else:
-                p_hc = hc + (safe_checkpoint_idx * H + i_h) * K * V + o_k[:, None] * V + o_v
+            p_hc = hc + (safe_checkpoint_idx * H + i_h) * K * V + o_k[:, None] * V + o_v
             tl.store(
                 p_hc,
                 b_h.to(p_hc.dtype.element_ty),
@@ -195,8 +184,6 @@ def rwkv7_recurrent_reference_with_checkpoints(
     checkpoint_positions: torch.Tensor | None = None,
     checkpoint_offsets: torch.Tensor | None = None,
     output_checkpoint_states: bool = False,
-    checkpoint_state_cache: torch.Tensor | None = None,
-    checkpoint_slot_ids: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     return _rwkv7_recurrent_reference_impl(
         r=r,
@@ -211,8 +198,6 @@ def rwkv7_recurrent_reference_with_checkpoints(
         checkpoint_positions=checkpoint_positions,
         checkpoint_offsets=checkpoint_offsets,
         output_checkpoint_states=output_checkpoint_states,
-        checkpoint_state_cache=checkpoint_state_cache,
-        checkpoint_slot_ids=checkpoint_slot_ids,
     )
 
 
@@ -229,8 +214,6 @@ def _rwkv7_recurrent_reference_impl(
     checkpoint_positions: torch.Tensor | None = None,
     checkpoint_offsets: torch.Tensor | None = None,
     output_checkpoint_states: bool = False,
-    checkpoint_state_cache: torch.Tensor | None = None,
-    checkpoint_slot_ids: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     if r.ndim != 4:
         raise ValueError(f"`r` must be 4D, got {r.ndim}.")
@@ -238,20 +221,12 @@ def _rwkv7_recurrent_reference_impl(
         raise ValueError(
             "When `cu_seqlens` is provided, the batch size must be 1."
         )
-    if (output_checkpoint_states or checkpoint_state_cache is not None) and (
+    if output_checkpoint_states and (
         checkpoint_positions is None or checkpoint_offsets is None
     ):
         raise ValueError(
             "`checkpoint_positions` and `checkpoint_offsets` are required "
-            "when storing checkpoint states."
-        )
-    if checkpoint_state_cache is not None and checkpoint_slot_ids is None:
-        raise ValueError(
-            "`checkpoint_slot_ids` are required when `checkpoint_state_cache` is provided."
-        )
-    if output_checkpoint_states and checkpoint_state_cache is not None:
-        raise ValueError(
-            "`output_checkpoint_states` and `checkpoint_state_cache` are mutually exclusive."
+            "when `output_checkpoint_states=True`."
         )
 
     B, T, H, K = r.shape
@@ -282,8 +257,6 @@ def _rwkv7_recurrent_reference_impl(
     else:
         checkpoint_states = None
 
-    store_checkpoint_state = output_checkpoint_states or checkpoint_state_cache is not None
-
     for seq_idx in range(N):
         batch_idx = 0 if cu_seqlens is not None else seq_idx
         if cu_seqlens is None:
@@ -298,7 +271,7 @@ def _rwkv7_recurrent_reference_impl(
         else:
             state = initial_state[seq_idx].to(torch.float32).clone()
 
-        if store_checkpoint_state:
+        if output_checkpoint_states:
             assert checkpoint_positions is not None
             assert checkpoint_offsets is not None
             checkpoint_idx = int(checkpoint_offsets[seq_idx].item())
@@ -328,17 +301,11 @@ def _rwkv7_recurrent_reference_impl(
             ).sum(dim=-2).to(out.dtype)
 
             if (
-                checkpoint_idx < checkpoint_end
+                checkpoint_states is not None
+                and checkpoint_idx < checkpoint_end
                 and local_token_idx == int(checkpoint_positions[checkpoint_idx].item())
             ):
-                if checkpoint_state_cache is not None:
-                    assert checkpoint_slot_ids is not None
-                    slot_id = int(checkpoint_slot_ids[checkpoint_idx].item())
-                    checkpoint_state_cache[slot_id].copy_(
-                        state.to(checkpoint_state_cache.dtype)
-                    )
-                elif checkpoint_states is not None:
-                    checkpoint_states[checkpoint_idx] = state
+                checkpoint_states[checkpoint_idx] = state
                 checkpoint_idx += 1
 
         if final_state is not None:
@@ -387,9 +354,7 @@ def fused_mul_recurrent_rwkv7_with_checkpoints(
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = False,
     cu_seqlens: torch.Tensor | None = None,
-    checkpoint_state_cache: torch.Tensor | None = None,
-    checkpoint_slot_ids: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
     out, final_state, checkpoint_states = _fused_mul_recurrent_rwkv7_impl(
         r=r,
         w=w,
@@ -403,10 +368,9 @@ def fused_mul_recurrent_rwkv7_with_checkpoints(
         cu_seqlens=cu_seqlens,
         checkpoint_positions=checkpoint_positions,
         checkpoint_offsets=checkpoint_offsets,
-        output_checkpoint_states=checkpoint_state_cache is None,
-        checkpoint_state_cache=checkpoint_state_cache,
-        checkpoint_slot_ids=checkpoint_slot_ids,
+        output_checkpoint_states=True,
     )
+    assert checkpoint_states is not None
     return out, final_state, checkpoint_states
 
 
@@ -424,8 +388,6 @@ def _fused_mul_recurrent_rwkv7_impl(
     checkpoint_positions: torch.Tensor | None = None,
     checkpoint_offsets: torch.Tensor | None = None,
     output_checkpoint_states: bool = False,
-    checkpoint_state_cache: torch.Tensor | None = None,
-    checkpoint_slot_ids: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     if (
         _rwkv7_fused_recurrent_disabled()
@@ -446,8 +408,6 @@ def _fused_mul_recurrent_rwkv7_impl(
             checkpoint_positions=checkpoint_positions,
             checkpoint_offsets=checkpoint_offsets,
             output_checkpoint_states=output_checkpoint_states,
-            checkpoint_state_cache=checkpoint_state_cache,
-            checkpoint_slot_ids=checkpoint_slot_ids,
         )
 
     if cu_seqlens is not None and r.shape[0] != 1:
@@ -468,23 +428,15 @@ def _fused_mul_recurrent_rwkv7_impl(
             h0 = r.new_zeros((N, H, K, V), dtype=torch.float32)
         ht = r.new_empty((N, H, K, V), dtype=torch.float32)
 
-    store_checkpoint_state = output_checkpoint_states or checkpoint_state_cache is not None
     hc = None
-    if store_checkpoint_state:
+    if output_checkpoint_states:
         if checkpoint_positions is None or checkpoint_offsets is None:
             raise ValueError(
                 "`checkpoint_positions` and `checkpoint_offsets` are required "
-                "when storing checkpoint states."
+                "when `output_checkpoint_states=True`."
             )
-        if checkpoint_state_cache is not None:
-            if checkpoint_slot_ids is None:
-                raise ValueError(
-                    "`checkpoint_slot_ids` are required when `checkpoint_state_cache` is provided."
-                )
-            hc = checkpoint_state_cache
-        else:
-            num_checkpoints = int(checkpoint_offsets[-1].item())
-            hc = r.new_empty((num_checkpoints, H, K, V), dtype=torch.float32)
+        num_checkpoints = int(checkpoint_offsets[-1].item())
+        hc = r.new_empty((num_checkpoints, H, K, V), dtype=torch.float32)
 
     o = torch.empty_like(v)
     grid = (triton.cdiv(V, BV), N * H)
@@ -500,7 +452,6 @@ def _fused_mul_recurrent_rwkv7_impl(
         ht=ht,
         checkpoint_positions=checkpoint_positions,
         checkpoint_offsets=checkpoint_offsets,
-        checkpoint_slot_ids=checkpoint_slot_ids,
         hc=hc,
         cu_seqlens=cu_seqlens,
         scale=scale,
@@ -514,5 +465,4 @@ def _fused_mul_recurrent_rwkv7_impl(
         num_warps=4,
         num_stages=3,
     )
-    checkpoint_states = None if checkpoint_state_cache is not None else hc
-    return o, ht, checkpoint_states
+    return o, ht, hc
