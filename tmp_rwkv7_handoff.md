@@ -1998,3 +1998,36 @@ Interpretation:
   the same effective performance band
 - the branch can keep the simpler conservative code state without claiming a
   meaningful `align` regression
+
+## 2026-04-15 Update: upstream PR hygiene cleanup
+
+To prepare for an upstream PR, I did a lightweight RWKV7 code hygiene pass with
+one concrete goal: keep local debugging/reporting workflow intact in local
+docs, but avoid carrying purely development-only inspection hooks into the PR.
+
+Applied cleanup:
+
+- removed RWKV7-only `debug_last_*` snapshot fields from
+  `vllm/model_executor/models/rwkv7.py`
+- removed `RWKV7_DEBUG_*` environment-variable branches used only for local
+  store-path debugging
+- confirmed the main RWKV7 code/test files do not contain Chinese comments
+
+Verification:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m py_compile vllm/model_executor/models/rwkv7.py
+```
+
+Result:
+
+- compile check passed
+
+Interpretation:
+
+- this change is non-functional cleanup for PR readiness
+- local benchmark / handoff / todo / report files remain the place to keep
+  experimental notes and iterative debugging history

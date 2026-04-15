@@ -978,6 +978,10 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - median `121.232 / 174.989 / 248.332`
     - 相比旧高点基线 `119.735 / 175.788 / 253.456`，差异约 `+1.2% / -0.5% / -2.0%`
     - 现阶段可以认为 `align` 没有实质性性能回退
+  - [x] upstream PR hygiene cleanup：
+    - 去掉了 `rwkv7.py` 里纯开发期的 `RWKV7_DEBUG_*` 分支和 `debug_last_*` 状态快照
+    - 核心 RWKV7 代码/测试文件已确认没有中文注释
+    - 本地实验文档继续保留，但不作为上游 PR 内容
   - [ ] 设计真正 atomic 的 multi-state checkpoint publication：
     - 要么一次性发布 attn/recurrent/ffn 三段状态
     - 要么引入不会暴露 partial slot 的 staging/commit 机制

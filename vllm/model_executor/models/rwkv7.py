@@ -139,15 +139,6 @@ def _can_use_rwkv7_fused_recurrent(hidden_states: torch.Tensor) -> bool:
         and _rwkv7_packed_prefill_enabled()
     )
 
-
-def _rwkv7_can_collect_tensor_debug_stats(tensor: torch.Tensor) -> bool:
-    if os.getenv("RWKV7_DEBUG_STORE_STATS") != "1":
-        return False
-    if tensor.device.type != "cuda":
-        return True
-    return not torch.cuda.is_current_stream_capturing()
-
-
 def _custom_op_optional_tensor(
     tensor: torch.Tensor | None,
     *,
@@ -260,27 +251,6 @@ def rwkv7_attention(
     self = forward_context.no_compile_layers[layer_name]
     attn_metadata = forward_context.attn_metadata
     block_layer_name = layer_name.removesuffix(".attn")
-    metadata_summary = {
-        "attn_metadata_is_none": int(attn_metadata is None),
-        "has_attn_key": 0,
-        "has_block_key": 0,
-        "block_num_decode_tokens": -1,
-        "block_num_prefill_tokens": -1,
-        "block_num_prefills": -1,
-    }
-    if isinstance(attn_metadata, dict):
-        metadata_summary["has_attn_key"] = int(layer_name in attn_metadata)
-        metadata_summary["has_block_key"] = int(block_layer_name in attn_metadata)
-        block_metadata = attn_metadata.get(block_layer_name)
-        if isinstance(block_metadata, LinearAttentionMetadata):
-            metadata_summary["block_num_decode_tokens"] = int(
-                block_metadata.num_decode_tokens
-            )
-            metadata_summary["block_num_prefill_tokens"] = int(
-                block_metadata.num_prefill_tokens
-            )
-            metadata_summary["block_num_prefills"] = int(block_metadata.num_prefills)
-    self.debug_last_runtime_metadata_summary = metadata_summary
     out, shift_state, recurrent, first_value = self._forward(
         hidden_states,
         _custom_op_tensor_or_none(cached_shift_state),
@@ -631,7 +601,6 @@ class RWKV7Attention(nn.Module):
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
-        self.debug_last_runtime_metadata_summary: dict[str, int] | None = None
 
     def _project_recurrent_inputs(
         self,
@@ -1096,8 +1065,6 @@ class RWKV7Block(nn.Module, MambaBase):
             torch.tensor([]),
             torch.tensor([]),
         )
-        self.debug_last_forward_summary: dict[str, int] | None = None
-        self.debug_last_store_stats: dict[str, float | int] | None = None
 
     @property
     def mamba_type(self) -> str:
@@ -1201,20 +1168,6 @@ class RWKV7Block(nn.Module, MambaBase):
         recurrent_state: torch.Tensor,
         ffn_shift_state: torch.Tensor,
     ) -> None:
-        if os.getenv("RWKV7_DEBUG_FAIL_ON_STORE") == "1":
-            raise RuntimeError("rwkv7 _store_kv_state called")
-        self.debug_last_store_stats = {
-            "store_type": 0,
-            "slot_or_count": int(slot_id),
-        }
-        if _rwkv7_can_collect_tensor_debug_stats(attn_shift_state):
-            self.debug_last_store_stats.update(
-                {
-                    "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
-                    "recurrent_absmax": float(recurrent_state.abs().max().item()),
-                    "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
-                }
-            )
         self.kv_cache[0][slot_id].copy_(
             attn_shift_state.to(self.kv_cache[0][slot_id].dtype)
         )
@@ -1233,20 +1186,6 @@ class RWKV7Block(nn.Module, MambaBase):
         recurrent_state: torch.Tensor,
         ffn_shift_state: torch.Tensor,
     ) -> None:
-        if os.getenv("RWKV7_DEBUG_FAIL_ON_STORE") == "1":
-            raise RuntimeError("rwkv7 _store_kv_states called")
-        self.debug_last_store_stats = {
-            "store_type": 1,
-            "slot_or_count": int(slot_ids.numel()),
-        }
-        if _rwkv7_can_collect_tensor_debug_stats(attn_shift_state):
-            self.debug_last_store_stats.update(
-                {
-                    "attn_shift_absmax": float(attn_shift_state.abs().max().item()),
-                    "recurrent_absmax": float(recurrent_state.abs().max().item()),
-                    "ffn_shift_absmax": float(ffn_shift_state.abs().max().item()),
-                }
-            )
         self.kv_cache[0].index_copy_(
             0, slot_ids, attn_shift_state.to(self.kv_cache[0].dtype)
         )
@@ -1480,19 +1419,6 @@ class RWKV7Block(nn.Module, MambaBase):
                     maybe_metadata, LinearAttentionMetadata
                 )
                 attn_metadata = maybe_metadata
-
-        self.debug_last_forward_summary = {
-            "attn_metadata_is_none": int(attn_metadata is None),
-            "num_decode_tokens": (
-                -1 if attn_metadata is None else int(attn_metadata.num_decode_tokens)
-            ),
-            "num_prefill_tokens": (
-                -1 if attn_metadata is None else int(attn_metadata.num_prefill_tokens)
-            ),
-            "num_prefills": (
-                -1 if attn_metadata is None else int(attn_metadata.num_prefills)
-            ),
-        }
 
         if attn_metadata is None:
             out, vf_out, _, _, _ = self._run_sequence(

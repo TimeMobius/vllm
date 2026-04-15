@@ -1924,3 +1924,33 @@ Interpretation:
   performance band as before
 - this multi-round check is strong enough to stop treating the earlier
   one-shot dip as evidence of a real regression
+
+### Upstream PR hygiene cleanup
+
+Before opening an upstream PR, I removed a small amount of RWKV7-specific
+development-only inspection code from `vllm/model_executor/models/rwkv7.py`.
+
+Removed items:
+
+- `debug_last_runtime_metadata_summary`
+- `debug_last_forward_summary`
+- `debug_last_store_stats`
+- `RWKV7_DEBUG_*` environment-variable branches used only for local store-path
+  debugging
+
+Rationale:
+
+- these helpers were useful while iterating locally, but they are not part of
+  the model behavior or the intended upstream debugging surface
+- the local `tmp_rwkv7_*` documents already preserve the experimentation and
+  measurement history that motivated them
+
+Verification:
+
+```bash
+python -m py_compile vllm/model_executor/models/rwkv7.py
+```
+
+Result:
+
+- compile check passed
