@@ -955,8 +955,17 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - `all`: `77.784 / 117.627 / 221.835`
     - `default align`: `119.735 / 175.788 / 253.456`
     - 三档 hit ratio 都保持 `all_match_serial_baseline=true`
-  - [ ] 继续把当前 fused checkpoint emission 收敛到更轻的 direct-write 路径，
-    减少剩余 block-boundary state extraction/writeback 开销
+  - [x] direct-write runtime feasibility check：
+    - [x] 低层 fused op direct-write 在 isolated varlen 对拍中可工作
+    - [x] 真实服务 runtime 中，recurrent-only direct-write 会引入
+      partial-slot visibility，导致 repeated-prefix smoke 分叉
+    - [x] 这条 unsafe runtime wiring 已回退，不保留在当前 serving 路径
+  - [x] 保留安全 no-`torch.cat` runtime 写回优化：
+    - `all` repeated-prefix 现为 `116.669 / 120.881 / 231.013`
+    - 所有请求重新回到 `all_match_serial_baseline=true`
+  - [ ] 设计真正 atomic 的 multi-state checkpoint publication：
+    - 要么一次性发布 attn/recurrent/ffn 三段状态
+    - 要么引入不会暴露 partial slot 的 staging/commit 机制
   - [ ] direct-write 优化完成后重跑 repeated-prefix / partial-hit /
     mixed-length serving benchmark
   - [ ] 若 direct-write 优化把 `all` 拉近或追平 `align`，再重新评估默认模式

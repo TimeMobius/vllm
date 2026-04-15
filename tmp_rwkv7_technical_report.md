@@ -1646,3 +1646,137 @@ But the final conclusion remains:
 - explicit `all` is now in a much healthier experimental state
 - the remaining optimization target is a lighter direct-write checkpoint-state
   path that removes the residual block-boundary extraction overhead
+
+## 2026-04-15 Follow-up: recurrent-only direct write is not runtime-safe
+
+After the fused checkpoint-emission path improved RWKV7 `all` substantially, I
+tried the next obvious optimization: direct-writing recurrent checkpoint states
+into the live cache slots during cache-all prefill.
+
+### What worked
+
+At the low-level op layer, the direct-write idea itself was not obviously
+broken.
+
+I extended the fused RWKV7 recurrent op so that it can:
+
+- emit checkpoint states into a temporary output tensor, or
+- write them directly into a caller-supplied cache tensor by slot id
+
+Unit coverage was added for that path, and the direct-write helper worked in
+isolated varlen op checks.
+
+### What failed
+
+When I wired recurrent-only direct write into the RWKV7 serving runtime and
+reran the repeated-prefix smoke benchmark, service correctness regressed:
+
+- requests no longer consistently matched the serial baseline
+
+This did not look like a pure numerical instability problem in the fused
+recurrent op. The more convincing explanation is runtime visibility.
+
+### Root cause hypothesis
+
+A RWKV7 cache slot is not a single tensor. It is the combination of:
+
+- attn shift state
+- recurrent state
+- ffn shift state
+
+The direct-write experiment only published the recurrent checkpoint state
+early. The corresponding attn/ffn shift states were still written later by the
+runtime.
+
+That means a partially updated slot could become visible:
+
+- recurrent state already new
+- attn/ffn shift states still old
+
+Under real serving concurrency, that is unsafe.
+
+So this iteration established an important constraint:
+
+- a future "direct write" optimization must publish RWKV7 checkpoint state
+  atomically across all three slot components, or
+- it must use an explicit staging/commit mechanism that prevents partially
+  updated slots from being observed
+
+### Safe runtime rollback and retained optimization
+
+I removed the unsafe recurrent-only direct-write wiring from the RWKV7 serving
+runtime, but kept two useful outcomes:
+
+1. The low-level direct-write-capable fused op is still available for future
+   work.
+2. The runtime now avoids the previous large `torch.cat(...)` store assembly.
+
+Instead of concatenating boundary states and final states into one large
+temporary tensor bundle, the runtime now performs:
+
+- one `_store_kv_states(...)` for boundary block states
+- one `_store_kv_states(...)` for final output-slot states
+
+This keeps cache-slot publication atomic at the runtime level while still
+reducing some Python-side tensor assembly overhead.
+
+### Validation
+
+Local verification:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `21 passed, 2 skipped`
+
+Serving smoke:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode all \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_nocat_20260415.log \
+  > /tmp/rwkv7_prefix_hit_all_nocat_20260415.json
+```
+
+Benchmark summary (`all`, safe no-`cat` runtime path):
+
+| hit ratio | avg aggregate TPS | all-match |
+|---|---:|---|
+| `0.0` | `116.669` | `true` |
+| `0.5` | `120.881` | `true` |
+| `1.0` | `231.013` | `true` |
+
+Compared with the earlier `2026-04-15` safe baseline:
+
+- `hit=0.0`: `77.784 -> 116.669`
+- `hit=0.5`: `117.627 -> 120.881`
+- `hit=1.0`: `221.835 -> 231.013`
+
+### Updated conclusion
+
+This iteration narrows the gap again, but it also changes the roadmap:
+
+- the next useful optimization is not "direct write recurrent checkpoints"
+- the next useful optimization is "atomically publish full RWKV7 cache slots"
+
+Until that exists:
+
+- `align` should remain the default
+- `all` should keep the current safe runtime publication model
+- future work should focus on atomic multi-state checkpoint publication rather
+  than recurrent-only direct writes

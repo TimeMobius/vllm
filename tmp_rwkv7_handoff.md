@@ -1760,3 +1760,82 @@ Interpretation:
 - `align` is still faster and should remain the default serving recommendation
 - the remaining work is to shrink the residual `all` overhead, not to revisit
   whether `align` should be the default right now
+
+## 2026-04-15 Update: safe `all` follow-up after direct-write experiment
+
+I continued from the new fused checkpoint-emission path and tried the next
+obvious step: direct-writing recurrent checkpoint states into the live RWKV7
+cache slots during cache-all prefill.
+
+What happened:
+
+- low-level direct-write worked in isolated varlen op checks
+- but service-level repeated-prefix smoke started diverging from the serial
+  baseline
+- the issue was not the fused recurrent math itself; it was runtime visibility
+
+Most likely root cause:
+
+- a cache slot for RWKV7 is a composite of:
+  - attn shift state
+  - recurrent state
+  - ffn shift state
+- direct-writing only the recurrent component made a partially updated slot
+  observable before the boundary attn/ffn shift states were written
+- under real serving concurrency, that is unsafe even if the direct-written
+  recurrent tensor itself is numerically fine
+
+Updated runtime decision:
+
+- keep the low-level direct-write capability in the fused op for future work
+- do not use recurrent-only direct-write in RWKV7 serving runtime yet
+- keep boundary slot publication atomic at the runtime level
+- still keep the safe no-`torch.cat` store optimization:
+  - boundary block states are stored with one `_store_kv_states(...)`
+  - final output slots are stored with a second `_store_kv_states(...)`
+
+Validation:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `21 passed, 2 skipped`
+
+Serving smoke:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode all \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_nocat_20260415.log \
+  > /tmp/rwkv7_prefix_hit_all_nocat_20260415.json
+```
+
+Updated repeated-prefix summary:
+
+- `all` (`safe no-cat`)
+  - hit `0.0 / 0.5 / 1.0`: `116.669 / 120.881 / 231.013`
+  - all requests matched the serial baseline
+
+Interpretation:
+
+- this is a safer and better runtime point than the earlier `77.784 / 117.627 /
+  221.835`
+- the `hit=0.0` gap to `align` is now small
+- `hit=0.5` and `hit=1.0` still leave visible room for improvement
+- the next optimization should target a truly atomic multi-state checkpoint
+  publication design, not recurrent-only direct writes

@@ -981,3 +981,48 @@ Interpretation:
 - the remaining gap is now much smaller, so future work should focus on
   reducing the remaining checkpoint-state extraction/writeback overhead rather
   than changing cache-mode defaults again
+
+### `2026-04-15_rwkv7_prefix_cache_all_safe_nocat_0p4b_c8`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode all \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_nocat_20260415.log \
+  > /tmp/rwkv7_prefix_hit_all_nocat_20260415.json
+```
+
+Results:
+
+| mode | hit ratio | avg aggregate TPS | avg request TPS | all-match |
+|---|---:|---:|---:|---|
+| `all` (`safe no-cat`) | `0.0` | `116.669` | `14.681` | `true` |
+| `all` (`safe no-cat`) | `0.5` | `120.881` | `15.174` | `true` |
+| `all` (`safe no-cat`) | `1.0` | `231.013` | `28.907` | `true` |
+
+Interpretation:
+
+- a runtime experiment that direct-wrote recurrent checkpoint states into the
+  live cache showed correctness regressions under service concurrency, even
+  though the low-level op matched in isolated varlen tests
+- the likely issue is partial slot visibility:
+  - recurrent checkpoint state became visible before the corresponding
+    attn/ffn shift states were written
+- the safe runtime path was therefore rolled back to atomic boundary-slot
+  writes, while keeping a lighter no-`torch.cat` store path
+- this still improved `all` versus the earlier `2026-04-15` safe baseline:
+  - `hit=0.0`: `77.784 -> 116.669`
+  - `hit=0.5`: `117.627 -> 120.881`
+  - `hit=1.0`: `221.835 -> 231.013`
+- `align` remains faster overall, but the gap at `hit=0.0` is now small
