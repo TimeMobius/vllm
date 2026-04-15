@@ -1780,3 +1780,51 @@ Until that exists:
 - `all` should keep the current safe runtime publication model
 - future work should focus on atomic multi-state checkpoint publication rather
   than recurrent-only direct writes
+
+### Align regression recheck
+
+As a follow-up sanity check, I reran the explicit `align` repeated-prefix
+benchmark after the failed dedup experiment had been fully rolled back.
+
+Command:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_recheck_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_recheck_20260415.json
+```
+
+Observed result:
+
+| hit ratio | avg aggregate TPS | all-match |
+|---|---:|---|
+| `0.0` | `117.205` | `true` |
+| `0.5` | `160.097` | `true` |
+| `1.0` | `230.063` | `true` |
+
+Compared with the earlier `2026-04-15` align baseline:
+
+- `0.0`: `119.735 -> 117.205` (`-2.1%`)
+- `0.5`: `175.788 -> 160.097` (`-8.9%`)
+- `1.0`: `253.456 -> 230.063` (`-9.2%`)
+
+Interpretation:
+
+- no correctness regression is present in the current `align` path
+- a mild single-run throughput dip is visible
+- because the retained code changes in this phase are concentrated in
+  `all`-mode plumbing, and because this was only a one-shot recheck, I do not
+  consider this enough evidence to declare a confirmed `align` regression
+
+If a stricter answer is needed later, the right follow-up is to rerun `align`
+with multiple rounds and compare medians / spread instead of one-shot values.

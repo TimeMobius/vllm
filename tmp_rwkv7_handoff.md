@@ -1839,3 +1839,48 @@ Interpretation:
 - `hit=0.5` and `hit=1.0` still leave visible room for improvement
 - the next optimization should target a truly atomic multi-state checkpoint
   publication design, not recurrent-only direct writes
+
+## 2026-04-15 Update: align regression check
+
+After the failed "keep last slot write" experiment was rolled back, I reran the
+explicit `align` repeated-prefix benchmark to make sure the serving-fast path
+had not picked up an accidental regression.
+
+Command:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_recheck_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_recheck_20260415.json
+```
+
+Result:
+
+- `align`, hit `0.0 / 0.5 / 1.0`
+  - `117.205 / 160.097 / 230.063`
+- all requests still matched the serial baseline
+
+Comparison to the earlier `2026-04-15` align baseline:
+
+- `0.0`: `119.735 -> 117.205` (`-2.1%`)
+- `0.5`: `175.788 -> 160.097` (`-8.9%`)
+- `1.0`: `253.456 -> 230.063` (`-9.2%`)
+
+Interpretation:
+
+- there is no correctness regression in `align`
+- a small single-run throughput dip is visible
+- because the current retained code changes are concentrated in `all` plumbing,
+  this is not enough evidence to call it a confirmed align-path regression
+- if we need a stronger answer later, we should rerun `align` with
+  `rounds>=3, warmup>=1` and compare medians rather than one-shot values

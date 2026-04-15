@@ -963,6 +963,10 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
   - [x] 保留安全 no-`torch.cat` runtime 写回优化：
     - `all` repeated-prefix 现为 `116.669 / 120.881 / 231.013`
     - 所有请求重新回到 `all_match_serial_baseline=true`
+  - [x] `align` recheck：
+    - `117.205 / 160.097 / 230.063`
+    - correctness 正常
+    - 单轮略低于旧基线，但还不足以认定为 confirmed regression
   - [ ] 设计真正 atomic 的 multi-state checkpoint publication：
     - 要么一次性发布 attn/recurrent/ffn 三段状态
     - 要么引入不会暴露 partial slot 的 staging/commit 机制

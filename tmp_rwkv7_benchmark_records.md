@@ -1026,3 +1026,47 @@ Interpretation:
   - `hit=0.5`: `117.627 -> 120.881`
   - `hit=1.0`: `221.835 -> 231.013`
 - `align` remains faster overall, but the gap at `hit=0.0` is now small
+
+### `2026-04-15_rwkv7_prefix_cache_align_recheck_0p4b_c8`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_recheck_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_recheck_20260415.json
+```
+
+Results:
+
+| mode | hit ratio | avg aggregate TPS | avg request TPS | avg request latency (s) | all-match |
+|---|---:|---:|---:|---:|---|
+| `align` (`recheck`) | `0.0` | `117.205` | `14.755` | `4.338` | `true` |
+| `align` (`recheck`) | `0.5` | `160.097` | `20.149` | `3.176` | `true` |
+| `align` (`recheck`) | `1.0` | `230.063` | `28.789` | `2.223` | `true` |
+
+Interpretation:
+
+- no correctness regression was observed in the current `align` path
+- versus the earlier `2026-04-15` align baseline:
+  - `hit=0.0`: `119.735 -> 117.205` (`-2.1%`)
+  - `hit=0.5`: `175.788 -> 160.097` (`-8.9%`)
+  - `hit=1.0`: `253.456 -> 230.063` (`-9.2%`)
+- because this is a single rerun and the retained code changes since the last
+  align baseline were concentrated in `all`-mode plumbing, this looks more
+  like run-to-run noise / host variance than a confirmed align-path regression
+- current practical takeaway:
+  - `align` remains the faster serving choice than `all`
+  - but any claim of a small regression should be based on repeated runs, not
+    this single recheck alone
