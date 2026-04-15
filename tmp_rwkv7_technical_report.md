@@ -1880,3 +1880,47 @@ Interpretation:
   recheck
 - current evidence still points to one-shot variance rather than a material
   regression caused by the now-removed `all` experiment code
+
+### Multi-round `align` confirmation after the revert
+
+To replace the earlier one-shot signal with a more stable answer, I reran the
+same `align` repeated-prefix benchmark with `rounds=5, warmup=1`.
+
+Command:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 5 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_rounds5_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_rounds5_20260415.json
+```
+
+Observed result:
+
+| hit ratio | aggregate TPS rounds | median aggregate TPS | all-match |
+|---|---|---:|---|
+| `0.0` | `121.232, 115.219, 121.002, 133.697, 144.498` | `121.232` | `true` |
+| `0.5` | `162.771, 186.301, 171.810, 177.612, 174.989` | `174.989` | `true` |
+| `1.0` | `241.200, 255.500, 248.332, 250.331, 242.496` | `248.332` | `true` |
+
+Compared with the earlier high-water `align` baseline:
+
+- `0.0`: `119.735 -> 121.232` (`+1.2%`)
+- `0.5`: `175.788 -> 174.989` (`-0.5%`)
+- `1.0`: `253.456 -> 248.332` (`-2.0%`)
+
+Interpretation:
+
+- the current reverted `align` code path remains in the same practical
+  performance band as before
+- this multi-round check is strong enough to stop treating the earlier
+  one-shot dip as evidence of a real regression

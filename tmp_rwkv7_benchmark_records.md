@@ -1111,3 +1111,43 @@ Interpretation:
   - `1.0`: `230.063 -> 221.106` (`-3.9%`)
 - this still looks like ordinary one-shot run variance rather than a strong
   signal that the reverted code materially changes the `align` path
+
+### `2026-04-15_rwkv7_prefix_cache_align_rounds5_0p4b_c8`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 5 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_rounds5_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_rounds5_20260415.json
+```
+
+Results:
+
+| mode | hit ratio | aggregate TPS rounds | avg aggregate TPS | median aggregate TPS | avg request TPS | median request TPS | avg request latency (s) | median request latency (s) | all-match |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---|
+| `align` (`rounds=5`) | `0.0` | `121.232, 115.219, 121.002, 133.697, 144.498` | `127.130` | `121.232` | `16.001` | `15.355` | `4.026` | `4.191` | `true` |
+| `align` (`rounds=5`) | `0.5` | `162.771, 186.301, 171.810, 177.612, 174.989` | `174.697` | `174.989` | `21.910` | `21.893` | `2.926` | `2.923` | `true` |
+| `align` (`rounds=5`) | `1.0` | `241.200, 255.500, 248.332, 250.331, 242.496` | `247.572` | `248.332` | `30.982` | `31.086` | `2.067` | `2.060` | `true` |
+
+Interpretation:
+
+- the multi-round median is the more trustworthy answer than any single run
+- versus the earlier high-water `align` baseline (`119.735 / 175.788 / 253.456`):
+  - `0.0`: `121.232` median (`+1.2%`)
+  - `0.5`: `174.989` median (`-0.5%`)
+  - `1.0`: `248.332` median (`-2.0%`)
+- this is strong evidence that the current reverted `align` path is still in
+  the same performance band as before, and that the earlier apparent dip was
+  mostly one-shot variance rather than a real regression

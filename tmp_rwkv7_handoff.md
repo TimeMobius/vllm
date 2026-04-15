@@ -1949,3 +1949,52 @@ Current practical state:
   this revert is the cleaner baseline
 - if we revisit `all` later, the experiment history is still preserved in the
   docs and commit history
+
+## 2026-04-15 Update: multi-round `align` recheck confirms no meaningful regression
+
+To move beyond one-shot noise, I reran the explicit `align` repeated-prefix
+benchmark with `rounds=5, warmup=1` after the revert to the conservative
+`be29a1808`-equivalent code state.
+
+Command:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 5 \
+  --warmup 1 \
+  --log /tmp/vllm_rwkv7_prefix_hit_align_rounds5_20260415.log \
+  > /tmp/rwkv7_prefix_hit_align_rounds5_20260415.json
+```
+
+Observed result:
+
+- hit `0.0`
+  - rounds: `121.232, 115.219, 121.002, 133.697, 144.498`
+  - median: `121.232`
+- hit `0.5`
+  - rounds: `162.771, 186.301, 171.810, 177.612, 174.989`
+  - median: `174.989`
+- hit `1.0`
+  - rounds: `241.200, 255.500, 248.332, 250.331, 242.496`
+  - median: `248.332`
+- all requests matched the serial baseline
+
+Interpretation:
+
+- compared with the earlier strong `align` baseline (`119.735 / 175.788 /
+  253.456`), the new medians are `+1.2% / -0.5% / -2.0%`
+- this is close enough to treat the current reverted `align` path as being in
+  the same effective performance band
+- the branch can keep the simpler conservative code state without claiming a
+  meaningful `align` regression

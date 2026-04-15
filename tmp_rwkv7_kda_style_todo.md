@@ -974,6 +974,10 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - `115.775 / 165.857 / 221.106`
     - correctness 正常
     - 仍然更像 run-to-run 波动，而不是回退前实验代码留下的确定性影响
+  - [x] post-revert `align` 多轮确认（`rounds=5, warmup=1`）：
+    - median `121.232 / 174.989 / 248.332`
+    - 相比旧高点基线 `119.735 / 175.788 / 253.456`，差异约 `+1.2% / -0.5% / -2.0%`
+    - 现阶段可以认为 `align` 没有实质性性能回退
   - [ ] 设计真正 atomic 的 multi-state checkpoint publication：
     - 要么一次性发布 attn/recurrent/ffn 三段状态
     - 要么引入不会暴露 partial slot 的 staging/commit 机制
