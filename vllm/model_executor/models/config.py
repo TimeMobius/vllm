@@ -669,7 +669,20 @@ class VoyageQwen3BidirectionalEmbedModelConfig(VerifyAndUpdateConfig):
 class RWKV7ForCausalLMConfig(MambaModelConfig):
     @classmethod
     def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
+        cache_config = vllm_config.cache_config
+        requested_mamba_cache_mode = cache_config.mamba_cache_mode
+        if cache_config.enable_prefix_caching and requested_mamba_cache_mode == "none":
+            cache_config.mamba_cache_mode = "align"
         super().verify_and_update_config(vllm_config)
+        if (
+            cache_config.enable_prefix_caching
+            and requested_mamba_cache_mode == "none"
+            and cache_config.mamba_cache_mode == "align"
+        ):
+            logger.info(
+                "RWKV7 default mamba cache mode is set to 'align' until "
+                "cache-all checkpoint emission is optimized."
+            )
 
     @staticmethod
     def apply_post_optimization_level_defaults(

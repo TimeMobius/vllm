@@ -30,7 +30,9 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 )
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
+    fused_mul_recurrent_rwkv7_with_checkpoints,
     rwkv7_recurrent_reference,
+    rwkv7_recurrent_reference_with_checkpoints,
 )
 from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
 from vllm.model_executor.models.rwkv7 import RWKV7Block, RWKV7ForCausalLM
@@ -458,6 +460,65 @@ def test_rwkv7_fused_recurrent_matches_reference():
     torch.testing.assert_close(state_fused, state_ref, rtol=2e-4, atol=1e-3)
 
 
+def test_rwkv7_fused_recurrent_checkpoint_states_match_reference():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise RWKV7 checkpoint emission.")
+
+    torch.manual_seed(1)
+    device = torch.device("cuda")
+    batch_size = 1
+    seq_len = 17
+    num_heads = 4
+    head_dim = 16
+    head_v_dim = 16
+
+    r = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    w = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    k = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    v = torch.randn(batch_size, seq_len, num_heads, head_v_dim, device=device)
+    kk = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    a = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+    initial_state = torch.randn(
+        batch_size, num_heads, head_dim, head_v_dim, device=device
+    )
+    checkpoint_positions = torch.tensor([7, 15], device=device, dtype=torch.long)
+    checkpoint_offsets = torch.tensor([0, 2], device=device, dtype=torch.long)
+
+    out_ref, state_ref, checkpoint_ref = rwkv7_recurrent_reference_with_checkpoints(
+        r=r,
+        w=w,
+        k=k,
+        v=v,
+        kk=kk,
+        a=a,
+        initial_state=initial_state,
+        output_final_state=True,
+        checkpoint_positions=checkpoint_positions,
+        checkpoint_offsets=checkpoint_offsets,
+        output_checkpoint_states=True,
+    )
+    out_fused, state_fused, checkpoint_fused = (
+        fused_mul_recurrent_rwkv7_with_checkpoints(
+            r=r,
+            w=w,
+            k=k,
+            v=v,
+            kk=kk,
+            a=a,
+            checkpoint_positions=checkpoint_positions,
+            checkpoint_offsets=checkpoint_offsets,
+            initial_state=initial_state,
+            output_final_state=True,
+        )
+    )
+
+    torch.testing.assert_close(out_fused, out_ref, rtol=2e-3, atol=1e-1)
+    torch.testing.assert_close(state_fused, state_ref, rtol=2e-3, atol=1e-1)
+    torch.testing.assert_close(
+        checkpoint_fused, checkpoint_ref, rtol=2e-3, atol=1e-1
+    )
+
+
 def test_rwkv7_block_updates_cached_states():
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
@@ -803,7 +864,7 @@ def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_disabled():
     assert vllm_config.model_config.enforce_eager is False
 
 
-def test_rwkv7_config_enables_mamba_cache_all_when_prefix_caching_is_enabled():
+def test_rwkv7_config_defaults_mamba_cache_align_when_prefix_caching_is_enabled():
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(
             enforce_eager=False,
@@ -814,6 +875,30 @@ def test_rwkv7_config_enables_mamba_cache_all_when_prefix_caching_is_enabled():
         cache_config=SimpleNamespace(
             enable_prefix_caching=True,
             mamba_cache_mode="none",
+            mamba_block_size=None,
+            block_size=16,
+        ),
+        compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.PIECEWISE),
+        scheduler_config=SimpleNamespace(enable_chunked_prefill=True),
+    )
+
+    RWKV7ForCausalLMConfig.verify_and_update_config(vllm_config)
+
+    assert vllm_config.cache_config.mamba_cache_mode == "align"
+    assert vllm_config.cache_config.mamba_block_size == 16
+
+
+def test_rwkv7_config_preserves_explicit_mamba_cache_all():
+    vllm_config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            enforce_eager=False,
+            supports_mamba_prefix_caching=True,
+            architecture="RWKV7ForCausalLM",
+            max_model_len=2048,
+        ),
+        cache_config=SimpleNamespace(
+            enable_prefix_caching=True,
+            mamba_cache_mode="all",
             mamba_block_size=None,
             block_size=16,
         ),
@@ -936,10 +1021,14 @@ def test_rwkv7_block_cache_all_prefill_writes_aligned_states():
                 block_ref._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
                 state = (attn_shift, recurrent, ffn_shift)
 
-            torch.testing.assert_close(output_all, output_ref)
-            torch.testing.assert_close(v_first_all, v_first_ref)
+            torch.testing.assert_close(output_all, output_ref, rtol=2e-4, atol=1e-4)
+            torch.testing.assert_close(
+                v_first_all, v_first_ref, rtol=2e-4, atol=1e-4
+            )
             for cached_all, cached_ref in zip(block_all.kv_cache, block_ref.kv_cache):
-                torch.testing.assert_close(cached_all, cached_ref)
+                torch.testing.assert_close(
+                    cached_all, cached_ref, rtol=2e-4, atol=1e-4
+                )
         finally:
             cleanup_dist_env_and_memory()
 

@@ -1671,3 +1671,92 @@ Updated recommendation:
   yet
 - the next real optimization target is a fused or direct-write path for
   checkpoint-state emission at cache block boundaries
+
+## 2026-04-15 Update: default `align` + fused checkpoint emission follow-up
+
+I kept explicit RWKV7 `all` support, but changed the default back to `align`
+when prefix caching is enabled and the user did not explicitly request a mode.
+This keeps throughput-sensitive serving on the faster path while preserving the
+new `all` plumbing behind `--mamba-cache-mode all`.
+
+Code status:
+
+- RWKV7 config now defaults prefix caching to `align`, not `all`
+- explicit `--mamba-cache-mode all` is still preserved
+- the fused recurrent op now has a checkpoint-state emission path used by
+  RWKV7 cache-all prefill handling
+- packed cache-all prefill is wired through the new checkpoint-capable fused op
+
+Local verification:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m py_compile \
+  vllm/model_executor/layers/fla/ops/rwkv7.py \
+  vllm/model_executor/layers/fla/ops/__init__.py \
+  vllm/model_executor/models/rwkv7.py \
+  vllm/model_executor/models/config.py \
+  tests/model_executor/test_rwkv7.py
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `20 passed, 2 skipped`
+
+Serving smoke:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode all \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_fused_20260415.log \
+  > /tmp/rwkv7_prefix_hit_all_fused_20260415.json
+
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_default_20260415.log \
+  > /tmp/rwkv7_prefix_hit_default_20260415.json
+```
+
+Observed startup signals:
+
+- explicit `all` run:
+  - `Prefix caching in Mamba cache 'all' mode is currently enabled`
+- default run:
+  - `Prefix caching in Mamba cache 'align' mode is currently enabled`
+
+Updated repeated-prefix summary (`c=8`, `shared_prefix_len=1024`,
+`tail_len=128`, `max_tokens=64`):
+
+- explicit `all`
+  - hit `0.0 / 0.5 / 1.0`: `77.784 / 117.627 / 221.835`
+- default `align`
+  - hit `0.0 / 0.5 / 1.0`: `119.735 / 175.788 / 253.456`
+- all requests still matched the serial baseline
+
+Interpretation:
+
+- the new checkpoint-capable fused path materially improved `all`
+- `all` no longer crashes on the smoke repeated-prefix workload
+- `align` is still faster and should remain the default serving recommendation
+- the remaining work is to shrink the residual `all` overhead, not to revisit
+  whether `align` should be the default right now

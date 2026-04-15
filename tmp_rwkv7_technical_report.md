@@ -1498,3 +1498,151 @@ So the updated recommendation is:
 - keep `align` as the throughput recommendation for now
 - treat fused/direct checkpoint-state emission as the next real optimization
   milestone for RWKV7 `all` mode
+
+## 2026-04-15 Follow-up: default `align`, keep explicit `all`, and fuse checkpoint emission
+
+The next iteration intentionally changed strategy:
+
+- do not keep RWKV7 defaulted to `all`
+- keep explicit `all` support available for correctness and continued
+  optimization
+- move the default back to `align`
+- start reducing `all` overhead with a fused checkpoint-state emission path
+
+### Why the default changed back to `align`
+
+After the first `all`-mode serving validation, the functional result was good
+but the throughput regression was still too large to justify keeping `all` as
+the default runtime mode.
+
+The config now behaves as follows:
+
+- if the user enables prefix caching and does not explicitly request a mamba
+  cache mode, RWKV7 defaults to `align`
+- if the user explicitly requests `--mamba-cache-mode all`, RWKV7 keeps `all`
+
+This means the compatibility work for `all` is not discarded, but the serving
+default is placed back on the faster path until the remaining overhead is
+reduced.
+
+### Checkpoint-state emission work
+
+To reduce the most obvious `all`-mode overhead, I added a checkpoint-capable
+RWKV7 fused recurrent path.
+
+Key implementation pieces:
+
+- `vllm/model_executor/layers/fla/ops/rwkv7.py`
+  - new checkpoint-capable fused/reference helper entry points
+  - fused recurrent kernel path can now emit aligned recurrent checkpoint
+    states directly for requested token positions
+- `vllm/model_executor/models/rwkv7.py`
+  - RWKV7 cache-all prefill can route through the checkpoint-capable fused op
+  - packed prefill cache-all handling now builds checkpoint positions/counts
+    and consumes the emitted block-boundary states
+- `vllm/model_executor/models/config.py`
+  - RWKV7 default prefix-cache mode is forced back to `align` unless the user
+    explicitly requested another mode
+
+This is not yet the final "direct write to cache slots with zero extra
+materialization cost" design, but it is a concrete move away from the older
+fully explicit checkpoint extraction flow.
+
+### Validation
+
+Local verification:
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python -m py_compile \
+  vllm/model_executor/layers/fla/ops/rwkv7.py \
+  vllm/model_executor/layers/fla/ops/__init__.py \
+  vllm/model_executor/models/rwkv7.py \
+  vllm/model_executor/models/config.py \
+  tests/model_executor/test_rwkv7.py
+python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `20 passed, 2 skipped`
+
+Additional coverage now includes:
+
+- config defaults back to `align`
+- explicit `all` is preserved
+- checkpoint-state fused op matches the reference path
+
+### Updated serving smoke
+
+Repeated-prefix smoke was rerun on the local `0.4B` checkpoint under
+`PIECEWISE` with prefix caching enabled:
+
+```bash
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode all \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_fused_20260415.log \
+  > /tmp/rwkv7_prefix_hit_all_fused_20260415.json
+
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_default_20260415.log \
+  > /tmp/rwkv7_prefix_hit_default_20260415.json
+```
+
+Observed startup signals:
+
+- explicit `all`
+  - `Prefix caching in Mamba cache 'all' mode is currently enabled`
+- default run
+  - `Prefix caching in Mamba cache 'align' mode is currently enabled`
+
+Benchmark summary:
+
+| mode | hit ratio | avg aggregate TPS |
+|---|---:|---:|
+| `all` | `0.0` | `77.784` |
+| `all` | `0.5` | `117.627` |
+| `all` | `1.0` | `221.835` |
+| default (`align`) | `0.0` | `119.735` |
+| default (`align`) | `0.5` | `175.788` |
+| default (`align`) | `1.0` | `253.456` |
+
+All requests in both runs still matched the serial baseline.
+
+### Updated interpretation
+
+This follow-up changed the RWKV7 `all` story in an important way:
+
+- `all` is no longer just "correct but drastically slower"
+- the fused checkpoint-emission path improved `all` substantially
+- compared with the previous `2026-04-14` run:
+  - `hit=0.0`: `19.404 -> 77.784`
+  - `hit=0.5`: `29.758 -> 117.627`
+  - `hit=1.0`: `120.398 -> 221.835`
+
+But the final conclusion remains:
+
+- `align` is still the better serving default today
+- explicit `all` is now in a much healthier experimental state
+- the remaining optimization target is a lighter direct-write checkpoint-state
+  path that removes the residual block-boundary extraction overhead

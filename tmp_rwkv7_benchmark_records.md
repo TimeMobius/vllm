@@ -915,3 +915,69 @@ Interpretation:
   even though observed hit rate is non-zero and eventually higher
 - this points to checkpoint-state writeback overhead, not a cache-hit plumbing
   failure
+
+### `2026-04-15_rwkv7_prefix_cache_default_align_fused_checkpoint_0p4b_c8`
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --mamba-cache-mode all \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_all_fused_20260415.log \
+  > /tmp/rwkv7_prefix_hit_all_fused_20260415.json
+
+python tmp_rwkv7_prefix_hit_bench.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --enable-prefix-caching \
+  --cudagraph-mode piecewise \
+  --concurrency 8 \
+  --shared-prefix-len 1024 \
+  --tail-len 128 \
+  --max-tokens 64 \
+  --rounds 1 \
+  --warmup 0 \
+  --log /tmp/vllm_rwkv7_prefix_hit_default_20260415.log \
+  > /tmp/rwkv7_prefix_hit_default_20260415.json
+```
+
+Results:
+
+| mode | hit ratio | avg aggregate TPS | avg request latency (s) | all-match |
+|---|---:|---:|---:|---|
+| `all` | `0.0` | `77.784` | `6.545` | `true` |
+| `all` | `0.5` | `117.627` | `4.312` | `true` |
+| `all` | `1.0` | `221.835` | `2.304` | `true` |
+| `default` (`align`) | `0.0` | `119.735` | `4.240` | `true` |
+| `default` (`align`) | `0.5` | `175.788` | `2.894` | `true` |
+| `default` (`align`) | `1.0` | `253.456` | `2.017` | `true` |
+
+Signals:
+
+- explicit `--mamba-cache-mode all` startup signal:
+  - `Prefix caching in Mamba cache 'all' mode is currently enabled`
+- default RWKV7 startup signal now resolves to `align`:
+  - `Prefix caching in Mamba cache 'align' mode is currently enabled`
+
+Interpretation:
+
+- the new fused checkpoint-state emission path materially improved `all` mode
+  versus the `2026-04-14` baseline:
+  - `hit=0.0`: `19.404 -> 77.784`
+  - `hit=0.5`: `29.758 -> 117.627`
+  - `hit=1.0`: `120.398 -> 221.835`
+- `all` no longer crashes on the repeated-prefix smoke workload
+- defaulting RWKV7 back to `align` is still the right throughput choice:
+  - default `align` remains faster across all hit ratios in this run
+- the remaining gap is now much smaller, so future work should focus on
+  reducing the remaining checkpoint-state extraction/writeback overhead rather
+  than changing cache-mode defaults again

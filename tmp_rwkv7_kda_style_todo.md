@@ -947,8 +947,16 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - 因此当前瓶颈不是“命中没接通”，而是 `all` 的 checkpoint
       writeback 成本
 - [ ] `all mode` 性能化：
-  - [ ] 设计 fused/direct checkpoint-state emission，避免为 block-boundary
-    state writeback 再做一遍显式 recurrent pass
-  - [ ] 在完成上述优化前，吞吐敏感场景继续推荐 `align`
-  - [ ] 优化完成后重跑 repeated-prefix / partial-hit / mixed-length serving
-    benchmark
+  - [x] 默认模式改回 `align`，显式 `all` 仍可保留
+  - [x] 首版 fused checkpoint-state emission 已接进 RWKV7 `all` mode prefill
+  - [x] 显式 `all` repeated-prefix smoke 已恢复可运行，不再像上一轮那样
+    直接在服务级 benchmark 中崩溃
+  - [x] 最新 repeated-prefix smoke：
+    - `all`: `77.784 / 117.627 / 221.835`
+    - `default align`: `119.735 / 175.788 / 253.456`
+    - 三档 hit ratio 都保持 `all_match_serial_baseline=true`
+  - [ ] 继续把当前 fused checkpoint emission 收敛到更轻的 direct-write 路径，
+    减少剩余 block-boundary state extraction/writeback 开销
+  - [ ] direct-write 优化完成后重跑 repeated-prefix / partial-hit /
+    mixed-length serving benchmark
+  - [ ] 若 direct-write 优化把 `all` 拉近或追平 `align`，再重新评估默认模式
