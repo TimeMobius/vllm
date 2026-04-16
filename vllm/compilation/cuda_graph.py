@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import dataclasses
+import warnings
 import weakref
 from collections import Counter
 from collections.abc import Callable
@@ -27,6 +28,47 @@ from vllm.platforms import current_platform
 from vllm.utils.torch_utils import current_stream, weak_ref_tensors
 
 logger = init_logger(__name__)
+
+_EMPTY_CUDA_GRAPH_WARNING_PREFIX = "The CUDA Graph is empty."
+
+
+def _handle_cuda_graph_capture_warnings(
+    captured_warnings: list[warnings.WarningMessage],
+    *,
+    runtime_mode: CUDAGraphMode,
+    batch_descriptor: BatchDescriptor,
+) -> None:
+    """Suppress known-harmless empty-graph warnings and re-emit the rest.
+
+    Piecewise graph partitioning can legally produce view-only partitions.
+    PyTorch warns when such a partition captures an empty CUDA graph, even
+    though replay remains valid because the partition output aliases the
+    same static input buffers. Keep the logs clean for this known case while
+    preserving unrelated warnings.
+    """
+    saw_empty_graph_warning = False
+    for warning_message in captured_warnings:
+        warning_text = str(warning_message.message)
+        if runtime_mode == CUDAGraphMode.PIECEWISE and warning_text.startswith(
+            _EMPTY_CUDA_GRAPH_WARNING_PREFIX
+        ):
+            saw_empty_graph_warning = True
+            continue
+
+        warnings.warn_explicit(
+            message=warning_message.message,
+            category=warning_message.category,
+            filename=warning_message.filename,
+            lineno=warning_message.lineno,
+            source=warning_message.source,
+        )
+
+    if saw_empty_graph_warning:
+        logger.debug(
+            "Suppressing harmless empty CUDA graph warning for %s capture on %s",
+            runtime_mode.name,
+            batch_descriptor,
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -282,49 +324,57 @@ class CUDAGraphWrapper:
             entry.input_addresses = input_addresses
             cudagraph = torch.cuda.CUDAGraph()
 
-            with ExitStack() as stack:
-                if self.cudagraph_options.gc_disable:
-                    # during every model forward for piecewise cudagraph
-                    # mode, we will capture many pieces of cudagraphs
-                    # (roughly one per layer). running gc again and again
-                    # across layers will make the cudagraph capture very slow.
-                    # therefore, we only run gc for the first graph,
-                    # and disable gc for the rest of the graphs.
-                    stack.enter_context(patch("gc.collect", lambda: None))
-                    stack.enter_context(
-                        patch("torch.accelerator.empty_cache", lambda: None)
-                    )
+            with warnings.catch_warnings(record=True) as captured_warnings:
+                warnings.simplefilter("always")
+                with ExitStack() as stack:
+                    if self.cudagraph_options.gc_disable:
+                        # during every model forward for piecewise cudagraph
+                        # mode, we will capture many pieces of cudagraphs
+                        # (roughly one per layer). running gc again and again
+                        # across layers will make the cudagraph capture very slow.
+                        # therefore, we only run gc for the first graph,
+                        # and disable gc for the rest of the graphs.
+                        stack.enter_context(patch("gc.collect", lambda: None))
+                        stack.enter_context(
+                            patch("torch.accelerator.empty_cache", lambda: None)
+                        )
 
-                if self.graph_pool is not None:
-                    set_graph_pool_id(self.graph_pool)
-                else:
-                    set_graph_pool_id(current_platform.graph_pool_handle())
+                    if self.graph_pool is not None:
+                        set_graph_pool_id(self.graph_pool)
+                    else:
+                        set_graph_pool_id(current_platform.graph_pool_handle())
 
-                # Sync offloader's copy stream before capture.
-                # Ensure any pre-capture prefetches from offloader are complete.
-                get_offloader().sync_prev_onload()
+                    # Sync offloader's copy stream before capture.
+                    # Ensure any pre-capture prefetches from offloader are complete.
+                    get_offloader().sync_prev_onload()
 
-                # mind-exploding: carefully manage the reference and memory.
-                with torch.cuda.graph(
-                    cudagraph,
-                    pool=self.graph_pool,
-                    stream=current_stream(),
-                ):
-                    # `output` is managed by pytorch's cudagraph pool
-                    output = self.runnable(*args, **kwargs)
-                    # Join offloader's copy stream after forward to avoid
-                    # unjoined stream error. The last layer's start_prefetch
-                    # forks copy_stream, but wait_prefetch only happens in
-                    # the next forward pass.
-                    get_offloader().join_after_forward()
-                    if self.cudagraph_options.weak_ref_output:
-                        # by converting it to weak ref,
-                        # the original `output` will immediately be released
-                        # to save memory. It is only safe to do this for
-                        # the last graph in piecewise cuadgraph mode, because
-                        # the output of the last graph will not be used by
-                        # any other cuda graph.
-                        output = weak_ref_tensors(output)
+                    # mind-exploding: carefully manage the reference and memory.
+                    with torch.cuda.graph(
+                        cudagraph,
+                        pool=self.graph_pool,
+                        stream=current_stream(),
+                    ):
+                        # `output` is managed by pytorch's cudagraph pool
+                        output = self.runnable(*args, **kwargs)
+                        # Join offloader's copy stream after forward to avoid
+                        # unjoined stream error. The last layer's start_prefetch
+                        # forks copy_stream, but wait_prefetch only happens in
+                        # the next forward pass.
+                        get_offloader().join_after_forward()
+                        if self.cudagraph_options.weak_ref_output:
+                            # by converting it to weak ref,
+                            # the original `output` will immediately be released
+                            # to save memory. It is only safe to do this for
+                            # the last graph in piecewise cuadgraph mode, because
+                            # the output of the last graph will not be used by
+                            # any other cuda graph.
+                            output = weak_ref_tensors(output)
+
+            _handle_cuda_graph_capture_warnings(
+                captured_warnings,
+                runtime_mode=self.runtime_mode,
+                batch_descriptor=entry.batch_descriptor,
+            )
 
             # here we always use weak ref for the output
             # to save memory

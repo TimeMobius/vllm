@@ -2116,3 +2116,39 @@ Interpretation:
   - RWKV7 targeted tests: passing
 - performance still follows the known pattern that eager can be faster than
   `piecewise` on smaller / shorter workloads
+
+## 2026-04-16 Update: empty PIECEWISE CUDA-graph warning
+
+I double-checked the recurring
+`The CUDA Graph is empty. This usually means that the graph was attempted to be
+captured on wrong device or stream.` warning that showed up during RWKV7
+`piecewise` startup.
+
+Conclusion:
+
+- this was not a compile/cudagraph enablement failure
+- the runtime still completed real capture successfully (`51 / 51` capture
+  descriptors and `Graph capturing finished ...` in the startup logs)
+- the warning is consistent with harmless empty piecewise partitions
+  (view/alias-only subgraphs with no CUDA kernel launches), not with a broken
+  RWKV7 implementation
+
+Mitigation added on the dev branch:
+
+- `vllm/compilation/cuda_graph.py` now suppresses only this specific empty-graph
+  warning when the wrapper runtime mode is `PIECEWISE`
+- other warnings are still re-emitted unchanged
+- `FULL` mode continues to surface the empty-graph warning
+
+Validation:
+
+1. new targeted unit tests in `tests/compile/test_cuda_graph.py`
+   - `3 passed`
+2. targeted lint
+   - `pre-commit run ruff-check --files ...`: passed
+   - `pre-commit run ruff-format --files ...`: passed
+3. real RWKV7 `piecewise` startup smoke on the dev branch
+   - model: `RWKV7-Goose-World2.8-0.1B-HF`
+   - startup succeeded
+   - the startup log still showed compile + cudagraph enablement
+   - the empty-graph warning no longer appeared

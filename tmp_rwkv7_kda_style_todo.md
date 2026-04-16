@@ -999,6 +999,15 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - eager comparison smoke with the same workload also passes
     - current functional status for the PR branch can be treated as complete
       enough for upstream PR preparation
+  - [x] PIECEWISE empty-graph warning investigation：
+    - confirmed this is not a failed RWKV7 cudagraph enablement path
+    - startup still completes real `piecewise` capture successfully
+    - warning is consistent with harmless empty piecewise partitions that
+      contain no CUDA kernels
+    - dev-branch mitigation added to suppress only this known warning for
+      `PIECEWISE`, while keeping unrelated warnings and `FULL`-mode warnings
+      visible
+    - targeted tests: `tests/compile/test_cuda_graph.py` -> `3 passed`
   - [ ] 设计真正 atomic 的 multi-state checkpoint publication：
     - 要么一次性发布 attn/recurrent/ffn 三段状态
     - 要么引入不会暴露 partial slot 的 staging/commit 机制

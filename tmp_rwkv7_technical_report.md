@@ -2034,3 +2034,45 @@ Technical conclusion:
 - the remaining caveat is performance, not functionality:
   compile/`piecewise` is working, but it is still slower than eager on this
   small-model, short-output smoke workload
+
+### PIECEWISE empty-graph warning follow-up
+
+I traced the recurring startup warning
+`The CUDA Graph is empty. This usually means that the graph was attempted to be
+captured on wrong device or stream.` through the current vLLM cudagraph path.
+
+Findings:
+
+- the warning appears during piecewise wrapper capture, but it does not prevent
+  later successful capture and replay setup
+- the same startup logs still report:
+  - `CompilationMode.VLLM_COMPILE`
+  - `CUDAGraphMode.PIECEWISE`
+  - successful `Capturing CUDA graphs ...`
+  - successful `Graph capturing finished ...`
+- this strongly suggests that the warning comes from empty piecewise
+  partitions, i.e. partitions whose FX body reduces to view/alias/metadata-only
+  work and therefore launches no CUDA kernel
+
+Mitigation added on the dev branch:
+
+- `vllm/compilation/cuda_graph.py` now records warnings raised during
+  `torch.cuda.graph(...)` capture
+- it suppresses only the known empty-graph warning when the wrapper runtime
+  mode is `PIECEWISE`
+- any other warning is re-emitted unchanged
+- the same empty-graph warning is still re-emitted for `FULL` mode
+
+Validation:
+
+1. New targeted unit tests:
+   - `tests/compile/test_cuda_graph.py`
+   - result: `3 passed`
+2. Targeted lint:
+   - `pre-commit run ruff-check --files vllm/compilation/cuda_graph.py tests/compile/test_cuda_graph.py`
+   - `pre-commit run ruff-format --files vllm/compilation/cuda_graph.py tests/compile/test_cuda_graph.py`
+3. Real RWKV7 `piecewise` startup smoke after the change:
+   - model: `RWKV7-Goose-World2.8-0.1B-HF`
+   - startup succeeded
+   - compile and `piecewise` cudagraph still initialized
+   - the empty-graph warning no longer appeared in the captured startup log
