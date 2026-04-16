@@ -1954,3 +1954,83 @@ python -m py_compile vllm/model_executor/models/rwkv7.py
 Result:
 
 - compile check passed
+
+### PR-worktree concurrency smoke
+
+To de-risk the eventual upstream PR, I validated the cleaned PR worktree
+directly instead of relying only on the long-lived local development branch.
+
+Setup:
+
+- worktree: `/home/liu/vllm-rwkv7`
+- branch: `codex/rwkv7`
+- model: `RWKV7-Goose-World2.8-0.1B-HF`
+- engine path: `AsyncLLM.from_engine_args`
+- mode: `enforce_eager=True`
+- workload: `8` concurrent requests, `32` output tokens each
+
+Observed result:
+
+- `8 / 8` requests finished successfully
+- wall time: `1.218 s`
+- aggregate output TPS: `210.125`
+- average latency: `0.929 s`
+- p95 latency: `0.965 s`
+
+Conclusion:
+
+- the upstream-main-based RWKV7 PR worktree still supports normal concurrent
+  generation on the model path itself
+- this is a stronger PR-readiness signal than a pure import or unit-test check
+
+Two local environment blockers surfaced while trying to do the same check
+through the API server:
+
+1. `piecewise` startup currently depends on a newer local `_C` extension than
+   the one available in this validation environment
+2. the OpenAI API server currently trips over a separate
+   `mistral_common.NamedToolChoice` import mismatch in the local package set
+
+These blockers should be treated as local validation-environment issues rather
+than as direct evidence of a RWKV7 regression.
+
+### Fresh-install PR validation
+
+I repeated PR validation using a fresh-install path on top of a clean conda
+ environment (`vllm-rwkv7`) plus a repo-local `.venv`, which is much closer to
+the expected upstream-review workflow than the earlier reused local dev setup.
+
+Installation:
+
+- created `.venv` against `/home/liu/miniforge3/envs/vllm-rwkv7/bin/python`
+- installed the PR worktree with:
+  `VLLM_USE_PRECOMPILED=1 uv pip install --python .venv/bin/python -e . --torch-backend=auto`
+- one large transitive wheel (`flashinfer-cubin`) needed a retry because of a
+  transient TLS download failure
+
+Validation outcomes:
+
+1. `tests/model_executor/test_rwkv7.py`
+   - `20 passed, 2 skipped`
+2. OpenAI API server with `-cc.cudagraph_mode=piecewise`
+   - startup succeeded
+   - `/health` returned `200`
+3. `piecewise` closed-loop concurrency smoke (`32` requests, `c=8`,
+   `max_tokens=32`)
+   - aggregate TPS: `277.239`
+   - weighted request TPS: `34.668`
+   - success: `32 / 32`
+4. eager comparison smoke with the same workload
+   - aggregate TPS: `398.361`
+   - weighted request TPS: `49.822`
+   - success: `32 / 32`
+
+Technical conclusion:
+
+- the branch is now validated not only at the unit-test level but also at the
+  service level for both eager and `piecewise` cudagraph paths
+- this closes the earlier local-environment blockers that had prevented
+  confident claims about `compile + piecewise` readiness
+- the remaining caveat is performance, not functionality:
+  compile/`piecewise` is working, but it is still slower than eager on this
+  small-model, short-output smoke workload

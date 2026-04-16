@@ -2031,3 +2031,88 @@ Interpretation:
 - this change is non-functional cleanup for PR readiness
 - local benchmark / handoff / todo / report files remain the place to keep
   experimental notes and iterative debugging history
+
+## 2026-04-15 Update: PR worktree concurrency smoke
+
+I created a clean upstream-PR worktree:
+
+- worktree: `/home/liu/vllm-rwkv7`
+- branch: `codex/rwkv7`
+- intended PR title: `rwkv7`
+
+I then ran a direct engine-level concurrency smoke there instead of relying on
+the OpenAI API server, because the server path exposed local environment drift
+that is unrelated to the RWKV7 model code itself.
+
+Smoke summary:
+
+- model: `RWKV7-Goose-World2.8-0.1B-HF`
+- path: `AsyncLLM.from_engine_args(..., enforce_eager=True)`
+- concurrency: `8`
+- max tokens: `32`
+- result: `8 / 8` requests completed successfully
+- aggregate output TPS: `210.125`
+- average latency: `0.929 s`
+- p95 latency: `0.965 s`
+
+Interpretation:
+
+- the current upstream-main-based PR worktree still supports normal concurrent
+  RWKV7 generation in eager mode
+- this is a useful smoke result for PR readiness because it validates the
+  model path directly on the cleaned PR branch
+
+Local validation blockers discovered:
+
+1. `piecewise` startup on the PR worktree currently hits a local prebuilt
+   extension mismatch:
+   - missing op: `torch.ops._C.silu_and_mul_per_block_quant`
+   - this points to the local `_C` binary being older than current
+     `upstream/main`
+2. OpenAI API server startup in eager mode hits an environment package
+   mismatch:
+   - `ImportError: cannot import name 'NamedToolChoice' from mistral_common...`
+
+These blockers are specific to the local PR-validation environment and should
+not be confused with a confirmed RWKV7 concurrency failure.
+
+## 2026-04-16 Update: fresh-env PR validation
+
+I validated the PR worktree again, this time using a fresh install path that is
+much closer to what another developer would see after cloning the branch.
+
+Setup:
+
+- conda env: `vllm-rwkv7`
+- repo: `/home/liu/vllm-rwkv7`
+- local env inside repo: `.venv`
+- install path:
+  - `uv venv --python /home/liu/miniforge3/envs/vllm-rwkv7/bin/python --seed`
+  - `VLLM_USE_PRECOMPILED=1 uv pip install --python .venv/bin/python -e . --torch-backend=auto`
+
+Validation results:
+
+1. RWKV7 targeted tests:
+   - `20 passed, 2 skipped`
+2. `piecewise` server startup:
+   - startup succeeded
+   - `/health` returned `200`
+3. `piecewise` concurrency smoke (`32` requests, `c=8`, `max_tokens=32`):
+   - success: `32 / 32`
+   - aggregate TPS: `277.239`
+   - weighted request TPS: `34.668`
+4. eager comparison smoke with the same workload:
+   - success: `32 / 32`
+   - aggregate TPS: `398.361`
+   - weighted request TPS: `49.822`
+
+Interpretation:
+
+- this is the strongest validation so far that the PR worktree is functionally
+  complete enough for upstream review
+- the branch can now be described as:
+  - RWKV7 eager: working
+  - RWKV7 compile + `piecewise` cudagraph: working
+  - RWKV7 targeted tests: passing
+- performance still follows the known pattern that eager can be faster than
+  `piecewise` on smaller / shorter workloads

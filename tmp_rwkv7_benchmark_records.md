@@ -1151,3 +1151,139 @@ Interpretation:
 - this is strong evidence that the current reverted `align` path is still in
   the same performance band as before, and that the earlier apparent dip was
   mostly one-shot variance rather than a real regression
+
+### `2026-04-15_rwkv7_pr_worktree_async_concurrency_smoke`
+
+Context:
+
+- PR worktree: `/home/liu/vllm-rwkv7`
+- PR branch: `codex/rwkv7`
+- model: `RWKV7-Goose-World2.8-0.1B-HF`
+- goal: confirm that the upstream-PR code path still handles concurrent
+  generation correctly on the current upstream-main-based worktree
+
+Command (engine-level smoke, eager):
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate vllm-dev
+cd /home/liu/vllm-rwkv7
+PYTHONPATH=/home/liu/vllm-rwkv7 python /tmp/rwkv7_pr_async_conc_smoke.py
+```
+
+Results:
+
+| mode | concurrency | max tokens | success | wall time (s) | aggregate TPS | avg latency (s) | p50 latency (s) | p95 latency (s) | per-request avg TPS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `AsyncLLM eager` | `8` | `32` | `8 / 8` | `1.218` | `210.125` | `0.929` | `0.934` | `0.965` | `34.470` |
+
+Interpretation:
+
+- the upstream-PR worktree successfully handled `8` concurrent requests at the
+  engine layer
+- all requests finished and each produced the full `32` output tokens
+- this confirms the current PR code path still supports normal concurrent
+  generation in eager mode
+
+Environment blockers discovered while preparing a server-level smoke:
+
+- `piecewise` startup on the PR worktree currently fails against the local
+  prebuilt `_C` extension because the extension is older than current
+  `upstream/main` and does not export
+  `torch.ops._C.silu_and_mul_per_block_quant`
+- OpenAI API server startup in eager mode then hits an unrelated environment
+  package mismatch:
+  `ImportError: cannot import name 'NamedToolChoice' from mistral_common...`
+
+Conclusion:
+
+- RWKV7 PR code itself passed the concurrency smoke
+- the remaining blockers are environment / binary-package drift issues in the
+  local PR-validation setup, not a confirmed RWKV7 model-path regression
+
+### `2026-04-16_rwkv7_pr_worktree_fresh_env_validation`
+
+Context:
+
+- worktree: `/home/liu/vllm-rwkv7`
+- branch: `codex/rwkv7`
+- env: fresh `conda` env `vllm-rwkv7` + repo-local `.venv`
+- goal: validate that a fresh install of the PR worktree can run RWKV7 tests
+  and serve both eager and `piecewise` paths
+
+Install notes:
+
+- `VLLM_USE_PRECOMPILED=1 uv pip install --python .venv/bin/python -e . --torch-backend=auto`
+  completed successfully after separately retrying `flashinfer-cubin`
+- full `requirements/test/cuda.txt` hit unrelated network failures in
+  transitive test-only deps, so RWKV7 validation proceeded with minimal
+  targeted test deps (`pytest`, `tblib`)
+
+RWKV7 targeted test:
+
+```bash
+.venv/bin/python -m pytest -q tests/model_executor/test_rwkv7.py
+```
+
+Result:
+
+- `20 passed, 2 skipped`
+
+`piecewise` server smoke:
+
+```bash
+.venv/bin/python -m vllm.entrypoints.openai.api_server \
+  --model /mnt/d/codes/RWKV7-Goose-World2.8-0.1B-HF \
+  --trust-remote-code \
+  --host 127.0.0.1 \
+  --port 8018 \
+  --gpu-memory-utilization 0.8 \
+  -cc.cudagraph_mode=piecewise
+```
+
+Health:
+
+- `/health = 200`
+
+Closed-loop concurrency smoke (`32` req, `c=8`, `max_tokens=32`):
+
+| mode | success | wall time (s) | aggregate TPS | avg latency (s) | p50 latency (s) | p95 latency (s) | weighted request TPS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `piecewise` | `32 / 32` | `3.679` | `277.239` | `0.919` | `0.725` | `1.962` | `34.668` |
+
+Output dir:
+
+- `/home/liu/vllm/tmp_rwkv7_remote_bench_runs/20260416_rwkv7_pr_piecewise_c8_smoke`
+
+`eager` comparison smoke:
+
+```bash
+.venv/bin/python -m vllm.entrypoints.openai.api_server \
+  --model /mnt/d/codes/RWKV7-Goose-World2.8-0.1B-HF \
+  --trust-remote-code \
+  --host 127.0.0.1 \
+  --port 8019 \
+  --gpu-memory-utilization 0.8 \
+  --enforce-eager
+```
+
+Closed-loop concurrency smoke (`32` req, `c=8`, `max_tokens=32`):
+
+| mode | success | wall time (s) | aggregate TPS | avg latency (s) | p50 latency (s) | p95 latency (s) | weighted request TPS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `eager` | `32 / 32` | `2.560` | `398.361` | `0.640` | `0.526` | `1.000` | `49.822` |
+
+Output dir:
+
+- `/home/liu/vllm/tmp_rwkv7_remote_bench_runs/20260416_rwkv7_pr_eager_c8_smoke`
+
+Interpretation:
+
+- the fresh-install PR worktree successfully passed RWKV7 targeted tests
+- `compile + piecewise cudagraph` now starts cleanly in the fresh env and can
+  serve concurrent requests
+- on this small-model / short-output workload, `piecewise` is slower than eager:
+  - aggregate TPS: `277.239` vs `398.361`
+  - weighted request TPS: `34.668` vs `49.822`
+- this matches the earlier general pattern: RWKV7 `piecewise` is functional,
+  but compile/cudagraph is not the default performance winner on all workloads

@@ -982,6 +982,23 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - 去掉了 `rwkv7.py` 里纯开发期的 `RWKV7_DEBUG_*` 分支和 `debug_last_*` 状态快照
     - 核心 RWKV7 代码/测试文件已确认没有中文注释
     - 本地实验文档继续保留，但不作为上游 PR 内容
+  - [x] upstream-PR worktree concurrency smoke：
+    - clean PR worktree `/home/liu/vllm-rwkv7` created on branch `codex/rwkv7`
+    - direct engine-level RWKV7 smoke on the PR worktree passed with
+      `8 / 8` finished requests (`32` output tokens each)
+    - aggregate output TPS `210.125`, avg latency `0.929 s`, p95 `0.965 s`
+    - current local PR-validation blockers are environment drift issues:
+      old `_C` extension for `piecewise`, and `mistral_common` mismatch in
+      OpenAI API server startup
+  - [x] fresh-env PR validation：
+    - repo-local `.venv` on top of `conda` env `vllm-rwkv7` now installs
+      successfully with `VLLM_USE_PRECOMPILED=1`
+    - `tests/model_executor/test_rwkv7.py`: `20 passed, 2 skipped`
+    - `compile + piecewise cudagraph` service now starts successfully in the
+      fresh env and passes a closed-loop concurrency smoke (`32` req, `c=8`)
+    - eager comparison smoke with the same workload also passes
+    - current functional status for the PR branch can be treated as complete
+      enough for upstream PR preparation
   - [ ] 设计真正 atomic 的 multi-state checkpoint publication：
     - 要么一次性发布 attn/recurrent/ffn 三段状态
     - 要么引入不会暴露 partial slot 的 staging/commit 机制
