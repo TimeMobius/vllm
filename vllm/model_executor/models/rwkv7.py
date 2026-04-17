@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterable
 from itertools import islice
 
+import regex as re
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -53,11 +54,60 @@ from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 from .utils import AutoWeightsLoader, PPMissingLayer, make_layers, maybe_prefix
 
 LOG_DECAY_SCALE = -0.6065306597126334
-RWKV7_RUNTIME_DTYPE = torch.float32
+RWKV7_STATE_DTYPE = torch.float32
+_NATIVE_RWKV7_BLOCK_RE = re.compile(r"blocks\.(\d+)\.(.+)")
+
+_NATIVE_RWKV7_TOP_LEVEL_NAME_MAP = {
+    "emb.weight": "model.embed_tokens.weight",
+    "ln_out.weight": "model.norm.weight",
+    "ln_out.bias": "model.norm.bias",
+    "head.weight": "lm_head.weight",
+}
+
+_NATIVE_RWKV7_BLOCK_NAME_MAP = {
+    "ln1.weight": "attn_norm.weight",
+    "ln1.bias": "attn_norm.bias",
+    "ln2.weight": "ffn_norm.weight",
+    "ln2.bias": "ffn_norm.bias",
+    "att.x_r": "attn.x_r",
+    "att.x_w": "attn.x_w",
+    "att.x_k": "attn.x_k",
+    "att.x_v": "attn.x_v",
+    "att.x_a": "attn.x_a",
+    "att.x_g": "attn.x_g",
+    "att.k_k": "attn.k_k",
+    "att.k_a": "attn.k_a",
+    "att.r_k": "attn.r_k",
+    "att.receptance.weight": "attn.r_proj.weight",
+    "att.key.weight": "attn.k_proj.weight",
+    "att.value.weight": "attn.v_proj.weight",
+    "att.output.weight": "attn.o_proj.weight",
+    "att.ln_x.weight": "attn.g_norm.weight",
+    "att.ln_x.bias": "attn.g_norm.bias",
+    "ffn.x_k": "ffn.x_k",
+    "ffn.key.weight": "ffn.key.weight",
+    "ffn.value.weight": "ffn.value.weight",
+}
+
+_NATIVE_RWKV7_LORA_SPECS = {
+    "att.w1": ("attn.w_lora.lora.0.weight", "transpose"),
+    "att.w2": ("attn.w_lora.lora.2.weight", "transpose"),
+    "att.w0": ("attn.w_lora.lora.2.bias", "squeeze"),
+    "att.a1": ("attn.a_lora.lora.0.weight", "transpose"),
+    "att.a2": ("attn.a_lora.lora.2.weight", "transpose"),
+    "att.a0": ("attn.a_lora.lora.2.bias", "squeeze"),
+    "att.g1": ("attn.g_lora.lora.0.weight", "transpose"),
+    "att.g2": ("attn.g_lora.lora.2.weight", "transpose"),
+    "att.v1": ("attn.v_lora.lora.0.weight", "transpose"),
+    "att.v2": ("attn.v_lora.lora.2.weight", "transpose"),
+    "att.v0": ("attn.v_lora.lora.2.bias", "squeeze"),
+}
 
 
 def get_tp_world_size() -> int:
-    return get_tensor_model_parallel_world_size() if model_parallel_is_initialized() else 1
+    return (
+        get_tensor_model_parallel_world_size() if model_parallel_is_initialized() else 1
+    )
 
 
 def get_tp_rank() -> int:
@@ -74,6 +124,63 @@ def get_activation_fn(name: str):
     if name not in HF_ACT2FN:
         raise ValueError(f"Unsupported RWKV7 activation: {name}")
     return HF_ACT2FN[name]
+
+
+def _transform_native_rwkv7_tensor(
+    tensor: torch.Tensor, transform: str | None
+) -> torch.Tensor:
+    if transform == "transpose":
+        return tensor.transpose(0, 1)
+    if transform == "squeeze":
+        return tensor.reshape(-1)
+    return tensor
+
+
+def _iter_rwkv7_weight_aliases(
+    name: str, tensor: torch.Tensor
+) -> Iterable[tuple[str, torch.Tensor]]:
+    if name in _NATIVE_RWKV7_TOP_LEVEL_NAME_MAP:
+        yield _NATIVE_RWKV7_TOP_LEVEL_NAME_MAP[name], tensor
+        return
+
+    if name == "model.embeddings.weight":
+        yield "model.embed_tokens.weight", tensor
+        return
+
+    match = _NATIVE_RWKV7_BLOCK_RE.fullmatch(name)
+    if match is None:
+        yield name, tensor
+        return
+
+    layer_idx = int(match.group(1))
+    suffix = match.group(2)
+    prefix = f"model.layers.{layer_idx}"
+
+    if suffix == "ln0.weight" and layer_idx == 0:
+        yield f"{prefix}.pre_norm.weight", tensor
+        return
+    if suffix == "ln0.bias" and layer_idx == 0:
+        yield f"{prefix}.pre_norm.bias", tensor
+        return
+
+    mapped_name = _NATIVE_RWKV7_BLOCK_NAME_MAP.get(suffix)
+    if mapped_name is not None:
+        transform = "squeeze" if suffix in {"att.k_k", "att.k_a", "ffn.x_k"} else None
+        yield (
+            f"{prefix}.{mapped_name}",
+            _transform_native_rwkv7_tensor(tensor, transform),
+        )
+        return
+
+    lora_spec = _NATIVE_RWKV7_LORA_SPECS.get(suffix)
+    if lora_spec is None:
+        return
+
+    if suffix.startswith("att.v") and layer_idx == 0:
+        return
+
+    mapped_name, transform = lora_spec
+    yield f"{prefix}.{mapped_name}", _transform_native_rwkv7_tensor(tensor, transform)
 
 
 def token_shift_with_cache(
@@ -114,10 +221,9 @@ def token_shift_with_cache_varlen(
     if cached_state is None:
         delta[first_token_indices] = -hidden_states.index_select(0, first_token_indices)
     else:
-        delta[first_token_indices] = (
-            cached_state.to(hidden_states.dtype)
-            - hidden_states.index_select(0, first_token_indices)
-        )
+        delta[first_token_indices] = cached_state.to(
+            hidden_states.dtype
+        ) - hidden_states.index_select(0, first_token_indices)
 
     last_token_indices = (query_start_loc[1:] - 1).to(dtype=torch.long)
     final_state = hidden_states.index_select(0, last_token_indices).to(
@@ -134,10 +240,8 @@ def _rwkv7_packed_prefill_enabled() -> bool:
 
 
 def _can_use_rwkv7_fused_recurrent(hidden_states: torch.Tensor) -> bool:
-    return (
-        hidden_states.device.type == "cuda"
-        and _rwkv7_packed_prefill_enabled()
-    )
+    return hidden_states.device.type == "cuda" and _rwkv7_packed_prefill_enabled()
+
 
 def _custom_op_optional_tensor(
     tensor: torch.Tensor | None,
@@ -249,8 +353,6 @@ def rwkv7_attention(
 ) -> None:
     forward_context = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
-    attn_metadata = forward_context.attn_metadata
-    block_layer_name = layer_name.removesuffix(".attn")
     out, shift_state, recurrent, first_value = self._forward(
         hidden_states,
         _custom_op_tensor_or_none(cached_shift_state),
@@ -694,7 +796,9 @@ class RWKV7Attention(nn.Module):
         recurrent_state: torch.Tensor | None,
         v_first: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        delta, final_shift_state = token_shift_with_cache(hidden_states, cached_shift_state)
+        delta, final_shift_state = token_shift_with_cache(
+            hidden_states, cached_shift_state
+        )
         r, w, k, v, kk, a, g, v_first_out = self._project_recurrent_inputs(
             hidden_states,
             delta,
@@ -734,9 +838,7 @@ class RWKV7Attention(nn.Module):
                     + (kk[idx] * a[idx]).unsqueeze(-1) * sa.unsqueeze(-2)
                     + k[idx].unsqueeze(-1) * v[idx].unsqueeze(-2)
                 )
-                outputs.append(
-                    (recurrent_state * r[idx].unsqueeze(-1)).sum(dim=-2)
-                )
+                outputs.append((recurrent_state * r[idx].unsqueeze(-1)).sum(dim=-2))
             recurrent_output = torch.stack(outputs, dim=0)
             final_recurrent_state = recurrent_state
 
@@ -778,7 +880,7 @@ class RWKV7Attention(nn.Module):
             self.local_num_heads,
             self.head_dim,
             self.head_v_dim,
-            dtype=RWKV7_RUNTIME_DTYPE,
+            dtype=RWKV7_STATE_DTYPE,
         )
         v_first_out = hidden_states.new_empty(
             hidden_states.shape[0], self.local_value_dim
@@ -789,7 +891,7 @@ class RWKV7Attention(nn.Module):
             _custom_op_optional_tensor(
                 recurrent_state,
                 like=hidden_states,
-                dtype=RWKV7_RUNTIME_DTYPE,
+                dtype=RWKV7_STATE_DTYPE,
             ),
             _custom_op_optional_tensor(v_first, like=hidden_states),
             output,
@@ -897,7 +999,9 @@ class RWKV7Attention(nn.Module):
         recurrent_state: torch.Tensor | None,
         v_first: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        delta, final_shift_state = token_shift_with_cache(hidden_states, cached_shift_state)
+        delta, final_shift_state = token_shift_with_cache(
+            hidden_states, cached_shift_state
+        )
         r, w, k, v, kk, a, g, v_first_out = self._project_recurrent_inputs(
             hidden_states,
             delta,
@@ -997,7 +1101,13 @@ class RWKV7Attention(nn.Module):
             hidden_states.dtype,
         )
         assert final_recurrent_state is not None
-        return output, final_shift_state, final_recurrent_state, v_first_out, checkpoint_states
+        return (
+            output,
+            final_shift_state,
+            final_recurrent_state,
+            v_first_out,
+            checkpoint_states,
+        )
 
 
 class RWKV7Block(nn.Module, MambaBase):
@@ -1072,9 +1182,9 @@ class RWKV7Block(nn.Module, MambaBase):
 
     def get_state_dtype(self) -> tuple[torch.dtype, ...]:
         return (
-            RWKV7_RUNTIME_DTYPE,
-            RWKV7_RUNTIME_DTYPE,
-            RWKV7_RUNTIME_DTYPE,
+            RWKV7_STATE_DTYPE,
+            RWKV7_STATE_DTYPE,
+            RWKV7_STATE_DTYPE,
         )
 
     def get_state_shape(self) -> tuple[tuple[int, ...], ...]:
@@ -1112,7 +1222,13 @@ class RWKV7Block(nn.Module, MambaBase):
         ffn_input = self.ffn_norm(hidden_states)
         ffn_out, ffn_shift_state = self.ffn(ffn_input, ffn_shift_state)
         hidden_states = hidden_states + ffn_out
-        return hidden_states, v_first_out, attn_shift_state, recurrent_state, ffn_shift_state
+        return (
+            hidden_states,
+            v_first_out,
+            attn_shift_state,
+            recurrent_state,
+            ffn_shift_state,
+        )
 
     def _get_kv_state(
         self, slot_id: int, use_initial_state: bool
@@ -1224,7 +1340,13 @@ class RWKV7Block(nn.Module, MambaBase):
             ffn_input, ffn_shift_state
         )
         hidden_states = hidden_states + ffn_out
-        return hidden_states, v_first_out, attn_shift_state, recurrent_state, ffn_shift_state
+        return (
+            hidden_states,
+            v_first_out,
+            attn_shift_state,
+            recurrent_state,
+            ffn_shift_state,
+        )
 
     def _run_prefill_batch(
         self,
@@ -1258,7 +1380,13 @@ class RWKV7Block(nn.Module, MambaBase):
             ffn_shift_state,
         )
         hidden_states = hidden_states + ffn_out
-        return hidden_states, v_first_out, attn_shift_state, recurrent_state, ffn_shift_state
+        return (
+            hidden_states,
+            v_first_out,
+            attn_shift_state,
+            recurrent_state,
+            ffn_shift_state,
+        )
 
     def _run_prefill_sequence_cache_all(
         self,
@@ -1449,20 +1577,28 @@ class RWKV7Block(nn.Module, MambaBase):
 
         if attn_metadata.num_decode_tokens > 0:
             if cache_all:
-                decode_input_slot_ids = state_indices[: attn_metadata.num_decodes].gather(
-                    1,
-                    attn_metadata.block_idx_last_computed_token[
-                        : attn_metadata.num_decodes
-                    ].unsqueeze(1),
-                ).squeeze(1).to(dtype=torch.long)
-                decode_output_slot_ids = state_indices[
-                    : attn_metadata.num_decodes
-                ].gather(
-                    1,
-                    attn_metadata.block_idx_last_scheduled_token[
-                        : attn_metadata.num_decodes
-                    ].unsqueeze(1),
-                ).squeeze(1).to(dtype=torch.long)
+                decode_input_slot_ids = (
+                    state_indices[: attn_metadata.num_decodes]
+                    .gather(
+                        1,
+                        attn_metadata.block_idx_last_computed_token[
+                            : attn_metadata.num_decodes
+                        ].unsqueeze(1),
+                    )
+                    .squeeze(1)
+                    .to(dtype=torch.long)
+                )
+                decode_output_slot_ids = (
+                    state_indices[: attn_metadata.num_decodes]
+                    .gather(
+                        1,
+                        attn_metadata.block_idx_last_scheduled_token[
+                            : attn_metadata.num_decodes
+                        ].unsqueeze(1),
+                    )
+                    .squeeze(1)
+                    .to(dtype=torch.long)
+                )
             else:
                 decode_input_slot_ids = state_indices[: attn_metadata.num_decodes].to(
                     dtype=torch.long
@@ -1491,8 +1627,9 @@ class RWKV7Block(nn.Module, MambaBase):
             if cache_all:
                 prefill_query_start_loc = (
                     attn_metadata.query_start_loc[
-                        prefill_req_offset:prefill_req_end + 1
-                    ] - prefill_token_offset
+                        prefill_req_offset : prefill_req_end + 1
+                    ]
+                    - prefill_token_offset
                 )
                 cache_all_state_indices = state_indices[
                     prefill_req_offset:prefill_req_end
@@ -1505,17 +1642,19 @@ class RWKV7Block(nn.Module, MambaBase):
                         prefill_req_offset:prefill_req_end
                     ]
                 )
-                block_idx_last_scheduled = (
-                    attn_metadata.block_idx_last_scheduled_token[
-                        prefill_req_offset:prefill_req_end
-                    ]
-                )
+                block_idx_last_scheduled = attn_metadata.block_idx_last_scheduled_token[
+                    prefill_req_offset:prefill_req_end
+                ]
                 num_computed_tokens = attn_metadata.num_computed_tokens[
                     prefill_req_offset:prefill_req_end
                 ]
-                input_slot_ids = cache_all_state_indices.gather(
-                    1, block_idx_last_computed.unsqueeze(1)
-                ).squeeze(1).to(dtype=torch.long)
+                input_slot_ids = (
+                    cache_all_state_indices.gather(
+                        1, block_idx_last_computed.unsqueeze(1)
+                    )
+                    .squeeze(1)
+                    .to(dtype=torch.long)
+                )
                 has_initial_state = num_computed_tokens > 0
 
                 if _rwkv7_packed_prefill_enabled():
@@ -1523,9 +1662,13 @@ class RWKV7Block(nn.Module, MambaBase):
                     flat_checkpoint_absolute_positions_parts: list[torch.Tensor] = []
                     checkpoint_counts: list[int] = []
                     block_slot_ids_parts: list[torch.Tensor] = []
-                    output_slot_ids = cache_all_state_indices.gather(
-                        1, block_idx_last_scheduled.unsqueeze(1)
-                    ).squeeze(1).to(dtype=torch.long)
+                    output_slot_ids = (
+                        cache_all_state_indices.gather(
+                            1, block_idx_last_scheduled.unsqueeze(1)
+                        )
+                        .squeeze(1)
+                        .to(dtype=torch.long)
+                    )
 
                     for prefill_idx in range(attn_metadata.num_prefills):
                         seq_start = int(prefill_query_start_loc[prefill_idx].item())
@@ -1556,8 +1699,9 @@ class RWKV7Block(nn.Module, MambaBase):
                         )
                         block_slot_ids_parts.append(
                             cache_all_state_indices[prefill_idx][
-                                block_idx_first_scheduled[prefill_idx]:
-                                block_idx_last_scheduled[prefill_idx]
+                                block_idx_first_scheduled[
+                                    prefill_idx
+                                ] : block_idx_last_scheduled[prefill_idx]
                             ].to(dtype=torch.long)
                         )
 
@@ -1685,10 +1829,14 @@ class RWKV7Block(nn.Module, MambaBase):
                         output_slice[start:end] = out
                         v_first_slice[start:end] = vf_out
 
-                        output_slot_id = state_indices_row[
-                            block_idx_last_scheduled_token
-                        ].to(dtype=torch.long).view(1)
-                        store_slot_ids = torch.cat((block_slot_ids, output_slot_id), dim=0)
+                        output_slot_id = (
+                            state_indices_row[block_idx_last_scheduled_token]
+                            .to(dtype=torch.long)
+                            .view(1)
+                        )
+                        store_slot_ids = torch.cat(
+                            (block_slot_ids, output_slot_id), dim=0
+                        )
                         store_attn_shift = torch.cat(
                             (block_attn_shift_states, attn_shift.unsqueeze(0)),
                             dim=0,
@@ -1708,9 +1856,9 @@ class RWKV7Block(nn.Module, MambaBase):
                             store_ffn_shift,
                         )
             else:
-                prefill_slot_ids = state_indices[
-                    prefill_req_offset:prefill_req_end
-                ].to(dtype=torch.long)
+                prefill_slot_ids = state_indices[prefill_req_offset:prefill_req_end].to(
+                    dtype=torch.long
+                )
 
                 if _rwkv7_packed_prefill_enabled():
                     prefill_query_start_loc = (
@@ -1719,7 +1867,9 @@ class RWKV7Block(nn.Module, MambaBase):
                         ]
                         - prefill_token_offset
                     )
-                    query_lens = prefill_query_start_loc[1:] - prefill_query_start_loc[:-1]
+                    query_lens = (
+                        prefill_query_start_loc[1:] - prefill_query_start_loc[:-1]
+                    )
                     prefill_seq_lens = attn_metadata.seq_lens[
                         prefill_req_offset:prefill_req_end
                     ]
@@ -1728,15 +1878,17 @@ class RWKV7Block(nn.Module, MambaBase):
                         prefill_slot_ids,
                         has_initial_state,
                     )
-                    out, vf_out, attn_shift, recurrent, ffn_shift = self._run_prefill_batch(
-                        hidden_states[prefill_token_offset:num_actual_tokens],
-                        (
-                            None
-                            if v_first is None
-                            else v_first[prefill_token_offset:num_actual_tokens]
-                        ),
-                        prefill_query_start_loc,
-                        *states,
+                    out, vf_out, attn_shift, recurrent, ffn_shift = (
+                        self._run_prefill_batch(
+                            hidden_states[prefill_token_offset:num_actual_tokens],
+                            (
+                                None
+                                if v_first is None
+                                else v_first[prefill_token_offset:num_actual_tokens]
+                            ),
+                            prefill_query_start_loc,
+                            *states,
+                        )
                     )
                     output_slice[prefill_token_offset:num_actual_tokens] = out
                     v_first_slice[prefill_token_offset:num_actual_tokens] = vf_out
@@ -1759,16 +1911,16 @@ class RWKV7Block(nn.Module, MambaBase):
                         states = self._get_kv_state(
                             slot_id, use_initial_state=context_len > 0
                         )
-                        out, vf_out, attn_shift, recurrent, ffn_shift = self._run_sequence(
-                            hidden_states[start:end],
-                            None if v_first is None else v_first[start:end],
-                            *states,
+                        out, vf_out, attn_shift, recurrent, ffn_shift = (
+                            self._run_sequence(
+                                hidden_states[start:end],
+                                None if v_first is None else v_first[start:end],
+                                *states,
+                            )
                         )
                         output_slice[start:end] = out
                         v_first_slice[start:end] = vf_out
-                        self._store_kv_state(
-                            slot_id, attn_shift, recurrent, ffn_shift
-                        )
+                        self._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
 
     def forward(
         self,
@@ -1820,7 +1972,8 @@ class RWKV7Model(nn.Module):
 
         if config.attn is not None:
             raise NotImplementedError(
-                "Hybrid RWKV7 checkpoints with transformer attention are not supported yet."
+                "Hybrid RWKV7 checkpoints with transformer attention "
+                "are not supported yet."
             )
 
         value_dims = config.value_dim
@@ -1865,16 +2018,16 @@ class RWKV7Model(nn.Module):
         return self.embed_tokens(input_ids)
 
     @staticmethod
-    def _pp_runtime_dtype() -> torch.dtype:
-        # RWKV7 keeps inter-stage activations in runtime dtype so PP dummy runs
-        # and stage-to-stage transfers match the numerics used inside blocks.
-        return RWKV7_RUNTIME_DTYPE
+    def _pp_runtime_dtype(model_dtype: torch.dtype) -> torch.dtype:
+        # RWKV7 keeps recurrent state in fp32, but inter-stage activations should
+        # stay in the model dtype so PP does not upcast the entire hidden-state
+        # stream and blow up memory usage for native checkpoints.
+        return model_dtype
 
     def make_empty_intermediate_tensors(
         self, batch_size: int, dtype: torch.dtype, device: torch.device
     ) -> IntermediateTensors:
-        del dtype
-        runtime_dtype = self._pp_runtime_dtype()
+        runtime_dtype = self._pp_runtime_dtype(dtype)
         return IntermediateTensors(
             {
                 "hidden_states": torch.zeros(
@@ -1906,14 +2059,16 @@ class RWKV7Model(nn.Module):
 
         if get_pp_group().is_first_rank:
             hidden_states = (
-                inputs_embeds if inputs_embeds is not None else self.embed_input_ids(input_ids)
+                inputs_embeds
+                if inputs_embeds is not None
+                else self.embed_input_ids(input_ids)
             )
             v_first = None
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             v_first = intermediate_tensors["v_first"]
-            runtime_dtype = self._pp_runtime_dtype()
+            runtime_dtype = self._pp_runtime_dtype(self.config.torch_dtype)
             if hidden_states.dtype != runtime_dtype:
                 hidden_states = hidden_states.to(runtime_dtype)
             if v_first.dtype != runtime_dtype:
@@ -1934,7 +2089,7 @@ class RWKV7Model(nn.Module):
 
         if not get_pp_group().is_last_rank:
             assert v_first is not None
-            runtime_dtype = self._pp_runtime_dtype()
+            runtime_dtype = self._pp_runtime_dtype(hidden_states.dtype)
             if hidden_states.dtype != runtime_dtype:
                 hidden_states = hidden_states.to(runtime_dtype)
             if v_first.dtype != runtime_dtype:
@@ -1975,10 +2130,6 @@ class RWKV7ForCausalLM(
         else:
             self.lm_head = PPMissingLayer()
 
-        self.model.to(RWKV7_RUNTIME_DTYPE)
-        if get_pp_group().is_last_rank:
-            self.lm_head.to(RWKV7_RUNTIME_DTYPE)
-
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
@@ -2012,9 +2163,9 @@ class RWKV7ForCausalLM(
         cls, vllm_config: VllmConfig
     ) -> tuple[torch.dtype, ...]:
         return (
-            RWKV7_RUNTIME_DTYPE,
-            RWKV7_RUNTIME_DTYPE,
-            RWKV7_RUNTIME_DTYPE,
+            RWKV7_STATE_DTYPE,
+            RWKV7_STATE_DTYPE,
+            RWKV7_STATE_DTYPE,
         )
 
     @classmethod
@@ -2044,11 +2195,7 @@ class RWKV7ForCausalLM(
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         def iter_weights():
             for name, tensor in weights:
-                if name == "model.embeddings.weight":
-                    yield "model.embed_tokens.weight", tensor
-                else:
-                    yield name, tensor
+                yield from _iter_rwkv7_weight_aliases(name, tensor)
 
         loader = AutoWeightsLoader(self)
         return loader.load_weights(iter_weights())
-

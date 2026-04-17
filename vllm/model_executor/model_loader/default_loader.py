@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import dataclasses
+import fnmatch
 import glob
 import os
 import time
@@ -38,6 +39,8 @@ from vllm.tracing import instrument
 from vllm.transformers_utils.repo_utils import list_filtered_repo_files
 
 logger = init_logger(__name__)
+
+_PT_ALLOW_PATTERNS = ["*.pt", "*.pth"]
 
 
 class DefaultModelLoader(BaseModelLoader):
@@ -102,7 +105,8 @@ class DefaultModelLoader(BaseModelLoader):
             or model_name_or_path
         )
 
-        is_local = os.path.isdir(model_name_or_path)
+        local_file_path = os.path.isfile(model_name_or_path)
+        is_local = os.path.isdir(model_name_or_path) or local_file_path
         load_format = self.load_config.load_format
         use_safetensors = False
         index_file = SAFE_WEIGHTS_INDEX_NAME
@@ -110,18 +114,24 @@ class DefaultModelLoader(BaseModelLoader):
         # First check for 'auto' format that mistral files format are present.
         # This is to load mistral models with official format by default.
         if load_format == "auto":
-            load_format = (
-                "mistral"
-                if len(
-                    list_filtered_repo_files(
-                        model_name_or_path=model_name_or_path,
-                        allow_patterns=["consolidated*.safetensors"],
-                        revision=revision,
+            if local_file_path and os.path.splitext(model_name_or_path)[1].lower() in {
+                ".pt",
+                ".pth",
+            }:
+                load_format = "pt"
+            else:
+                load_format = (
+                    "mistral"
+                    if len(
+                        list_filtered_repo_files(
+                            model_name_or_path=model_name_or_path,
+                            allow_patterns=["consolidated*.safetensors"],
+                            revision=revision,
+                        )
                     )
+                    > 0
+                    else "hf"
                 )
-                > 0
-                else "hf"
-            )
 
         # Some quantized models use .pt files for storing the weights.
         if load_format == "hf":
@@ -138,14 +148,14 @@ class DefaultModelLoader(BaseModelLoader):
             allow_patterns = ["consolidated*.safetensors"]
             index_file = "consolidated.safetensors.index.json"
         elif load_format == "pt":
-            allow_patterns = ["*.pt"]
+            allow_patterns = list(_PT_ALLOW_PATTERNS)
         elif load_format == "npcache":
             allow_patterns = ["*.bin"]
         else:
             raise ValueError(f"Unknown load_format: {load_format}")
 
         if fall_back_to_pt:
-            allow_patterns += ["*.pt"]
+            allow_patterns += _PT_ALLOW_PATTERNS
 
         if allow_patterns_overrides is not None:
             allow_patterns = allow_patterns_overrides
@@ -159,19 +169,32 @@ class DefaultModelLoader(BaseModelLoader):
                 subfolder=subfolder,
                 ignore_patterns=self.load_config.ignore_patterns,
             )
+        elif local_file_path:
+            hf_folder = os.path.dirname(model_name_or_path)
         else:
             hf_folder = model_name_or_path
 
-        if subfolder is not None:
+        if subfolder is not None and not local_file_path:
             hf_folder = os.path.join(hf_folder, subfolder)
 
-        hf_weights_files: list[str] = []
-        for pattern in allow_patterns:
-            hf_weights_files += glob.glob(os.path.join(hf_folder, pattern))
-            if len(hf_weights_files) > 0:
-                if pattern == "*.safetensors":
-                    use_safetensors = True
-                break
+        if local_file_path:
+            checkpoint_name = os.path.basename(model_name_or_path)
+            hf_weights_files = (
+                [model_name_or_path]
+                if any(
+                    fnmatch.fnmatch(checkpoint_name, pattern)
+                    for pattern in allow_patterns
+                )
+                else []
+            )
+        else:
+            hf_weights_files = []
+            for pattern in allow_patterns:
+                hf_weights_files += glob.glob(os.path.join(hf_folder, pattern))
+                if len(hf_weights_files) > 0:
+                    if pattern == "*.safetensors":
+                        use_safetensors = True
+                    break
 
         if use_safetensors:
             # For models like Mistral-7B-Instruct-v0.3

@@ -38,6 +38,7 @@ _VLLM_TOKENIZERS = {
     "kimi_audio": ("kimi_audio", "KimiAudioTokenizer"),
     "mistral": ("mistral", "MistralTokenizer"),
     "qwen_vl": ("qwen_vl", "QwenVLTokenizer"),
+    "rwkv": ("rwkv", "RWKVTokenizer"),
 }
 
 
@@ -144,6 +145,12 @@ def resolve_tokenizer_args(
 
         tokenizer_mode = "hf"
         kwargs["use_fast"] = False
+
+    # Native RWKV checkpoints often ship a single txt vocabulary file.
+    if tokenizer_mode == "auto":
+        tokenizer_path = Path(tokenizer_name)
+        if tokenizer_path.is_file() and tokenizer_path.suffix.lower() == ".txt":
+            tokenizer_mode = "rwkv"
 
     # Try to use official Mistral tokenizer if possible
     if (

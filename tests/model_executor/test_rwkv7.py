@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
 import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import torch
 from transformers import AutoTokenizer
@@ -24,15 +26,15 @@ from vllm.distributed.parallel_state import (
     init_distributed_environment,
 )
 from vllm.forward_context import set_forward_context
-from vllm.model_executor.layers.mamba.mamba_utils import (
-    get_conv_copy_spec,
-    get_temporal_copy_spec,
-)
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
+)
+from vllm.model_executor.layers.mamba.mamba_utils import (
+    get_conv_copy_spec,
+    get_temporal_copy_spec,
 )
 from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
 from vllm.model_executor.models.rwkv7 import RWKV7Block, RWKV7ForCausalLM
@@ -63,22 +65,144 @@ def _make_config() -> RWKV7Config:
     )
 
 
+def _write_rwkv7_config_dir(tmp_path: Path, config: RWKV7Config) -> Path:
+    model_path = tmp_path / "rwkv7-native-config"
+    model_path.mkdir()
+    config_dict = config.to_dict()
+    config_dict["architectures"] = ["RWKV7ForCausalLM"]
+    (model_path / "config.json").write_text(json.dumps(config_dict), encoding="utf-8")
+    return model_path
+
+
+def _make_native_rwkv7_state_dict(model: RWKV7ForCausalLM) -> dict[str, torch.Tensor]:
+    state_dict: dict[str, torch.Tensor] = {
+        "emb.weight": model.model.embed_tokens.weight.detach().clone(),
+        "ln_out.weight": model.model.norm.weight.detach().clone(),
+        "ln_out.bias": model.model.norm.bias.detach().clone(),
+        "head.weight": model.lm_head.weight.detach().clone(),
+    }
+
+    for layer_idx, layer in enumerate(model.model.layers):
+        block_prefix = f"blocks.{layer_idx}"
+        if layer.pre_norm is not None:
+            state_dict[f"{block_prefix}.ln0.weight"] = (
+                layer.pre_norm.weight.detach().clone()
+            )
+            state_dict[f"{block_prefix}.ln0.bias"] = (
+                layer.pre_norm.bias.detach().clone()
+            )
+
+        state_dict[f"{block_prefix}.ln1.weight"] = (
+            layer.attn_norm.weight.detach().clone()
+        )
+        state_dict[f"{block_prefix}.ln1.bias"] = layer.attn_norm.bias.detach().clone()
+        state_dict[f"{block_prefix}.ln2.weight"] = (
+            layer.ffn_norm.weight.detach().clone()
+        )
+        state_dict[f"{block_prefix}.ln2.bias"] = layer.ffn_norm.bias.detach().clone()
+
+        attn = layer.attn
+        for name in ("x_r", "x_w", "x_k", "x_v", "x_a", "x_g"):
+            state_dict[f"{block_prefix}.att.{name}"] = (
+                getattr(attn, name).detach().clone()
+            )
+        state_dict[f"{block_prefix}.att.k_k"] = attn.k_k.detach().clone().view(1, 1, -1)
+        state_dict[f"{block_prefix}.att.k_a"] = attn.k_a.detach().clone().view(1, 1, -1)
+        state_dict[f"{block_prefix}.att.r_k"] = attn.r_k.detach().clone()
+        state_dict[f"{block_prefix}.att.receptance.weight"] = (
+            attn.r_proj.weight.detach().clone()
+        )
+        state_dict[f"{block_prefix}.att.key.weight"] = (
+            attn.k_proj.weight.detach().clone()
+        )
+        state_dict[f"{block_prefix}.att.value.weight"] = (
+            attn.v_proj.weight.detach().clone()
+        )
+        state_dict[f"{block_prefix}.att.output.weight"] = (
+            attn.o_proj.weight.detach().clone()
+        )
+        state_dict[f"{block_prefix}.att.ln_x.weight"] = (
+            attn.g_norm.weight.detach().clone()
+        )
+        state_dict[f"{block_prefix}.att.ln_x.bias"] = attn.g_norm.bias.detach().clone()
+
+        state_dict[f"{block_prefix}.att.w1"] = (
+            attn.w_lora.lora[0].weight.detach().clone().transpose(0, 1)
+        )
+        state_dict[f"{block_prefix}.att.w2"] = (
+            attn.w_lora.lora[2].weight.detach().clone().transpose(0, 1)
+        )
+        state_dict[f"{block_prefix}.att.w0"] = (
+            attn.w_lora.lora[2].bias.detach().clone().view(1, 1, -1)
+        )
+        state_dict[f"{block_prefix}.att.a1"] = (
+            attn.a_lora.lora[0].weight.detach().clone().transpose(0, 1)
+        )
+        state_dict[f"{block_prefix}.att.a2"] = (
+            attn.a_lora.lora[2].weight.detach().clone().transpose(0, 1)
+        )
+        state_dict[f"{block_prefix}.att.a0"] = (
+            attn.a_lora.lora[2].bias.detach().clone().view(1, 1, -1)
+        )
+        state_dict[f"{block_prefix}.att.g1"] = (
+            attn.g_lora.lora[0].weight.detach().clone().transpose(0, 1)
+        )
+        state_dict[f"{block_prefix}.att.g2"] = (
+            attn.g_lora.lora[2].weight.detach().clone().transpose(0, 1)
+        )
+
+        if layer_idx == 0:
+            state_dict[f"{block_prefix}.att.v0"] = torch.zeros(
+                1,
+                1,
+                attn.value_dim,
+                dtype=attn.x_r.dtype,
+            )
+            state_dict[f"{block_prefix}.att.v1"] = torch.zeros(
+                attn.hidden_size,
+                model.config.v_low_rank_dim,
+                dtype=attn.x_r.dtype,
+            )
+            state_dict[f"{block_prefix}.att.v2"] = torch.zeros(
+                model.config.v_low_rank_dim,
+                attn.value_dim,
+                dtype=attn.x_r.dtype,
+            )
+        else:
+            state_dict[f"{block_prefix}.att.v1"] = (
+                attn.v_lora.lora[0].weight.detach().clone().transpose(0, 1)
+            )
+            state_dict[f"{block_prefix}.att.v2"] = (
+                attn.v_lora.lora[2].weight.detach().clone().transpose(0, 1)
+            )
+            state_dict[f"{block_prefix}.att.v0"] = (
+                attn.v_lora.lora[2].bias.detach().clone().view(1, 1, -1)
+            )
+
+        ffn = layer.ffn
+        state_dict[f"{block_prefix}.ffn.x_k"] = ffn.x_k.detach().clone().view(1, 1, -1)
+        state_dict[f"{block_prefix}.ffn.key.weight"] = ffn.key.weight.detach().clone()
+        state_dict[f"{block_prefix}.ffn.value.weight"] = (
+            ffn.value.weight.detach().clone()
+        )
+
+    return state_dict
+
+
 def _initialize_module_parameters(module: torch.nn.Module) -> None:
     generator = torch.Generator().manual_seed(0)
     for name, parameter in module.named_parameters():
-        if parameter.ndim == 0:
+        if parameter.ndim == 0 or name.endswith(".bias"):
             parameter.data.zero_()
-        elif name.endswith(".bias"):
-            parameter.data.zero_()
-        elif "g_norm.weight" in name:
-            parameter.data.fill_(1.0)
-        elif "k_a" in name:
+        elif "g_norm.weight" in name or "k_a" in name:
             parameter.data.fill_(1.0)
         else:
             parameter.data.normal_(mean=0.0, std=0.02, generator=generator)
 
 
-def _make_prefill_metadata(seq_len: int, *, device: torch.device) -> LinearAttentionMetadata:
+def _make_prefill_metadata(
+    seq_len: int, *, device: torch.device
+) -> LinearAttentionMetadata:
     return LinearAttentionMetadata(
         num_prefills=1,
         num_prefill_tokens=seq_len,
@@ -117,7 +241,9 @@ def _make_multi_decode_metadata(
             0, num_decodes + 1, dtype=torch.int32, device=device
         ),
         seq_lens=torch.tensor(total_seq_lens, dtype=torch.int32, device=device),
-        state_indices_tensor=torch.tensor(state_indices, dtype=torch.long, device=device),
+        state_indices_tensor=torch.tensor(
+            state_indices, dtype=torch.long, device=device
+        ),
     )
 
 
@@ -142,7 +268,9 @@ def _make_multi_prefill_metadata(
             device=device,
         ),
         seq_lens=torch.tensor(total_seq_lens, dtype=torch.int32, device=device),
-        state_indices_tensor=torch.tensor(state_indices, dtype=torch.long, device=device),
+        state_indices_tensor=torch.tensor(
+            state_indices, dtype=torch.long, device=device
+        ),
     )
 
 
@@ -162,7 +290,9 @@ def _make_cache_all_prefill_metadata(
         num_decode_tokens=0,
         query_start_loc=torch.tensor([0, query_len], dtype=torch.int32, device=device),
         seq_lens=torch.tensor([total_seq_len], dtype=torch.int32, device=device),
-        state_indices_tensor=torch.tensor([block_table], dtype=torch.long, device=device),
+        state_indices_tensor=torch.tensor(
+            [block_table], dtype=torch.long, device=device
+        ),
         num_computed_tokens=torch.tensor(
             [num_computed_tokens], dtype=torch.int32, device=device
         ),
@@ -203,7 +333,9 @@ def _make_cache_all_multi_prefill_metadata(
         num_decode_tokens=0,
         query_start_loc=torch.tensor(query_start_loc, dtype=torch.int32, device=device),
         seq_lens=torch.tensor(total_seq_lens, dtype=torch.int32, device=device),
-        state_indices_tensor=torch.tensor(block_tables, dtype=torch.long, device=device),
+        state_indices_tensor=torch.tensor(
+            block_tables, dtype=torch.long, device=device
+        ),
         num_computed_tokens=torch.tensor(
             num_computed_tokens, dtype=torch.int32, device=device
         ),
@@ -249,7 +381,9 @@ def _make_cache_all_decode_metadata(
         num_decode_tokens=1,
         query_start_loc=torch.tensor([0, 1], dtype=torch.int32, device=device),
         seq_lens=torch.tensor([total_seq_len], dtype=torch.int32, device=device),
-        state_indices_tensor=torch.tensor([block_table], dtype=torch.long, device=device),
+        state_indices_tensor=torch.tensor(
+            [block_table], dtype=torch.long, device=device
+        ),
         num_computed_tokens=torch.tensor(
             [num_computed_tokens], dtype=torch.int32, device=device
         ),
@@ -271,7 +405,7 @@ def _make_cache_all_decode_metadata(
     )
 
 
-def _require_reference_checkpoint() -> tuple[Path, object]:
+def _require_reference_checkpoint() -> tuple[Path, Any]:
     if pytest is None:
         raise RuntimeError("pytest is required to run RWKV7 integration tests.")
 
@@ -282,6 +416,8 @@ def _require_reference_checkpoint() -> tuple[Path, object]:
         pytest.skip("Set VLLM_RWKV7_TEST_MODEL_PATH to run RWKV7 parity tests.")
     if not fla_path:
         pytest.skip("Set VLLM_RWKV7_TEST_FLA_PATH to run RWKV7 parity tests.")
+    assert model_path is not None
+    assert fla_path is not None
 
     model_dir = Path(model_path)
     fla_dir = Path(fla_path)
@@ -355,6 +491,55 @@ def test_rwkv7_block_forward_without_metadata():
             cleanup_dist_env_and_memory()
 
 
+def test_rwkv7_load_weights_supports_native_pth_names(tmp_path):
+    config = _make_config()
+    model_path = _write_rwkv7_config_dir(tmp_path, config)
+    vllm_config = VllmConfig(
+        model_config=ModelConfig(
+            str(model_path),
+            trust_remote_code=False,
+            dtype="float32",
+            runner="generate",
+        ),
+        parallel_config=ParallelConfig(
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+        ),
+        cache_config=CacheConfig(),
+        device_config=DeviceConfig("cpu"),
+    )
+
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            model = RWKV7ForCausalLM(vllm_config=vllm_config)
+            _initialize_module_parameters(model)
+            expected_state = {
+                name: parameter.detach().clone()
+                for name, parameter in model.named_parameters()
+            }
+            native_state = _make_native_rwkv7_state_dict(model)
+
+            for parameter in model.parameters():
+                parameter.data.zero_()
+
+            loaded_weights = model.load_weights(native_state.items())
+            expected_names = {name for name, _ in model.named_parameters()}
+
+            assert loaded_weights == expected_names
+            for name, parameter in model.named_parameters():
+                torch.testing.assert_close(parameter, expected_state[name])
+        finally:
+            cleanup_dist_env_and_memory()
+
+
 def test_rwkv7_block_registers_static_forward_context():
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
@@ -371,8 +556,7 @@ def test_rwkv7_block_registers_static_forward_context():
             prefix = "model.layers.0"
             block = RWKV7Block(config=config, layer_idx=0, prefix=prefix)
             assert (
-                vllm_config.compilation_config.static_forward_context[prefix]
-                is block
+                vllm_config.compilation_config.static_forward_context[prefix] is block
             )
             assert (
                 vllm_config.compilation_config.static_forward_context[f"{prefix}.attn"]
@@ -514,9 +698,7 @@ def test_rwkv7_fused_recurrent_checkpoint_states_match_reference():
 
     torch.testing.assert_close(out_fused, out_ref, rtol=2e-3, atol=1e-1)
     torch.testing.assert_close(state_fused, state_ref, rtol=2e-3, atol=1e-1)
-    torch.testing.assert_close(
-        checkpoint_fused, checkpoint_ref, rtol=2e-3, atol=1e-1
-    )
+    torch.testing.assert_close(checkpoint_fused, checkpoint_ref, rtol=2e-3, atol=1e-1)
 
 
 def test_rwkv7_block_updates_cached_states():
@@ -601,7 +783,9 @@ def test_rwkv7_block_batches_decode_tokens_without_changing_results():
                 )
 
             block_batched.kv_cache = make_cache()
-            block_ref.kv_cache = tuple(cache.clone() for cache in block_batched.kv_cache)
+            block_ref.kv_cache = tuple(
+                cache.clone() for cache in block_batched.kv_cache
+            )
 
             hidden_states = torch.randn(
                 2, config.hidden_size, generator=generator, dtype=torch.float32
@@ -618,10 +802,12 @@ def test_rwkv7_block_batches_decode_tokens_without_changing_results():
             v_first_ref = torch.empty_like(hidden_states)
             for idx, slot_id in enumerate([0, 1]):
                 states = block_ref._get_kv_state(slot_id, use_initial_state=True)
-                out, v_first_out, attn_shift, recurrent, ffn_shift = block_ref._run_sequence(
-                    hidden_states[idx : idx + 1],
-                    None,
-                    *states,
+                out, v_first_out, attn_shift, recurrent, ffn_shift = (
+                    block_ref._run_sequence(
+                        hidden_states[idx : idx + 1],
+                        None,
+                        *states,
+                    )
                 )
                 output_ref[idx : idx + 1] = out
                 v_first_ref[idx : idx + 1] = v_first_out
@@ -629,7 +815,9 @@ def test_rwkv7_block_batches_decode_tokens_without_changing_results():
 
             torch.testing.assert_close(output_batched, output_ref)
             torch.testing.assert_close(v_first_batched, v_first_ref)
-            for batched_state, ref_state in zip(block_batched.kv_cache, block_ref.kv_cache):
+            for batched_state, ref_state in zip(
+                block_batched.kv_cache, block_ref.kv_cache
+            ):
                 torch.testing.assert_close(batched_state, ref_state)
         finally:
             cleanup_dist_env_and_memory()
@@ -676,7 +864,9 @@ def test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda():
                 )
 
             block_batched.kv_cache = make_cache()
-            block_ref.kv_cache = tuple(cache.clone() for cache in block_batched.kv_cache)
+            block_ref.kv_cache = tuple(
+                cache.clone() for cache in block_batched.kv_cache
+            )
 
             hidden_states = torch.randn(
                 2,
@@ -696,10 +886,12 @@ def test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda():
             v_first_ref = torch.empty_like(hidden_states)
             for idx, slot_id in enumerate([0, 1]):
                 states = block_ref._get_kv_state(slot_id, use_initial_state=True)
-                out, v_first_out, attn_shift, recurrent, ffn_shift = block_ref._run_sequence(
-                    hidden_states[idx : idx + 1],
-                    None,
-                    *states,
+                out, v_first_out, attn_shift, recurrent, ffn_shift = (
+                    block_ref._run_sequence(
+                        hidden_states[idx : idx + 1],
+                        None,
+                        *states,
+                    )
                 )
                 output_ref[idx : idx + 1] = out
                 v_first_ref[idx : idx + 1] = v_first_out
@@ -709,7 +901,9 @@ def test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda():
             torch.testing.assert_close(
                 v_first_batched, v_first_ref, rtol=2e-4, atol=1e-3
             )
-            for batched_state, ref_state in zip(block_batched.kv_cache, block_ref.kv_cache):
+            for batched_state, ref_state in zip(
+                block_batched.kv_cache, block_ref.kv_cache
+            ):
                 torch.testing.assert_close(
                     batched_state, ref_state, rtol=2e-4, atol=1e-3
                 )
@@ -752,7 +946,9 @@ def test_rwkv7_block_batches_prefill_tokens_without_changing_results():
                 )
 
             block_batched.kv_cache = make_cache()
-            block_ref.kv_cache = tuple(cache.clone() for cache in block_batched.kv_cache)
+            block_ref.kv_cache = tuple(
+                cache.clone() for cache in block_batched.kv_cache
+            )
 
             query_lens = [2, 3]
             total_seq_lens = [2, 5]
@@ -787,10 +983,12 @@ def test_rwkv7_block_batches_prefill_tokens_without_changing_results():
                     slot_id,
                     use_initial_state=total_seq_len > query_len,
                 )
-                out, v_first_out, attn_shift, recurrent, ffn_shift = block_ref._run_sequence(
-                    hidden_states[start:end],
-                    None,
-                    *states,
+                out, v_first_out, attn_shift, recurrent, ffn_shift = (
+                    block_ref._run_sequence(
+                        hidden_states[start:end],
+                        None,
+                        *states,
+                    )
                 )
                 output_ref[start:end] = out
                 v_first_ref[start:end] = v_first_out
@@ -799,7 +997,9 @@ def test_rwkv7_block_batches_prefill_tokens_without_changing_results():
 
             torch.testing.assert_close(output_batched, output_ref)
             torch.testing.assert_close(v_first_batched, v_first_ref)
-            for batched_state, ref_state in zip(block_batched.kv_cache, block_ref.kv_cache):
+            for batched_state, ref_state in zip(
+                block_batched.kv_cache, block_ref.kv_cache
+            ):
                 torch.testing.assert_close(batched_state, ref_state)
         finally:
             cleanup_dist_env_and_memory()
@@ -1022,13 +1222,9 @@ def test_rwkv7_block_cache_all_prefill_writes_aligned_states():
                 state = (attn_shift, recurrent, ffn_shift)
 
             torch.testing.assert_close(output_all, output_ref, rtol=2e-4, atol=1e-4)
-            torch.testing.assert_close(
-                v_first_all, v_first_ref, rtol=2e-4, atol=1e-4
-            )
+            torch.testing.assert_close(v_first_all, v_first_ref, rtol=2e-4, atol=1e-4)
             for cached_all, cached_ref in zip(block_all.kv_cache, block_ref.kv_cache):
-                torch.testing.assert_close(
-                    cached_all, cached_ref, rtol=2e-4, atol=1e-4
-                )
+                torch.testing.assert_close(cached_all, cached_ref, rtol=2e-4, atol=1e-4)
         finally:
             cleanup_dist_env_and_memory()
 
@@ -1105,22 +1301,24 @@ def test_rwkv7_block_cache_all_prefill_batches_multiple_sequences():
                 [(0, 8, 3), (8, 10, 4)],
             ]
             for query_len, boundaries in zip(query_lens, ref_boundaries, strict=True):
-                seq_hidden = hidden_states[start:start + query_len]
+                seq_hidden = hidden_states[start : start + query_len]
                 state = (None, None, None)
                 seq_output = torch.empty_like(seq_hidden)
                 seq_v_first = torch.empty_like(seq_hidden)
                 for boundary_start, boundary_end, slot_id in boundaries:
-                    out, vf_out, attn_shift, recurrent, ffn_shift = block_ref._run_sequence(
-                        seq_hidden[boundary_start:boundary_end],
-                        None,
-                        *state,
+                    out, vf_out, attn_shift, recurrent, ffn_shift = (
+                        block_ref._run_sequence(
+                            seq_hidden[boundary_start:boundary_end],
+                            None,
+                            *state,
+                        )
                     )
                     seq_output[boundary_start:boundary_end] = out
                     seq_v_first[boundary_start:boundary_end] = vf_out
                     block_ref._store_kv_state(slot_id, attn_shift, recurrent, ffn_shift)
                     state = (attn_shift, recurrent, ffn_shift)
-                output_ref[start:start + query_len] = seq_output
-                v_first_ref[start:start + query_len] = seq_v_first
+                output_ref[start : start + query_len] = seq_output
+                v_first_ref[start : start + query_len] = seq_v_first
                 start += query_len
 
             torch.testing.assert_close(output_all, output_ref)
@@ -1212,15 +1410,15 @@ def test_rwkv7_reference_parity_full_forward():
 
     model_path, reference_cls = _require_reference_checkpoint()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    inputs = tokenizer(
-        "Hello RWKV7, this is a parity check.", return_tensors="pt"
-    )["input_ids"].to("cuda")
+    inputs = tokenizer("Hello RWKV7, this is a parity check.", return_tensors="pt")[
+        "input_ids"
+    ].to("cuda")
     flat_input_ids = inputs[0]
     positions = torch.arange(flat_input_ids.numel(), device="cuda", dtype=torch.long)
 
-    reference_model = reference_cls.from_pretrained(
-        model_path, dtype=torch.float32
-    ).eval().to("cuda")
+    reference_model = (
+        reference_cls.from_pretrained(model_path, dtype=torch.float32).eval().to("cuda")
+    )
     vllm_config = _make_vllm_config(model_path)
 
     with set_current_vllm_config(vllm_config):
@@ -1270,13 +1468,13 @@ def test_rwkv7_reference_parity_prefill_decode():
 
     model_path, reference_cls = _require_reference_checkpoint()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    prompt_ids = tokenizer(
-        "The capital of France is", return_tensors="pt"
-    )["input_ids"].to("cuda")
+    prompt_ids = tokenizer("The capital of France is", return_tensors="pt")[
+        "input_ids"
+    ].to("cuda")
 
-    reference_model = reference_cls.from_pretrained(
-        model_path, dtype=torch.float32
-    ).eval().to("cuda")
+    reference_model = (
+        reference_cls.from_pretrained(model_path, dtype=torch.float32).eval().to("cuda")
+    )
     vllm_config = _make_vllm_config(model_path)
 
     with set_current_vllm_config(vllm_config):
@@ -1339,9 +1537,7 @@ def test_rwkv7_reference_parity_prefill_decode():
                     [current_ids.shape[1]], device="cuda", dtype=torch.long
                 )
 
-                with torch.no_grad(), set_forward_context(
-                    decode_metadata, vllm_config
-                ):
+                with torch.no_grad(), set_forward_context(decode_metadata, vllm_config):
                     hidden_states = vllm_model(
                         input_ids=next_token,
                         positions=position,

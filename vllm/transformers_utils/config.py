@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
 import huggingface_hub
+import regex as re
 import torch
 from huggingface_hub import constants, get_safetensors_metadata
 from packaging.version import Version
@@ -65,6 +66,18 @@ else:
 MISTRAL_CONFIG_NAME = "params.json"
 
 logger = init_logger(__name__)
+
+_PT_CHECKPOINT_EXTENSIONS = {".pt", ".pth"}
+_NON_HF_METADATA_EXTENSIONS = _PT_CHECKPOINT_EXTENSIONS | {".txt"}
+
+
+def _is_hf_metadata_source_path(path: str | Path) -> bool:
+    path_str = os.fspath(path)
+    if os.path.isdir(path_str):
+        return True
+    if os.path.isfile(path_str):
+        return os.path.splitext(path_str)[1].lower() not in _NON_HF_METADATA_EXTENSIONS
+    return True
 
 
 class LazyConfigDict(dict):
@@ -562,6 +575,9 @@ def maybe_override_with_speculators(
     Returns:
         Tuple of (resolved_model, resolved_tokenizer, speculative_config)
     """
+    if _is_pt_checkpoint_file(model):
+        return model, tokenizer, vllm_speculative_config
+
     if check_gguf_file(model):
         kwargs["gguf_file"] = Path(model).name
         gguf_model_repo = Path(model).parent
@@ -600,6 +616,120 @@ def maybe_override_with_speculators(
     return model, tokenizer, speculative_config
 
 
+def _is_pt_checkpoint_file(model: str | Path) -> bool:
+    model_path = Path(model)
+    return (
+        model_path.is_file() and model_path.suffix.lower() in _PT_CHECKPOINT_EXTENSIONS
+    )
+
+
+def _looks_like_native_rwkv7_state_dict(state_dict: dict[str, Any]) -> bool:
+    required_keys = {"emb.weight", "ln_out.weight", "head.weight"}
+    if not required_keys.issubset(state_dict):
+        return False
+    return (
+        "blocks.0.att.receptance.weight" in state_dict
+        and "blocks.0.ffn.key.weight" in state_dict
+    )
+
+
+def _extract_native_rwkv7_state_dict(loaded: Any) -> dict[str, Any] | None:
+    if isinstance(loaded, dict):
+        if _looks_like_native_rwkv7_state_dict(loaded):
+            return loaded
+        for key in ("state_dict", "model", "weights"):
+            nested = loaded.get(key)
+            if isinstance(nested, dict) and _looks_like_native_rwkv7_state_dict(nested):
+                return nested
+    return None
+
+
+def _infer_max_position_embeddings_from_name(model_path: Path) -> int:
+    match = re.search(r"ctx(\d+)", model_path.stem)
+    if match is not None:
+        return int(match.group(1))
+    return 2048
+
+
+@cache
+def _try_infer_native_rwkv7_config(model: str | Path) -> PretrainedConfig | None:
+    model_path = Path(model)
+    if not _is_pt_checkpoint_file(model_path):
+        return None
+
+    loaded = torch.load(model_path, map_location="cpu", weights_only=True)
+    state_dict = _extract_native_rwkv7_state_dict(loaded)
+    if state_dict is None:
+        return None
+
+    from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
+
+    emb_weight = state_dict["emb.weight"]
+    hidden_size = int(emb_weight.shape[1])
+    vocab_size = int(emb_weight.shape[0])
+
+    layer_indices = sorted(
+        {
+            int(match.group(1))
+            for key in state_dict
+            if (match := re.match(r"blocks\.(\d+)\.", key)) is not None
+        }
+    )
+    if not layer_indices:
+        raise ValueError(
+            f"Unable to infer RWKV7 layer count from checkpoint: {model_path}"
+        )
+    num_hidden_layers = layer_indices[-1] + 1
+
+    r_k = state_dict["blocks.0.att.r_k"]
+    num_heads = int(r_k.shape[0])
+    head_dim = int(r_k.shape[1])
+
+    value_dim = [
+        int(state_dict[f"blocks.{layer_idx}.att.output.weight"].shape[1])
+        for layer_idx in range(num_hidden_layers)
+    ]
+
+    intermediate_size = int(state_dict["blocks.0.ffn.key.weight"].shape[0])
+    hidden_ratio = (
+        intermediate_size // hidden_size
+        if intermediate_size % hidden_size == 0
+        else None
+    )
+
+    v_lora_layer_idx = next(
+        (
+            layer_idx
+            for layer_idx in range(num_hidden_layers)
+            if f"blocks.{layer_idx}.att.v1" in state_dict
+        ),
+        0,
+    )
+
+    config = RWKV7Config(
+        vocab_size=vocab_size,
+        hidden_size=hidden_size,
+        hidden_ratio=hidden_ratio,
+        intermediate_size=intermediate_size,
+        num_hidden_layers=num_hidden_layers,
+        head_dim=head_dim,
+        num_heads=num_heads,
+        decay_low_rank_dim=int(state_dict["blocks.0.att.w1"].shape[1]),
+        gate_low_rank_dim=int(state_dict["blocks.0.att.g1"].shape[1]),
+        a_low_rank_dim=int(state_dict["blocks.0.att.a1"].shape[1]),
+        v_low_rank_dim=int(state_dict[f"blocks.{v_lora_layer_idx}.att.v1"].shape[1]),
+        hidden_act="sqrelu",
+        max_position_embeddings=_infer_max_position_embeddings_from_name(model_path),
+        norm_first=True,
+        norm_bias="ln_out.bias" in state_dict,
+        norm_eps=1e-5,
+        tie_word_embeddings=False,
+        value_dim=value_dim,
+        architectures=["RWKV7ForCausalLM"],
+    )
+    return config
+
+
 def get_config(
     model: str | Path,
     trust_remote_code: bool,
@@ -610,6 +740,15 @@ def get_config(
     hf_overrides_fn: Callable[[PretrainedConfig], PretrainedConfig] | None = None,
     **kwargs,
 ) -> PretrainedConfig:
+    native_rwkv7_config = _try_infer_native_rwkv7_config(model)
+    if native_rwkv7_config is not None:
+        if hf_overrides_kw is not None:
+            native_rwkv7_config.update(hf_overrides_kw)
+        if hf_overrides_fn is not None:
+            native_rwkv7_config = hf_overrides_fn(native_rwkv7_config)
+        native_rwkv7_config = _maybe_remap_hf_config_attrs(native_rwkv7_config)
+        return native_rwkv7_config
+
     # Separate model folder from file path for GGUF models
 
     _is_gguf = is_gguf(model)
@@ -807,6 +946,9 @@ def get_pooling_config(
         A dictionary containing the pooling type and whether
             normalization is used, or None if no pooling configuration is found.
     """
+    if not _is_hf_metadata_source_path(model):
+        return None
+
     if is_remote_gguf(model):
         model, _ = split_remote_gguf(model)
 
@@ -897,6 +1039,9 @@ def get_sentence_transformer_tokenizer_config(
     - dict: A dictionary containing the configuration parameters
     for the Sentence Transformer BERT model.
     """
+    if not _is_hf_metadata_source_path(model):
+        return None
+
     sentence_transformer_config_files = [
         "sentence_bert_config.json",
         "sentence_roberta_config.json",
@@ -1025,6 +1170,8 @@ def get_hf_image_processor_config(
     # ModelScope does not provide an interface for image_processor
     if envs.VLLM_USE_MODELSCOPE:
         return dict()
+    if not _is_hf_metadata_source_path(model):
+        return dict()
     # Separate model folder from file path for GGUF models
     if check_gguf_file(model):
         model = Path(model).parent
@@ -1123,6 +1270,9 @@ def try_get_dense_modules(
     model: str | Path,
     revision: str | None = None,
 ) -> list[dict[str, Any]] | None:
+    if not _is_hf_metadata_source_path(model):
+        return None
+
     try:
         modules = get_hf_file_to_dict("modules.json", model, revision)
         if not modules:
