@@ -107,11 +107,21 @@ class RWKVTokenizer(TokenizerLike):
 
         self._known_token_slots = max(self._id_to_token) + 1
         self._vocab_size = ((self._known_token_slots + 63) // 64) * 64
+        self._id_to_token_str = {
+            token_id: self._token_bytes_to_str(token_bytes)
+            for token_id, token_bytes in self._id_to_token.items()
+        }
+        self._token_str_to_id = {
+            token_str: token_id for token_id, token_str in self._id_to_token_str.items()
+        }
+        self._vocab = dict(self._token_str_to_id)
+        self._empty_added_vocab: dict[str, int] = {}
         self._special_token_map = self._build_special_token_map()
         self._all_special_tokens = list(self._special_token_map)
         self._all_special_ids = [
             self._special_token_map[token] for token in self._all_special_tokens
         ]
+        self._all_special_ids_set = set(self._all_special_ids)
         self._default_special_id = self._resolve_default_special_id()
         self._max_chars_per_token = max(
             len(token) for token in self._id_to_token.values()
@@ -214,13 +224,10 @@ class RWKVTokenizer(TokenizerLike):
         )
 
     def get_vocab(self) -> dict[str, int]:
-        return {
-            self._token_bytes_to_str(token): token_id
-            for token_id, token in self._id_to_token.items()
-        }
+        return self._vocab
 
     def get_added_vocab(self) -> dict[str, int]:
-        return {}
+        return self._empty_added_vocab
 
     def encode(
         self,
@@ -281,13 +288,14 @@ class RWKVTokenizer(TokenizerLike):
 
     def convert_tokens_to_ids(self, tokens: str | list[str]) -> int | list[int]:
         if isinstance(tokens, str):
-            return self._token_to_id.get(
-                self._token_str_to_bytes(tokens), self._default_special_id
-            )
+            return self._token_str_to_id.get(tokens, self._default_special_id)
         return [self.convert_tokens_to_ids(token) for token in tokens]
 
     def convert_tokens_to_string(self, tokens: list[str]) -> str:
-        raw = b"".join(self._token_str_to_bytes(token) for token in tokens)
+        raw = b"".join(
+            self._id_to_token.get(self._token_str_to_id.get(token, -1), b"")
+            for token in tokens
+        )
         return raw.decode("utf-8", errors="replace")
 
     def decode(
@@ -296,7 +304,7 @@ class RWKVTokenizer(TokenizerLike):
         if isinstance(ids, int):
             ids = [ids]
         token_bytes = []
-        special_ids = set(self._all_special_ids) if skip_special_tokens else set()
+        special_ids = self._all_special_ids_set if skip_special_tokens else ()
         for token_id in ids:
             if token_id in special_ids:
                 continue
@@ -308,12 +316,10 @@ class RWKVTokenizer(TokenizerLike):
         ids: Sequence[int],
         skip_special_tokens: bool = False,
     ) -> list[str]:
-        special_ids = set(self._all_special_ids) if skip_special_tokens else set()
+        special_ids = self._all_special_ids_set if skip_special_tokens else ()
         tokens = []
         for token_id in ids:
             if token_id in special_ids:
                 continue
-            tokens.append(
-                self._token_bytes_to_str(self._id_to_token.get(token_id, b""))
-            )
+            tokens.append(self._id_to_token_str.get(token_id, ""))
         return tokens

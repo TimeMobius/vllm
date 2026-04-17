@@ -43,6 +43,14 @@ def test_rwkv_tokenizer_round_trips_and_prefers_longest_match(tmp_path):
 
     assert tokenizer.encode("ab") == [3]
     assert tokenizer.decode([3, 2]) == "abb"
+    assert tokenizer.convert_ids_to_tokens([3, 2]) == ["ab", "b"]
+    assert tokenizer.convert_ids_to_tokens([6, 3, 7], skip_special_tokens=True) == [
+        "ab"
+    ]
+    assert tokenizer.convert_tokens_to_ids(["ab", "b"]) == [3, 2]
+    assert tokenizer.convert_tokens_to_string(["ab", "b"]) == "abb"
+    assert tokenizer.get_vocab()["ab"] == 3
+    assert tokenizer.get_added_vocab() == {}
     assert tokenizer.eos_token_id == 5
     assert tokenizer.bos_token_id == 5
     assert tokenizer.pad_token_id == 5
