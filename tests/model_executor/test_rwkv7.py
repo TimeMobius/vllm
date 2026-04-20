@@ -37,7 +37,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
     get_temporal_copy_spec,
 )
 from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
-from vllm.model_executor.models.rwkv7 import RWKV7Block, RWKV7ForCausalLM
+from vllm.model_executor.models.rwkv7 import RWKV7Block, RWKV7ForCausalLM, RWKV7Model
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
@@ -1016,6 +1016,24 @@ def test_rwkv7_mamba_state_copy_function_types():
 
 def test_rwkv7_declares_mamba_prefix_caching_support():
     assert getattr(RWKV7ForCausalLM, "supports_mamba_prefix_caching", False) is True
+
+
+def test_rwkv7_pp_runtime_uses_effective_vllm_dtype():
+    dummy_model = SimpleNamespace(
+        model_config=SimpleNamespace(dtype=torch.bfloat16),
+        config=SimpleNamespace(torch_dtype=torch.float32),
+    )
+
+    assert RWKV7Model._get_effective_model_dtype(dummy_model) == torch.bfloat16
+
+
+def test_rwkv7_pp_runtime_falls_back_to_hf_dtype_without_model_config():
+    dummy_model = SimpleNamespace(
+        model_config=None,
+        config=SimpleNamespace(torch_dtype=torch.float32),
+    )
+
+    assert RWKV7Model._get_effective_model_dtype(dummy_model) == torch.float32
 
 
 def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_enabled():

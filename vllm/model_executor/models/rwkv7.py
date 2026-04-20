@@ -2002,6 +2002,7 @@ class RWKV7Model(nn.Module):
             ),
             prefix=f"{prefix}.layers",
         )
+        self.model_config = model_config
 
         self.norm = (
             nn.LayerNorm(
@@ -2023,6 +2024,16 @@ class RWKV7Model(nn.Module):
         # stay in the model dtype so PP does not upcast the entire hidden-state
         # stream and blow up memory usage for native checkpoints.
         return model_dtype
+
+    def _get_effective_model_dtype(self) -> torch.dtype:
+        # HF configs may keep `torch_dtype=float32` even when vLLM downcasts the
+        # actual execution dtype (for example, auto -> bfloat16). PP activations
+        # must follow the effective vLLM model dtype rather than the raw HF
+        # config field to keep stage-to-stage transfers aligned with module
+        # parameter dtypes.
+        if self.model_config is not None:
+            return self.model_config.dtype
+        return self.config.torch_dtype
 
     def make_empty_intermediate_tensors(
         self, batch_size: int, dtype: torch.dtype, device: torch.device
@@ -2068,7 +2079,7 @@ class RWKV7Model(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             v_first = intermediate_tensors["v_first"]
-            runtime_dtype = self._pp_runtime_dtype(self.config.torch_dtype)
+            runtime_dtype = self._pp_runtime_dtype(self._get_effective_model_dtype())
             if hidden_states.dtype != runtime_dtype:
                 hidden_states = hidden_states.to(runtime_dtype)
             if v_first.dtype != runtime_dtype:
@@ -2089,7 +2100,7 @@ class RWKV7Model(nn.Module):
 
         if not get_pp_group().is_last_rank:
             assert v_first is not None
-            runtime_dtype = self._pp_runtime_dtype(hidden_states.dtype)
+            runtime_dtype = self._pp_runtime_dtype(self._get_effective_model_dtype())
             if hidden_states.dtype != runtime_dtype:
                 hidden_states = hidden_states.to(runtime_dtype)
             if v_first.dtype != runtime_dtype:
