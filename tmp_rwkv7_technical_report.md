@@ -2444,3 +2444,61 @@ Interpretation:
   stable end-to-end speedup for this 0.4B offline generation workload
 - differences of `-3.3%` to `+2.5%` in these runs are within the practical
   noise band for this setup
+
+## 2026-04-22 native vocab Python bytes parser fix
+
+Server-side native `.pth` launch with `rwkv_vocab_v20250609.txt` exposed a
+Rust tokenizer parser bug:
+
+- launch used:
+    - model: `/mnt/data/Models/RWKV-7-30B/Mobius-r7-base-30B-1230.pth`
+    - tokenizer: `/mnt/data/Codes/RWKV/RWKV_tokenizer/rwkv_vocab_v20250609.txt`
+    - `--tokenizer-mode rwkv`
+- failure happened before model execution, while constructing the renderer
+  tokenizer
+- stack reached:
+    - `vllm/tokenizers/rwkv.py::_build_fast_backend`
+    - `FastWorldTokenizer(str(self.vocab_path))`
+    - Rust `rwkv-tokenizer/src/lib.rs`
+
+Root cause:
+
+- the Rust parser only supported bytes literals made of repeated `\xNN`
+  escapes
+- newer native RWKV vocab files can contain Python bytes reprs such as plain
+  ASCII bytes and common escapes
+- the old parser used `unwrap()`, so unsupported bytes reprs caused a Rust
+  panic that propagated through PyO3 as `PanicException`
+
+Fix:
+
+- Rust tokenizer commit:
+    - `aa6f61a Parse Python bytes vocab tokens`
+- parser now supports:
+    - plain ASCII bytes
+    - escaped quotes and backslashes
+    - `\n`, `\r`, `\t`, `\a`, `\b`, `\f`, `\v`
+    - `\xNN`
+    - octal escapes
+- byte-length mismatches and parser failures now return `io::Error` instead of
+  panicking
+
+Validation:
+
+- `cargo test --manifest-path rwkv-tokenizer/Cargo.toml`
+    - `7 passed`
+- `cargo check --manifest-path bindings/python/Cargo.toml`
+    - passed
+
+Operational note:
+
+- server needs this Rust commit pulled and the Python extension rebuilt inside
+  the active conda env:
+
+```bash
+cd /mnt/data/Codes/RWKV/vllm/vllm_rwkv7/rwkv-tokenizer
+git pull
+source ~/.cargo/env
+cd bindings/python
+python -m pip install -e .
+```

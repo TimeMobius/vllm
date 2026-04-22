@@ -1140,3 +1140,21 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
 - [x] Current conclusion:
     - Rust tokenizer helps tokenizer-only long text by about `14x-23x`
     - actual 0.4B long generation remains model-prefill dominated
+
+## 2026-04-22 server native vocab tokenizer panic
+
+- [x] Diagnosed server crash with native `.pth + rwkv_vocab_v20250609.txt`:
+    - Rust parser panic came from Python `bytes` repr tokens in the vocab
+    - old parser only handled pure `\xNN` bytes
+- [x] Fixed in `/home/liu/rwkv-tokenizer`:
+    - commit `aa6f61a Parse Python bytes vocab tokens`
+    - parser now supports plain ASCII bytes, common escapes, hex escapes, and
+      octal escapes
+    - parser errors now return `io::Error` instead of panic
+- [x] Validation:
+    - Rust tokenizer tests: `7 passed`
+    - Python binding cargo check: passed
+- [ ] Server action:
+    - push/pull Rust tokenizer commit `aa6f61a`
+    - reinstall binding in the target conda env from `bindings/python`
+    - rerun the 30B native `.pth` serve command

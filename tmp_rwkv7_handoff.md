@@ -2505,3 +2505,64 @@ Conclusion:
 - real 0.4B long-prompt generation does not show a meaningful end-to-end win
   because model prefill dominates the measured wall time
 - this matches the earlier short/prompt-heavy real-model observation
+
+## 2026-04-22 server native vocab bytes-literal parser fix
+
+Observed on server with native `.pth` model and tokenizer
+`rwkv_vocab_v20250609.txt`:
+
+```bash
+VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 vllm serve \
+  /mnt/data/Models/RWKV-7-30B/Mobius-r7-base-30B-1230.pth \
+  --tokenizer /mnt/data/Codes/RWKV/RWKV_tokenizer/rwkv_vocab_v20250609.txt \
+  --load-format pt \
+  --trust-remote-code \
+  --tokenizer-mode rwkv
+```
+
+Failure:
+
+- Rust tokenizer panicked in `rwkv-tokenizer/src/lib.rs`
+- stack reached `FastWorldTokenizer(str(self.vocab_path))`
+- root cause: native `v20250609` vocab contains Python `bytes` repr tokens that
+  are not pure `\xNN` sequences
+- old parser only handled pure hex byte reprs, so tokens like `b'\n'`,
+  `b'abc'`, `b'\\'`, `b'\''`, or octal escapes could hit
+  `Option::unwrap()`
+
+Fix committed in `/home/liu/rwkv-tokenizer`:
+
+- `aa6f61a Parse Python bytes vocab tokens`
+- added a Python bytes-literal parser for:
+    - plain ASCII bytes
+    - `\n`, `\r`, `\t`, `\a`, `\b`, `\f`, `\v`
+    - escaped quotes and backslashes
+    - `\xNN`
+    - octal escapes
+- changed parser failures and byte-length mismatches into `io::Error` instead
+  of panic
+- validation:
+    - `cargo test --manifest-path rwkv-tokenizer/Cargo.toml`: `7 passed`
+    - `cargo check --manifest-path bindings/python/Cargo.toml`: passed
+
+Server fix after this commit is pushed:
+
+```bash
+cd /mnt/data/Codes/RWKV/vllm/vllm_rwkv7/rwkv-tokenizer
+git pull
+source ~/.cargo/env
+cd bindings/python
+python -m pip install -e .
+```
+
+Quick verification:
+
+```bash
+python - <<'PY'
+from pyrwkv_tokenizer import WorldTokenizer
+tok = WorldTokenizer("/mnt/data/Codes/RWKV/RWKV_tokenizer/rwkv_vocab_v20250609.txt")
+print("from_buffer:", hasattr(WorldTokenizer, "from_buffer"))
+print("vocab_size:", tok.vocab_size())
+print("encode smoke:", tok.encode("hello\n\nworld")[:16])
+PY
+```
