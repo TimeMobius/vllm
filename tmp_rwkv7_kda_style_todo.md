@@ -1118,3 +1118,25 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - tokenizer/renderer pytest: `7 passed`
     - RWKV7 model pytest: `23 passed, 2 skipped`
     - targeted ruff, mypy-local, forbidden-imports: passed
+
+## 2026-04-22 real 0.4B long-prompt generation
+
+- [x] Ran actual 0.4B `LLM.generate` long-prompt comparison:
+    - model: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - context limit: `2048`
+    - prompt target: `1800` tokens
+    - fast mode: `tokenizer_mode=auto`
+    - slow mode: `tokenizer_mode=slow`
+- [x] Single long prompt result:
+    - `1800` input tokens, `8` output tokens
+    - fast median wall: `0.484391s`
+    - slow median wall: `0.469076s`
+    - practical result: no meaningful win; slow slightly ahead in this run
+- [x] Batch long prompt result:
+    - `4 x 1800` input tokens, `1` output token each
+    - fast median wall: `0.878082s`
+    - slow median wall: `0.900331s`
+    - practical result: no meaningful win; fast slightly ahead in this run
+- [x] Current conclusion:
+    - Rust tokenizer helps tokenizer-only long text by about `14x-23x`
+    - actual 0.4B long generation remains model-prefill dominated

@@ -2384,3 +2384,63 @@ Validation:
 - targeted pre-commit:
     - ruff format/check, mypy-local, forbidden-imports
     - passed
+
+## 2026-04-22 real 0.4B long-prompt generation benchmark
+
+After the tokenizer-only long-text benchmark, ran real vLLM generation on the
+0.4B HF model to check whether the tokenizer speedup is visible end-to-end.
+
+Environment:
+
+- model: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+- model context from config: `max_position_embeddings=2048`
+- vLLM settings:
+    - `max_model_len=2048`
+    - `enforce_eager=True`
+    - `gpu_memory_utilization=0.60`
+    - fast path: `tokenizer_mode=auto`
+    - slow path: `tokenizer_mode=slow`
+- prompt construction:
+    - generated from the HF slow tokenizer and trimmed to exactly `1800`
+      prompt tokens
+    - mixed Chinese, English, punctuation, repeated double-newline paragraph
+      separators, and RWKV/vLLM technical terms
+
+Single long prompt:
+
+- workload:
+    - `1` prompt
+    - `1800` input tokens
+    - `8` output tokens
+- fast `auto`:
+    - median wall: `0.484391s`
+    - median input TPS: `3716.009`
+    - median output TPS: `16.516`
+- slow:
+    - median wall: `0.469076s`
+    - median input TPS: `3837.332`
+    - median output TPS: `17.055`
+
+Batch long prompts:
+
+- workload:
+    - `4` prompts
+    - `1800` input tokens each
+    - `7200` input tokens total
+    - `1` output token per prompt
+- fast `auto`:
+    - median wall: `0.878082s`
+    - median input TPS: `8199.691`
+    - median output TPS: `4.555`
+- slow:
+    - median wall: `0.900331s`
+    - median input TPS: `7997.062`
+    - median output TPS: `4.443`
+
+Interpretation:
+
+- real long-prompt generation remains dominated by model prefill/decode time
+- the fast tokenizer's tokenizer-only improvement does not translate into a
+  stable end-to-end speedup for this 0.4B offline generation workload
+- differences of `-3.3%` to `+2.5%` in these runs are within the practical
+  noise band for this setup

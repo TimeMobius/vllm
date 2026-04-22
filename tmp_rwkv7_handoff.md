@@ -2460,3 +2460,48 @@ Validation after the fix:
     - `23 passed, 2 skipped`
 - targeted ruff format/check, mypy-local, forbidden-imports:
     - passed
+
+## 2026-04-22 real 0.4B long-prompt generation benchmark
+
+Ran real `LLM.generate` on
+`/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF` with long prompts near the model's
+configured context limit:
+
+- model config `max_position_embeddings`: `2048`
+- vLLM args:
+    - `max_model_len=2048`
+    - `enforce_eager=True`
+    - `gpu_memory_utilization=0.60`
+    - fast path: `tokenizer_mode=auto`
+    - slow path: `tokenizer_mode=slow`
+- benchmark logs:
+    - `/tmp/rwkv_real_long_auto_single.log`
+    - `/tmp/rwkv_real_long_slow_single.log`
+    - `/tmp/rwkv_real_long_auto_batch4.log`
+    - `/tmp/rwkv_real_long_slow_batch4.log`
+
+Results:
+
+- single long prompt:
+    - prompt tokens: `1800`
+    - output tokens: `8`
+    - fast median wall: `0.484391s`
+    - slow median wall: `0.469076s`
+    - interpretation: same practical band; slow was about `3.3%` faster in
+      this small sample, likely run-to-run/model scheduling noise
+- batch long prompts:
+    - prompts: `4`
+    - prompt tokens per prompt: `1800`
+    - total prompt tokens: `7200`
+    - output tokens: `4`
+    - fast median wall: `0.878082s`
+    - slow median wall: `0.900331s`
+    - interpretation: same practical band; fast was about `2.5%` faster by
+      median, but average wall time was effectively equal
+
+Conclusion:
+
+- tokenizer-only long text is still clearly faster with Rust
+- real 0.4B long-prompt generation does not show a meaningful end-to-end win
+  because model prefill dominates the measured wall time
+- this matches the earlier short/prompt-heavy real-model observation
