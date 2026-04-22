@@ -5,388 +5,388 @@
 - Branch: `codex/rwkv7-adapter-align`
 - Latest committed checkpoint before this round: `f94fd358bedcc9eaa9cd9d7c72a4a295b2d553ff`
 - Current service status:
-  - No `vllm serve` process is running now.
-  - No test ports are currently listening.
-  - RWKV7 compile now works on both:
-    - default PIECEWISE CUDA graphs
-    - `cudagraph_mode=none`
-  - No experimental environment variable is required anymore.
-  - The main remaining work is performance/cleanup, not basic compile correctness.
-  - Benchmark results are now tracked separately in:
-    - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+    - No `vllm serve` process is running now.
+    - No test ports are currently listening.
+    - RWKV7 compile now works on both:
+        - default PIECEWISE CUDA graphs
+        - `cudagraph_mode=none`
+    - No experimental environment variable is required anymore.
+    - The main remaining work is performance/cleanup, not basic compile correctness.
+    - Benchmark results are now tracked separately in:
+        - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
 
 ## Latest Update (2026-04-13)
 
 - Upgraded the remote serving benchmark utility:
-  - [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
-  - new capabilities:
-    - `--dispatch-mode burst`
-      - launches all requests immediately so queueing moves from the client
+    - [tmp_rwkv7_remote_concurrency_bench.py](/home/liu/vllm/tmp_rwkv7_remote_concurrency_bench.py)
+    - new capabilities:
+        - `--dispatch-mode burst`
+            - launches all requests immediately so queueing moves from the client
         worker pool to the remote vLLM service
-    - explicit `token_throughput_tps`
-      - now also exported as flat aliases:
-        - `token_throughput_tps_avg`
-        - `token_throughput_tps_min`
-        - `token_throughput_tps_max`
-    - per-request `request_token_throughput_tps`
-      - stored on every row in `requests.jsonl`
-      - summary stats include `avg / p50 / p95 / min / max`
-      - `weighted_avg` is also exported to reduce confusion from plain
+        - explicit `token_throughput_tps`
+            - now also exported as flat aliases:
+                - `token_throughput_tps_avg`
+                - `token_throughput_tps_min`
+                - `token_throughput_tps_max`
+        - per-request `request_token_throughput_tps`
+            - stored on every row in `requests.jsonl`
+            - summary stats include `avg / p50 / p95 / min / max`
+            - `weighted_avg` is also exported to reduce confusion from plain
         arithmetic averaging under heavy long-tail latency
-    - `token_throughput_tps_stats`
-      - 1-second bucketed `min / avg / max` token TPS within the active window
-    - `active_output_tps`
-      - measured from first request start to last request finish
-      - helps separate client-side submission queue time from server busy time
-    - `worker_count`
-    - `peak_inflight_requests`
-    - `avg_inflight_requests`
-    - `configured_concurrency` is now only meaningful in `closed_loop`
+        - `token_throughput_tps_stats`
+            - 1-second bucketed `min / avg / max` token TPS within the active window
+        - `active_output_tps`
+            - measured from first request start to last request finish
+            - helps separate client-side submission queue time from server busy time
+        - `worker_count`
+        - `peak_inflight_requests`
+        - `avg_inflight_requests`
+        - `configured_concurrency` is now only meaningful in `closed_loop`
       mode; in `burst` mode it will be `null`
-  - intended usage:
-    - `closed_loop`:
-      - fixed client concurrency benchmark
-    - `burst`:
-      - better for finding the remote service saturation point
+    - intended usage:
+        - `closed_loop`:
+            - fixed client concurrency benchmark
+        - `burst`:
+            - better for finding the remote service saturation point
 
 - Added a dedicated benchmark ledger:
-  - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
-  - it stores:
-    - run metadata
-    - prompt-set naming
-    - per-concurrency throughput rows
-    - raw JSON/log paths
+    - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
+    - it stores:
+        - run metadata
+        - prompt-set naming
+        - per-concurrency throughput rows
+        - raw JSON/log paths
 - Re-ran the eager throughput baseline on the local `0.4B` checkpoint:
-  - model:
-    - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
-  - script:
-    - [tmp_rwkv7_long_benchmark.py](/home/liu/vllm/tmp_rwkv7_long_benchmark.py)
-  - run id:
-    - `2026-04-13_eager_0p4b_mt64`
-  - config:
-    - `--enforce-eager`
-    - `max_tokens=64`
-    - `rounds=2`
-    - `warmup=1`
-    - concurrency `1/2/4/8`
-  - raw artifacts:
-    - [rwkv7_bench_0p4b_eager_64_20260413.json](/tmp/rwkv7_bench_0p4b_eager_64_20260413.json)
-    - [vllm_rwkv7_eager_bench_20260413.log](/tmp/vllm_rwkv7_eager_bench_20260413.log)
-  - aggregate TPS:
-    - `1`: `35.047 / 34.912`, avg `34.980`
-    - `2`: `68.610 / 71.110`, avg `69.860`
-    - `4`: `132.553 / 132.926`, avg `132.739`
-    - `8`: `215.131 / 214.844`, avg `214.987`
-  - correctness note:
-    - every concurrent round still matched the serial baseline
-  - interpretation:
-    - this is now the fresh eager reference point for the next round of
+    - model:
+        - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - script:
+        - [tmp_rwkv7_long_benchmark.py](/home/liu/vllm/tmp_rwkv7_long_benchmark.py)
+    - run id:
+        - `2026-04-13_eager_0p4b_mt64`
+    - config:
+        - `--enforce-eager`
+        - `max_tokens=64`
+        - `rounds=2`
+        - `warmup=1`
+        - concurrency `1/2/4/8`
+    - raw artifacts:
+        - [rwkv7_bench_0p4b_eager_64_20260413.json](/tmp/rwkv7_bench_0p4b_eager_64_20260413.json)
+        - [vllm_rwkv7_eager_bench_20260413.log](/tmp/vllm_rwkv7_eager_bench_20260413.log)
+    - aggregate TPS:
+        - `1`: `35.047 / 34.912`, avg `34.980`
+        - `2`: `68.610 / 71.110`, avg `69.860`
+        - `4`: `132.553 / 132.926`, avg `132.739`
+        - `8`: `215.131 / 214.844`, avg `214.987`
+    - correctness note:
+        - every concurrent round still matched the serial baseline
+    - interpretation:
+        - this is now the fresh eager reference point for the next round of
       `PIECEWISE` / `compile_no_cg` comparison
 - Added a dedicated TTFT / prefill-heavy benchmark tool:
-  - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
-  - this script records:
-    - `server_ready_sec`
-    - long-prompt streaming TTFT proxy
-    - fixed-prompt decode latency / ITL / TPOT
-  - important limitation:
-    - vLLM rejects `max_tokens=0`
-    - so the script uses streaming `max_tokens=1` TTFT as a prefill-heavy proxy,
+    - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
+    - this script records:
+        - `server_ready_sec`
+        - long-prompt streaming TTFT proxy
+        - fixed-prompt decode latency / ITL / TPOT
+    - important limitation:
+        - vLLM rejects `max_tokens=0`
+        - so the script uses streaming `max_tokens=1` TTFT as a prefill-heavy proxy,
       not true zero-decode prefill-only latency
 - Re-ran an eager TTFT baseline on the local `0.4B` checkpoint:
-  - run id:
-    - `2026-04-13_eager_0p4b_ttft`
-  - raw artifacts:
-    - [rwkv7_ttft_0p4b_eager_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_20260413.json)
-    - [vllm_rwkv7_ttft_eager_20260413.log](/tmp/vllm_rwkv7_ttft_eager_20260413.log)
-  - server ready:
-    - `30.034s`
-  - prefill-heavy TTFT proxy, `max_tokens=1`, avg TTFT:
-    - prompt len `64`: `188.986ms`
-    - prompt len `1024`: `2708.602ms`
-    - prompt len `1984`: `5409.289ms`
-  - decode profile, prompt len `64`:
-    - `max_tokens=32`:
-      - avg TTFT `255.053ms`
-      - avg latency `1118.779ms`
-      - avg TPOT / ITL `27.862ms`
-    - `max_tokens=64`:
-      - avg TTFT `255.353ms`
-      - avg latency `2061.966ms`
-      - avg TPOT / ITL `28.676ms`
-  - interpretation:
-    - the eager path now shows a very strong prompt-length sensitivity on the
+    - run id:
+        - `2026-04-13_eager_0p4b_ttft`
+    - raw artifacts:
+        - [rwkv7_ttft_0p4b_eager_20260413.json](/tmp/rwkv7_ttft_0p4b_eager_20260413.json)
+        - [vllm_rwkv7_ttft_eager_20260413.log](/tmp/vllm_rwkv7_ttft_eager_20260413.log)
+    - server ready:
+        - `30.034s`
+    - prefill-heavy TTFT proxy, `max_tokens=1`, avg TTFT:
+        - prompt len `64`: `188.986ms`
+        - prompt len `1024`: `2708.602ms`
+        - prompt len `1984`: `5409.289ms`
+    - decode profile, prompt len `64`:
+        - `max_tokens=32`:
+            - avg TTFT `255.053ms`
+            - avg latency `1118.779ms`
+            - avg TPOT / ITL `27.862ms`
+        - `max_tokens=64`:
+            - avg TTFT `255.353ms`
+            - avg latency `2061.966ms`
+            - avg TPOT / ITL `28.676ms`
+    - interpretation:
+        - the eager path now shows a very strong prompt-length sensitivity on the
       first token
-    - while short-prompt decode stays near `28ms/token`
-    - so the current next compile comparison should focus on whether
+        - while short-prompt decode stays near `28ms/token`
+        - so the current next compile comparison should focus on whether
       `PIECEWISE` actually reduces the long-prompt first-token cost, not just
       aggregate throughput
 - Added the first compile TTFT comparison on the local `0.4B` checkpoint:
-  - raw artifacts:
-    - compile/no-cg:
-      - [rwkv7_ttft_0p4b_compile_no_cg_20260413.json](/tmp/rwkv7_ttft_0p4b_compile_no_cg_20260413.json)
-      - [vllm_rwkv7_ttft_compile_no_cg_20260413.log](/tmp/vllm_rwkv7_ttft_compile_no_cg_20260413.log)
-    - piecewise:
-      - [rwkv7_ttft_0p4b_piecewise_20260413.json](/tmp/rwkv7_ttft_0p4b_piecewise_20260413.json)
-      - [vllm_rwkv7_ttft_piecewise_20260413.log](/tmp/vllm_rwkv7_ttft_piecewise_20260413.log)
-  - server ready:
-    - eager: `30.034s`
-    - compile/no-cg: `38.044s`
-    - piecewise: `108.093s`
-  - prefill-heavy TTFT proxy, prompt len `64 / 1024 / 1984`:
-    - eager:
-      - `188.986 / 2708.602 / 5409.289 ms`
-    - compile/no-cg:
-      - `219.612 / 2915.364 / 5432.906 ms`
-    - piecewise:
-      - `229.968 / 2660.877 / 4930.740 ms`
-  - decode profile, prompt len `64`, avg ITL:
-    - eager:
-      - `32 tok`: `27.862ms`
-      - `64 tok`: `28.676ms`
-    - compile/no-cg:
-      - `32 tok`: `29.558ms`
-      - `64 tok`: `30.429ms`
-    - piecewise:
-      - `32 tok`: `27.716ms`
-      - `64 tok`: `28.024ms`
-  - interpretation:
-    - `compile/no-cg` 仍然更像 correctness/debug 路径：
-      - 启动更慢
-      - TTFT 没明显改善
-      - decode ITL 还略差
-    - `PIECEWISE` 对短 prompt 没有优势
-    - 但对长 prompt 首 token 已经开始出现改善：
-      - `1024` token prompt 略优于 eager
-      - `1984` token prompt 改善更明显
-    - `PIECEWISE` 的 decode ITL 目前基本和 eager 同量级
-    - 所以下一步最值当的方向是：
-      - 继续盯长 prefill TTFT
-      - 而不是继续投资 `compile/no-cg`
+    - raw artifacts:
+        - compile/no-cg:
+            - [rwkv7_ttft_0p4b_compile_no_cg_20260413.json](/tmp/rwkv7_ttft_0p4b_compile_no_cg_20260413.json)
+            - [vllm_rwkv7_ttft_compile_no_cg_20260413.log](/tmp/vllm_rwkv7_ttft_compile_no_cg_20260413.log)
+        - piecewise:
+            - [rwkv7_ttft_0p4b_piecewise_20260413.json](/tmp/rwkv7_ttft_0p4b_piecewise_20260413.json)
+            - [vllm_rwkv7_ttft_piecewise_20260413.log](/tmp/vllm_rwkv7_ttft_piecewise_20260413.log)
+    - server ready:
+        - eager: `30.034s`
+        - compile/no-cg: `38.044s`
+        - piecewise: `108.093s`
+    - prefill-heavy TTFT proxy, prompt len `64 / 1024 / 1984`:
+        - eager:
+            - `188.986 / 2708.602 / 5409.289 ms`
+        - compile/no-cg:
+            - `219.612 / 2915.364 / 5432.906 ms`
+        - piecewise:
+            - `229.968 / 2660.877 / 4930.740 ms`
+    - decode profile, prompt len `64`, avg ITL:
+        - eager:
+            - `32 tok`: `27.862ms`
+            - `64 tok`: `28.676ms`
+        - compile/no-cg:
+            - `32 tok`: `29.558ms`
+            - `64 tok`: `30.429ms`
+        - piecewise:
+            - `32 tok`: `27.716ms`
+            - `64 tok`: `28.024ms`
+    - interpretation:
+        - `compile/no-cg` 仍然更像 correctness/debug 路径：
+            - 启动更慢
+            - TTFT 没明显改善
+            - decode ITL 还略差
+        - `PIECEWISE` 对短 prompt 没有优势
+        - 但对长 prompt 首 token 已经开始出现改善：
+            - `1024` token prompt 略优于 eager
+            - `1984` token prompt 改善更明显
+        - `PIECEWISE` 的 decode ITL 目前基本和 eager 同量级
+        - 所以下一步最值当的方向是：
+            - 继续盯长 prefill TTFT
+            - 而不是继续投资 `compile/no-cg`
 
 ## Latest Update (2026-03-31)
 
 - Compile/no-cudagraph has now been validated through the real RWKV7 entrypoints:
-  - `RWKV7Block.forward()` gained a whole-block custom-op boundary via `torch.ops.vllm.rwkv7_block_forward(...)`
-  - the block-level metadata/stateful dispatch moved into `RWKV7Block._forward_runtime(...)`
-  - layer-local `kv_cache` and runner-level `kv_caches` now receive real writeback under compile/no-cg
+    - `RWKV7Block.forward()` gained a whole-block custom-op boundary via `torch.ops.vllm.rwkv7_block_forward(...)`
+    - the block-level metadata/stateful dispatch moved into `RWKV7Block._forward_runtime(...)`
+    - layer-local `kv_cache` and runner-level `kv_caches` now receive real writeback under compile/no-cg
 - Root cause is now understood more precisely:
-  - the earlier statement "compile path globally receives `attn_metadata=None`" was too strong
-  - runtime `forward_context.attn_metadata` did exist
-  - the real bug was that compiled `RWKV7Block.forward()` did not execute the metadata-aware cache load/store path during request runtime
-  - moving the stateful boundary to a whole-block custom op fixed that integration bug
+    - the earlier statement "compile path globally receives `attn_metadata=None`" was too strong
+    - runtime `forward_context.attn_metadata` did exist
+    - the real bug was that compiled `RWKV7Block.forward()` did not execute the metadata-aware cache load/store path during request runtime
+    - moving the stateful boundary to a whole-block custom op fixed that integration bug
 - RWKV7 config policy is now fully reopened:
-  - `RWKV7ForCausalLMConfig` no longer forces eager as a default fallback
-  - real compile is now allowed for both default PIECEWISE and `cudagraph_mode=none`
+    - `RWKV7ForCausalLMConfig` no longer forces eager as a default fallback
+    - real compile is now allowed for both default PIECEWISE and `cudagraph_mode=none`
 - The engine-step probe is now a real-entrypoint probe:
-  - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py) no longer monkeypatches RWKV7 config
+    - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py) no longer monkeypatches RWKV7 config
 - The service compare tool is now reusable for local checkpoints:
-  - [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) now supports `--model` and `--compile-no-cg`
+    - [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) now supports `--model` and `--compile-no-cg`
 - Fresh compile/no-cg validation on `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`:
-  - engine replay artifacts:
-    - [rwkv7_engine_step_2_base_real_compile.json](/tmp/rwkv7_engine_step_2_base_real_compile.json)
-    - [rwkv7_engine_step_2_replay_real_compile.json](/tmp/rwkv7_engine_step_2_replay_real_compile.json)
-    - [rwkv7_engine_step_2_compare_real_compile.json](/tmp/rwkv7_engine_step_2_compare_real_compile.json)
-  - result:
-    - prompt `北京是`
-    - base generated tokens: `[10250, 10283]`
-    - replay prompt token ids: `[10902, 10362, 13091, 10250]`
-    - replay generated token: `10283`
-    - second-step replay matches
+    - engine replay artifacts:
+        - [rwkv7_engine_step_2_base_real_compile.json](/tmp/rwkv7_engine_step_2_base_real_compile.json)
+        - [rwkv7_engine_step_2_replay_real_compile.json](/tmp/rwkv7_engine_step_2_replay_real_compile.json)
+        - [rwkv7_engine_step_2_compare_real_compile.json](/tmp/rwkv7_engine_step_2_compare_real_compile.json)
+    - result:
+        - prompt `北京是`
+        - base generated tokens: `[10250, 10283]`
+        - replay prompt token ids: `[10902, 10362, 13091, 10250]`
+        - replay generated token: `10283`
+        - second-step replay matches
 - Real `vllm serve` correctness is now also back on the compile/no-cg path:
-  - log: [vllm_rwkv7_compare_real_compile_no_cg.log](/tmp/vllm_rwkv7_compare_real_compile_no_cg.log)
-  - command shape:
-    - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --compile-no-cg --no-async-scheduling`
-  - result:
-    - `i am`: one-shot == step-by-step
-    - `北京是`: one-shot == step-by-step
-    - `The capital of France is`: one-shot == step-by-step
+    - log: [vllm_rwkv7_compare_real_compile_no_cg.log](/tmp/vllm_rwkv7_compare_real_compile_no_cg.log)
+    - command shape:
+        - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --compile-no-cg --no-async-scheduling`
+    - result:
+        - `i am`: one-shot == step-by-step
+        - `北京是`: one-shot == step-by-step
+        - `The capital of France is`: one-shot == step-by-step
 - Current remaining blocker:
-  - the old compile/no-cg correctness blocker is resolved
-  - the old PIECEWISE CUDA graph blocker is also resolved
-  - next work is around performance and broader coverage
+    - the old compile/no-cg correctness blocker is resolved
+    - the old PIECEWISE CUDA graph blocker is also resolved
+    - next work is around performance and broader coverage
 - Final CUDA-graph capture fix:
-  - temporary RWKV7 store-debug stats used `.item()` on CUDA tensors during cache writeback
-  - this caused `CUDA error: operation not permitted when stream is capturing`
-  - detailed tensor stats are now only collected when `RWKV7_DEBUG_STORE_STATS=1`
+    - temporary RWKV7 store-debug stats used `.item()` on CUDA tensors during cache writeback
+    - this caused `CUDA error: operation not permitted when stream is capturing`
+    - detailed tensor stats are now only collected when `RWKV7_DEBUG_STORE_STATS=1`
     and the stream is not being captured
 - Final PIECEWISE correctness fix:
-  - `vllm::rwkv7_block_forward` was added to the default `splitting_ops` set in
+    - `vllm::rwkv7_block_forward` was added to the default `splitting_ops` set in
     [compilation.py](/home/liu/vllm/vllm/config/compilation.py)
-  - this keeps the RWKV7 stateful block boundary out of a single frozen piecewise capture region
-  - after that change, real `vllm serve` PIECEWISE one-shot vs step-by-step parity recovered
+    - this keeps the RWKV7 stateful block boundary out of a single frozen piecewise capture region
+    - after that change, real `vllm serve` PIECEWISE one-shot vs step-by-step parity recovered
 - Final real-entrypoint validation logs:
-  - PIECEWISE:
-    - [vllm_rwkv7_piecewise_final.log](/tmp/vllm_rwkv7_piecewise_final.log)
-    - [vllm_rwkv7_piecewise_0p1b_final.log](/tmp/vllm_rwkv7_piecewise_0p1b_final.log)
-  - compile/no-cg:
-    - [vllm_rwkv7_compile_no_cg_final.log](/tmp/vllm_rwkv7_compile_no_cg_final.log)
-    - [vllm_rwkv7_compile_no_cg_0p1b_final.log](/tmp/vllm_rwkv7_compile_no_cg_0p1b_final.log)
-  - the `0.4B` and `0.1B` local checkpoints both show:
-    - `i am`: one-shot == step-by-step
-    - `北京是`: one-shot == step-by-step
-    - `The capital of France is`: one-shot == step-by-step
+    - PIECEWISE:
+        - [vllm_rwkv7_piecewise_final.log](/tmp/vllm_rwkv7_piecewise_final.log)
+        - [vllm_rwkv7_piecewise_0p1b_final.log](/tmp/vllm_rwkv7_piecewise_0p1b_final.log)
+    - compile/no-cg:
+        - [vllm_rwkv7_compile_no_cg_final.log](/tmp/vllm_rwkv7_compile_no_cg_final.log)
+        - [vllm_rwkv7_compile_no_cg_0p1b_final.log](/tmp/vllm_rwkv7_compile_no_cg_0p1b_final.log)
+    - the `0.4B` and `0.1B` local checkpoints both show:
+        - `i am`: one-shot == step-by-step
+        - `北京是`: one-shot == step-by-step
+        - `The capital of France is`: one-shot == step-by-step
 - New benchmark finding from the local `0.4B` checkpoint:
-  - [`tmp_rwkv7_long_benchmark.py`](/home/liu/vllm/tmp_rwkv7_long_benchmark.py) now supports:
-    - `--enforce-eager`
-    - `--cudagraph-mode`
-    - `--compile-no-cg`
-    - `--disable-compile-cache`
-  - the earlier quick conclusion that explicit `PIECEWISE` clearly beat eager has
+    - [`tmp_rwkv7_long_benchmark.py`](/home/liu/vllm/tmp_rwkv7_long_benchmark.py) now supports:
+        - `--enforce-eager`
+        - `--cudagraph-mode`
+        - `--compile-no-cg`
+        - `--disable-compile-cache`
+    - the earlier quick conclusion that explicit `PIECEWISE` clearly beat eager has
     been superseded by the later clean reruns below
-  - `cudagraph_mode=none` is still mainly a correctness/debug path, not the fast path
+    - `cudagraph_mode=none` is still mainly a correctness/debug path, not the fast path
 - New default compile-mode pitfall:
-  - inheriting plain `MambaModelConfig` defaults left RWKV7 on `FULL_AND_PIECEWISE`
-  - that mode still hit the old unsafe full decode-graph failure under benchmark load:
-    - `indexSelectSmallIndex ... Assertion srcIndex < srcSelectDimSize failed`
-    - followed by `CUDA error: device-side assert triggered`
-  - RWKV7 now overrides that default back to `PIECEWISE` in
+    - inheriting plain `MambaModelConfig` defaults left RWKV7 on `FULL_AND_PIECEWISE`
+    - that mode still hit the old unsafe full decode-graph failure under benchmark load:
+        - `indexSelectSmallIndex ... Assertion srcIndex < srcSelectDimSize failed`
+        - followed by `CUDA error: device-side assert triggered`
+    - RWKV7 now overrides that default back to `PIECEWISE` in
     [config.py](/home/liu/vllm/vllm/model_executor/models/config.py)
 - Current benchmark snapshot on `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
   supersedes the earlier quick throughput snapshot:
-  - short-output mixed-prompt clean rerun:
-    - eager 64: [rwkv7_bench_0p4b_eager_64.json](/tmp/rwkv7_bench_0p4b_eager_64.json)
-    - piecewise 64: [rwkv7_bench_0p4b_piecewise_64.json](/tmp/rwkv7_bench_0p4b_piecewise_64.json)
-    - eager 128: [rwkv7_bench_0p4b_eager_128.json](/tmp/rwkv7_bench_0p4b_eager_128.json)
-    - piecewise 128: [rwkv7_bench_0p4b_piecewise_128.json](/tmp/rwkv7_bench_0p4b_piecewise_128.json)
-    - `max_tokens=64`, aggregate TPS, concurrency `1/2/4/8`:
-      - eager: `28.122 / 54.669 / 104.712 / 191.801`
-      - piecewise: `27.566 / 54.985 / 103.009 / 186.164`
-    - `max_tokens=128`, aggregate TPS, concurrency `1/2/4/8`:
-      - eager: `27.642 / 48.780 / 110.584 / 203.157`
-      - piecewise: `27.856 / 45.786 / 103.951 / 193.628`
-  - long-input exact-token rerun:
-    - script: [/tmp/rwkv7_exact_long_input_bench.py](/tmp/rwkv7_exact_long_input_bench.py)
-    - eager 1024 + 64 decode: [rwkv7_long_input_eager_1024.json](/tmp/rwkv7_long_input_eager_1024.json)
-    - piecewise 1024 + 64 decode: [rwkv7_long_input_piecewise_1024.json](/tmp/rwkv7_long_input_piecewise_1024.json)
-    - eager 1984 + 64 decode: [rwkv7_long_input_eager_1984.json](/tmp/rwkv7_long_input_eager_1984.json)
-    - piecewise 1984 + 64 decode: [rwkv7_long_input_piecewise_1984.json](/tmp/rwkv7_long_input_piecewise_1984.json)
-    - prompt length `1024`, aggregate TPS, concurrency `1/4/8`:
-      - eager: `11.830 / 14.974 / 15.850`
-      - piecewise: `10.146 / 13.967 / 16.376`
-    - prompt length `1984`, aggregate TPS, concurrency `1/4/8`:
-      - eager: `7.237 / 9.431 / 10.046`
-      - piecewise: `7.863 / 9.449 / 9.529`
-  - interpretation:
-    - on the local `0.4B` checkpoint, `PIECEWISE` and eager are now in the same
+    - short-output mixed-prompt clean rerun:
+        - eager 64: [rwkv7_bench_0p4b_eager_64.json](/tmp/rwkv7_bench_0p4b_eager_64.json)
+        - piecewise 64: [rwkv7_bench_0p4b_piecewise_64.json](/tmp/rwkv7_bench_0p4b_piecewise_64.json)
+        - eager 128: [rwkv7_bench_0p4b_eager_128.json](/tmp/rwkv7_bench_0p4b_eager_128.json)
+        - piecewise 128: [rwkv7_bench_0p4b_piecewise_128.json](/tmp/rwkv7_bench_0p4b_piecewise_128.json)
+        - `max_tokens=64`, aggregate TPS, concurrency `1/2/4/8`:
+            - eager: `28.122 / 54.669 / 104.712 / 191.801`
+            - piecewise: `27.566 / 54.985 / 103.009 / 186.164`
+        - `max_tokens=128`, aggregate TPS, concurrency `1/2/4/8`:
+            - eager: `27.642 / 48.780 / 110.584 / 203.157`
+            - piecewise: `27.856 / 45.786 / 103.951 / 193.628`
+    - long-input exact-token rerun:
+        - script: [/tmp/rwkv7_exact_long_input_bench.py](/tmp/rwkv7_exact_long_input_bench.py)
+        - eager 1024 + 64 decode: [rwkv7_long_input_eager_1024.json](/tmp/rwkv7_long_input_eager_1024.json)
+        - piecewise 1024 + 64 decode: [rwkv7_long_input_piecewise_1024.json](/tmp/rwkv7_long_input_piecewise_1024.json)
+        - eager 1984 + 64 decode: [rwkv7_long_input_eager_1984.json](/tmp/rwkv7_long_input_eager_1984.json)
+        - piecewise 1984 + 64 decode: [rwkv7_long_input_piecewise_1984.json](/tmp/rwkv7_long_input_piecewise_1984.json)
+        - prompt length `1024`, aggregate TPS, concurrency `1/4/8`:
+            - eager: `11.830 / 14.974 / 15.850`
+            - piecewise: `10.146 / 13.967 / 16.376`
+        - prompt length `1984`, aggregate TPS, concurrency `1/4/8`:
+            - eager: `7.237 / 9.431 / 10.046`
+            - piecewise: `7.863 / 9.449 / 9.529`
+    - interpretation:
+        - on the local `0.4B` checkpoint, `PIECEWISE` and eager are now in the same
       runtime band rather than showing a stable clear win for `PIECEWISE`
-    - short-output mixed-prompt runs keep `PIECEWISE` close to eager, but not
+        - short-output mixed-prompt runs keep `PIECEWISE` close to eager, but not
       consistently faster
-    - long-input prefill-heavy runs also stay close:
-      - `1024`-token prompt: `PIECEWISE` trails at concurrency `1/4`, edges ahead at `8`
-      - `1984`-token prompt: `PIECEWISE` leads slightly at `1`, ties at `4`, trails at `8`
-    - current value of `compile + PIECEWISE` is therefore:
-      - correctness-capable compile serving
-      - default-safe compile mode for RWKV7
-      - but not yet a stable throughput win over eager on this machine
-  - caveat:
-    - `no-cg` remains mainly a correctness/debug path and was not part of this
+        - long-input prefill-heavy runs also stay close:
+            - `1024`-token prompt: `PIECEWISE` trails at concurrency `1/4`, edges ahead at `8`
+            - `1984`-token prompt: `PIECEWISE` leads slightly at `1`, ties at `4`, trails at `8`
+        - current value of `compile + PIECEWISE` is therefore:
+            - correctness-capable compile serving
+            - default-safe compile mode for RWKV7
+            - but not yet a stable throughput win over eager on this machine
+    - caveat:
+        - `no-cg` remains mainly a correctness/debug path and was not part of this
       consolidated rerun
 - Cold-start tradeoff is now clear:
-  - eager init engine: about `9.2s`
-  - no-cg init engine: about `13.8s`
-  - piecewise init engine: about `94-97s`
-  - so piecewise currently buys compile availability and correctness at the cost
+    - eager init engine: about `9.2s`
+    - no-cg init engine: about `13.8s`
+    - piecewise init engine: about `94-97s`
+    - so piecewise currently buys compile availability and correctness at the cost
     of much slower startup
 - New pitfall to remember:
-  - nested-shell JSON quoting for `-cc '{"cudagraph_mode":"none"}'` is easy to break
-  - prefer either:
-    - `-cc.cudagraph_mode=none`
-    - or [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) / [`tmp_rwkv7_long_benchmark.py`](/home/liu/vllm/tmp_rwkv7_long_benchmark.py)
+    - nested-shell JSON quoting for `-cc '{"cudagraph_mode":"none"}'` is easy to break
+    - prefer either:
+        - `-cc.cudagraph_mode=none`
+        - or [`tmp_rwkv7_compare.py`](/home/liu/vllm/tmp_rwkv7_compare.py) / [`tmp_rwkv7_long_benchmark.py`](/home/liu/vllm/tmp_rwkv7_long_benchmark.py)
 - Historical debugging trail below this point predates the whole-block custom-op fix and is kept mainly as chronology.
 
 - Landed a first KDA-style compile boundary in [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py):
-  - registered `RWKV7Attention` in `static_forward_context`
-  - added `torch.ops.vllm.rwkv7_attention(...)`
-  - moved the existing recurrent math behind `RWKV7Attention._forward(...)`
+    - registered `RWKV7Attention` in `static_forward_context`
+    - added `torch.ops.vllm.rwkv7_attention(...)`
+    - moved the existing recurrent math behind `RWKV7Attention._forward(...)`
 - Added unit coverage in [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py) for:
-  - attention registration in `static_forward_context`
-  - custom-op wrapper parity against direct `_forward(...)`
+    - attention registration in `static_forward_context`
+    - custom-op wrapper parity against direct `_forward(...)`
 - This change materially improved compile startup:
-  - previous bad case: Dynamo tracing the RWKV7 prefill token loop for about `126.55s`
-  - new case: `Dynamo bytecode transform time` about `1.74s`
-  - compile range `(1, 2048)` build time about `8.89s`
-  - total `torch.compile` time about `10.92s`
+    - previous bad case: Dynamo tracing the RWKV7 prefill token loop for about `126.55s`
+    - new case: `Dynamo bytecode transform time` about `1.74s`
+    - compile range `(1, 2048)` build time about `8.89s`
+    - total `torch.compile` time about `10.92s`
 - Compile without CUDA graphs is now able to boot:
-  - with `-cc '{"cudagraph_mode":"none"}'`
-  - `/health` reached in about `56s`
-  - `/v1/completions` returned successfully
-  - reference log: [vllm_rwkv7_8048_compile_no_cg.log](/tmp/vllm_rwkv7_8048_compile_no_cg.log)
+    - with `-cc '{"cudagraph_mode":"none"}'`
+    - `/health` reached in about `56s`
+    - `/v1/completions` returned successfully
+    - reference log: [vllm_rwkv7_8048_compile_no_cg.log](/tmp/vllm_rwkv7_8048_compile_no_cg.log)
 - However, correctness is still not acceptable under the non-eager path:
-  - on `RWKV7-Goose-World2.9-0.4B-HF`
-  - `one-shot max_tokens=8` and `step-by-step max_tokens=1` diverged for all three prompts
-    - `i am`
-    - `北京是`
-    - `The capital of France is`
-  - reference log: [vllm_rwkv7_non_eager_compare_8050.log](/tmp/vllm_rwkv7_non_eager_compare_8050.log)
+    - on `RWKV7-Goose-World2.9-0.4B-HF`
+    - `one-shot max_tokens=8` and `step-by-step max_tokens=1` diverged for all three prompts
+        - `i am`
+        - `北京是`
+        - `The capital of France is`
+    - reference log: [vllm_rwkv7_non_eager_compare_8050.log](/tmp/vllm_rwkv7_non_eager_compare_8050.log)
 - CUDA graphs remain a separate blocker:
-  - PIECEWISE capture progressed past compile and warmup
-  - but engine startup still failed during CUDA graph capture around `7/51`
+    - PIECEWISE capture progressed past compile and warmup
+    - but engine startup still failed during CUDA graph capture around `7/51`
 - Because non-eager correctness is still failing, the model config was restored to the stable eager default.
 - Added a reusable engine-step probe:
-  - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
-  - supports:
-    - single-run capture via `--max-tokens` + `--capture-generated-tokens`
-    - token-id-controlled replay via `--prompt-token-ids`
-    - replay prompt construction via `--append-generated-prefix-from-run-json`
-    - offline comparison via `--run-json-a` and `--run-json-b`
+    - [`tmp_rwkv7_engine_first_step_compare.py`](/home/liu/vllm/tmp_rwkv7_engine_first_step_compare.py)
+    - supports:
+        - single-run capture via `--max-tokens` + `--capture-generated-tokens`
+        - token-id-controlled replay via `--prompt-token-ids`
+        - replay prompt construction via `--append-generated-prefix-from-run-json`
+        - offline comparison via `--run-json-a` and `--run-json-b`
 - New first-step result on `RWKV7-Goose-World2.9-0.4B-HF`:
-  - prompt: `北京是`
-  - mode: compile enabled, `cudagraph_mode=none`, `async_scheduling=False`
-  - `max_tokens=1` and `max_tokens=8` produced the same first generated token:
-    - token id `10250`
-    - text `一`
-  - current probe also reports no layer-level state fingerprint difference on the first step
-  - reference artifacts:
-    - [rwkv7_engine_step_1.json](/tmp/rwkv7_engine_step_1.json)
-    - [rwkv7_engine_step_8.json](/tmp/rwkv7_engine_step_8.json)
-    - [rwkv7_engine_step_compare_beijing_sync.json](/tmp/rwkv7_engine_step_compare_beijing_sync.json)
+    - prompt: `北京是`
+    - mode: compile enabled, `cudagraph_mode=none`, `async_scheduling=False`
+    - `max_tokens=1` and `max_tokens=8` produced the same first generated token:
+        - token id `10250`
+        - text `一`
+    - current probe also reports no layer-level state fingerprint difference on the first step
+    - reference artifacts:
+        - [rwkv7_engine_step_1.json](/tmp/rwkv7_engine_step_1.json)
+        - [rwkv7_engine_step_8.json](/tmp/rwkv7_engine_step_8.json)
+        - [rwkv7_engine_step_compare_beijing_sync.json](/tmp/rwkv7_engine_step_compare_beijing_sync.json)
 - Caveat on that state result:
-  - the layer-local `model.model.layers[*].kv_cache` fingerprint remains all-zero in this probe
-  - so the useful strong conclusion is:
-    - first generated token matches
-    - the non-eager mismatch likely occurs after the first decode step, or in a deeper cache path not exposed by those layer-local tensors
+    - the layer-local `model.model.layers[*].kv_cache` fingerprint remains all-zero in this probe
+    - so the useful strong conclusion is:
+        - first generated token matches
+        - the non-eager mismatch likely occurs after the first decode step, or in a deeper cache path not exposed by those layer-local tensors
 - New second-step replay result on the local 0.4B checkpoint:
-  - model path: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
-  - prompt: `北京是`
-  - mode: compile enabled, `cudagraph_mode=none`, `async_scheduling=False`
-  - base run:
-    - `max_tokens=2`
-    - `capture_generated_tokens=2`
-    - prompt token ids: `[10902, 10362, 13091]`
-    - generated token ids: `[10250, 10283]`
-    - generated text: `一个`
-  - controlled replay run:
-    - prompt token ids: `[10902, 10362, 13091, 10250]`
-    - `max_tokens=1`
-    - `capture_generated_tokens=1`
-    - generated token id: `10283`
-    - generated text: `个`
-  - conclusion:
-    - the second decode token also matches under token-id-controlled replay
-    - the current compile mismatch is therefore not on the first or second decode step for this prompt
-  - reference artifacts:
-    - [rwkv7_engine_step_2_base.json](/tmp/rwkv7_engine_step_2_base.json)
-    - [rwkv7_engine_step_2_replay.json](/tmp/rwkv7_engine_step_2_replay.json)
-    - [rwkv7_engine_step_2_compare.json](/tmp/rwkv7_engine_step_2_compare.json)
+    - model path: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - prompt: `北京是`
+    - mode: compile enabled, `cudagraph_mode=none`, `async_scheduling=False`
+    - base run:
+        - `max_tokens=2`
+        - `capture_generated_tokens=2`
+        - prompt token ids: `[10902, 10362, 13091]`
+        - generated token ids: `[10250, 10283]`
+        - generated text: `一个`
+    - controlled replay run:
+        - prompt token ids: `[10902, 10362, 13091, 10250]`
+        - `max_tokens=1`
+        - `capture_generated_tokens=1`
+        - generated token id: `10283`
+        - generated text: `个`
+    - conclusion:
+        - the second decode token also matches under token-id-controlled replay
+        - the current compile mismatch is therefore not on the first or second decode step for this prompt
+    - reference artifacts:
+        - [rwkv7_engine_step_2_base.json](/tmp/rwkv7_engine_step_2_base.json)
+        - [rwkv7_engine_step_2_replay.json](/tmp/rwkv7_engine_step_2_replay.json)
+        - [rwkv7_engine_step_2_compare.json](/tmp/rwkv7_engine_step_2_compare.json)
 - New root-cause finding from fresh compile debug:
-  - when compile cache is disabled via `VLLM_DISABLE_COMPILE_CACHE=1`
-  - and the probe captures `RWKV7Block.debug_last_forward_summary`
-  - the non-eager compile path still shows:
-    - `attn_metadata_is_none=1`
-    - `num_decode_tokens=-1`
-    - `num_prefill_tokens=-1`
-  - this happens even on the first unfinished request step for prompt `北京是`
-  - therefore `RWKV7Block.forward()` is taking the `attn_metadata is None` fallback path under compile
-  - and `_store_kv_state()` / `_store_kv_states()` never run
-  - as a consequence:
-    - layer-local `kv_cache` remains all-zero
-    - runner-owned `kv_caches` remains all-zero
-    - first token can still match, because prefill math runs within the same forward
-    - later decode steps diverge because the recurrent state was never committed into cache
-  - reference artifact:
-    - [rwkv7_engine_step_1_final_repro.json](/tmp/rwkv7_engine_step_1_final_repro.json)
-  - the current compile correctness bug is therefore no longer “unknown later-step divergence”
-  - it is specifically a metadata/stateful-path integration bug in the RWKV7 compile path
+    - when compile cache is disabled via `VLLM_DISABLE_COMPILE_CACHE=1`
+    - and the probe captures `RWKV7Block.debug_last_forward_summary`
+    - the non-eager compile path still shows:
+        - `attn_metadata_is_none=1`
+        - `num_decode_tokens=-1`
+        - `num_prefill_tokens=-1`
+    - this happens even on the first unfinished request step for prompt `北京是`
+    - therefore `RWKV7Block.forward()` is taking the `attn_metadata is None` fallback path under compile
+    - and `_store_kv_state()` / `_store_kv_states()` never run
+    - as a consequence:
+        - layer-local `kv_cache` remains all-zero
+        - runner-owned `kv_caches` remains all-zero
+        - first token can still match, because prefill math runs within the same forward
+        - later decode steps diverge because the recurrent state was never committed into cache
+    - reference artifact:
+        - [rwkv7_engine_step_1_final_repro.json](/tmp/rwkv7_engine_step_1_final_repro.json)
+    - the current compile correctness bug is therefore no longer “unknown later-step divergence”
+    - it is specifically a metadata/stateful-path integration bug in the RWKV7 compile path
 
 ## What Is Already Working
 
@@ -395,9 +395,9 @@
 - RWKV7 is registered as a vLLM model and loads from local HF checkpoints.
 - `RWKV7Block` is registered in `static_forward_context`, so v1 engine treats it as a stateful cached layer.
 - RWKV7 three-state cache semantics are wired correctly:
-  - `attn_shift`: conv copy semantics
-  - `recurrent`: temporal copy semantics
-  - `ffn_shift`: conv copy semantics
+    - `attn_shift`: conv copy semantics
+    - `recurrent`: temporal copy semantics
+    - `ffn_shift`: conv copy semantics
 - The `HybridKVCacheCoordinator` path was fixed for RWKV-style models where multiple raw state groups coalesce into one effective attention group.
 - `compute_logits()` handles dtype alignment safely.
 - `load_weights()` maps `model.embeddings.weight -> model.embed_tokens.weight`.
@@ -407,35 +407,35 @@
 
 - `one-shot max_tokens=N` and `step-by-step max_tokens=1` were validated to match on RWKV7 `0.1B` and `0.4B` under the stable eager baseline.
 - `one-shot max_tokens=8` and `step-by-step max_tokens=1` now also match on RWKV7 `0.4B` under the real compile/no-cg service path for:
-  - `i am`
-  - `北京是`
-  - `The capital of France is`
+    - `i am`
+    - `北京是`
+    - `The capital of France is`
 - `one-shot max_tokens=8` and `step-by-step max_tokens=1` also now match on RWKV7 `0.4B` under the default PIECEWISE CUDA-graph service path for:
-  - `i am`
-  - `北京是`
-  - `The capital of France is`
+    - `i am`
+    - `北京是`
+    - `The capital of France is`
 - `one-shot max_tokens=8` and `step-by-step max_tokens=1` also now match on RWKV7 `0.1B` under both:
-  - default PIECEWISE CUDA graphs
-  - compile with `cudagraph_mode=none`
-  - `i am`
-  - `北京是`
-  - `The capital of France is`
+    - default PIECEWISE CUDA graphs
+    - compile with `cudagraph_mode=none`
+    - `i am`
+    - `北京是`
+    - `The capital of France is`
 - Decode-path batching across concurrent requests is implemented and validated.
 - Concurrent decode requests no longer serialize one-by-one inside `RWKV7Block`.
 
 ### Tests already in place
 
 - Unit and integration coverage in [test_rwkv7.py](/home/liu/vllm/tests/model_executor/test_rwkv7.py):
-  - block forward
-  - static forward context registration
-  - attention custom-op wrapper parity
-  - cache/state update behavior
-  - batched decode equivalence
-  - state copy function types
-  - runtime state dtype
-  - reference parity for full forward
-  - reference parity for prefill + decode
-  - config behavior for compile-enable defaults
+    - block forward
+    - static forward context registration
+    - attention custom-op wrapper parity
+    - cache/state update behavior
+    - batched decode equivalence
+    - state copy function types
+    - runtime state dtype
+    - reference parity for full forward
+    - reference parity for prefill + decode
+    - config behavior for compile-enable defaults
 
 ## Stable Baseline
 
@@ -446,8 +446,8 @@ There are now three known-good serving baselines for RWKV7:
 - compile with `cudagraph_mode=none`
 - all validated with `async_scheduling=False`
 - compile correctness has been revalidated on local:
-  - `RWKV7-Goose-World2.8-0.1B-HF`
-  - `RWKV7-Goose-World2.9-0.4B-HF`
+    - `RWKV7-Goose-World2.8-0.1B-HF`
+    - `RWKV7-Goose-World2.9-0.4B-HF`
 
 What is known-good there:
 
@@ -509,8 +509,8 @@ The current blockers are:
 - FULL decode-graph behavior is still unsafe for RWKV7 and should stay disabled
 - `cudagraph_mode=none` still shows a longer-output / high-concurrency mismatch (`128` tokens, concurrency `8`)
 - the next implementation step should move from "can it run" to:
-  - piecewise performance characterization
-  - no-cg long-output concurrency debugging
+    - piecewise performance characterization
+    - no-cg long-output concurrency debugging
 
 ### Additional findings from deeper debug
 
@@ -519,10 +519,10 @@ From the debug probe logs [vllm_rwkv7_8045_debug.log](/tmp/vllm_rwkv7_8045_debug
 - WSL memory was not the primary blocker in the debug run.
 - Peak memory pressure did not force swap use during the captured non-eager debug attempt.
 - The real hot path is Dynamo tracing inside:
-  - [`RWKV7Attention.forward`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L335)
-  - specifically the time-step loop over sequence length around:
-    - [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L414)
-    - [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L423)
+    - [`RWKV7Attention.forward`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L335)
+    - specifically the time-step loop over sequence length around:
+        - [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L414)
+        - [`rwkv7.py`](/home/liu/vllm/vllm/model_executor/models/rwkv7.py#L423)
 - The trace log shows Dynamo repeatedly expanding the recurrent update body for each token in the prefill sequence.
 
 An attempted mitigation was tested:
@@ -534,7 +534,7 @@ Result:
 - this does not work with vLLM's current compile wrapper
 - because vLLM uses `torch.compile(..., fullgraph=True)`
 - non-eager startup then fails fast with:
-  - `torch._dynamo.exc.Unsupported: Skip inlining torch.compiler.disable()d function`
+    - `torch._dynamo.exc.Unsupported: Skip inlining torch.compiler.disable()d function`
 
 This means the simple "graph break this function" approach is not viable for the current RWKV7 compile path.
 
@@ -558,7 +558,7 @@ Handling:
 Problem:
 
 - Creating `LLM(...)` or similar engine processes from `python - <<'PY'` can fail under WSL spawn mode with:
-  - `FileNotFoundError: /home/liu/vllm/<stdin>`
+    - `FileNotFoundError: /home/liu/vllm/<stdin>`
 
 Handling:
 
@@ -627,11 +627,11 @@ Later finding:
 
 - the crash was not a fundamental PIECEWISE limitation
 - the final fixes were:
-  - keep debug `.item()` stats out of capture
-  - add `vllm::rwkv7_block_forward` to default `splitting_ops`
+    - keep debug `.item()` stats out of capture
+    - add `vllm::rwkv7_block_forward` to default `splitting_ops`
 - current validated path is:
-  - default PIECEWISE CUDA graphs
-  - `cudagraph_copy_inputs` not required for the passing regression runs
+    - default PIECEWISE CUDA graphs
+    - `cudagraph_copy_inputs` not required for the passing regression runs
 
 ### 8. WSL-specific performance warnings are expected noise
 
@@ -677,8 +677,8 @@ Problem:
 Handling:
 
 - use local paths instead:
-  - `/mnt/d/codes/RWKV7-Goose-World2.8-0.1B-HF`
-  - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - `/mnt/d/codes/RWKV7-Goose-World2.8-0.1B-HF`
+    - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
 
 ### 12. vLLM compile cache can hide model-code changes during debug
 
@@ -690,9 +690,9 @@ Problem:
 Handling:
 
 - for compile-path debugging, run with:
-  - `VLLM_DISABLE_COMPILE_CACHE=1`
+    - `VLLM_DISABLE_COMPILE_CACHE=1`
 - only trust instrumentation results after confirming the log says:
-  - `vLLM's torch.compile cache is disabled.`
+    - `vLLM's torch.compile cache is disabled.`
 
 ### 13. RWKV7 compile bug is currently “metadata missing”, not “backing cache mismatch”
 
@@ -700,23 +700,23 @@ Problem:
 
 - earlier probe results only showed that layer-local and runner-level cache fingerprints stayed zero
 - that left two possibilities:
-  - cache writeback happened into some other backing store
-  - or the metadata-driven stateful path never ran
+    - cache writeback happened into some other backing store
+    - or the metadata-driven stateful path never ran
 
 Handling:
 
 - a fresh no-cache compile probe with layer-local forward/store summaries showed:
-  - `RWKV7Block.forward()` received `attn_metadata=None`
-  - `_store_kv_state()` and `_store_kv_states()` were never reached
+    - `RWKV7Block.forward()` received `attn_metadata=None`
+    - `_store_kv_state()` and `_store_kv_states()` were never reached
 - this isolated the first compile correctness bug as upstream of cache writeback:
-  - the compiled RWKV7 block was not seeing live attention metadata
-  - so it always fell back to the stateless sequence path
+    - the compiled RWKV7 block was not seeing live attention metadata
+    - so it always fell back to the stateless sequence path
 - later fixes:
-  - move block-local runtime dispatch behind `torch.ops.vllm.rwkv7_block_forward(...)`
-  - add `vllm::rwkv7_block_forward` to `splitting_ops`
+    - move block-local runtime dispatch behind `torch.ops.vllm.rwkv7_block_forward(...)`
+    - add `vllm::rwkv7_block_forward` to `splitting_ops`
 - current state:
-  - compile/no-cg correctness is restored
-  - default PIECEWISE correctness is also restored
+    - compile/no-cg correctness is restored
+    - default PIECEWISE correctness is also restored
 
 ### 14. Fused RWKV7 prefill kernel is now wired into the sequence path
 
@@ -738,21 +738,21 @@ Handling:
   [RWKV7Attention._forward()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:550)
   from the Python token loop to `fused_mul_recurrent_rwkv7(...)`
 - kept the old Python recurrence as an env-guarded fallback:
-  - `RWKV7_DISABLE_FUSED_PREFILL=1`
+    - `RWKV7_DISABLE_FUSED_PREFILL=1`
 
 Validation:
 
 - unit tests:
-  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
-  - result: `11 passed, 2 skipped`
+    - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - result: `11 passed, 2 skipped`
 - service correctness:
-  - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --disable-compile-cache`
-  - result: one-shot vs step-by-step still matches on:
-    - `i am`
-    - `北京是`
-    - `The capital of France is`
+    - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --disable-compile-cache`
+    - result: one-shot vs step-by-step still matches on:
+        - `i am`
+        - `北京是`
+        - `The capital of France is`
 - op parity:
-  - `tests/model_executor/test_rwkv7.py` now compares the fused kernel against a
+    - `tests/model_executor/test_rwkv7.py` now compares the fused kernel against a
     reference recurrence on CUDA
 
 Artifacts:
@@ -768,13 +768,13 @@ Artifacts:
 Current interpretation:
 
 - eager fused-on vs fused-off:
-  - prompt `1024`: TTFT proxy `2991.876ms -> 522.067ms`
-  - prompt `1984`: TTFT proxy `5031.042ms -> 1069.782ms`
-  - decode ITL: `27.3ms -> 33~34ms`, so prefill gains came with a small decode-side regression
+    - prompt `1024`: TTFT proxy `2991.876ms -> 522.067ms`
+    - prompt `1984`: TTFT proxy `5031.042ms -> 1069.782ms`
+    - decode ITL: `27.3ms -> 33~34ms`, so prefill gains came with a small decode-side regression
 - piecewise fused-on:
-  - prompt `1024`: `276.974ms`
-  - prompt `1984`: `530.588ms`
-  - decode ITL returned to `27.6~27.8ms`, close to the old eager band
+    - prompt `1024`: `276.974ms`
+    - prompt `1984`: `530.588ms`
+    - decode ITL returned to `27.6~27.8ms`, close to the old eager band
 - the earlier eager post-fused seconds-long ITL spikes were not reproduced once
   warmup was increased to `2`; those look more like one-time warmup noise than a
   persistent regression
@@ -791,15 +791,15 @@ Problem:
 Handling:
 
 - successfully installed a small subset into `.venv`:
-  - `pytest`
-  - `aiohttp`
-  - `tblib`
+    - `pytest`
+    - `aiohttp`
+    - `tblib`
 - but:
-  - editable `vllm` install timed out while fetching `cmake`
-  - full `requirements/test.txt` timed out while fetching `pyogrio`
+    - editable `vllm` install timed out while fetching `cmake`
+    - full `requirements/test.txt` timed out while fetching `pyogrio`
 - so the practical validation path remains the already-prepared user env:
-  - `source ~/miniforge3/etc/profile.d/conda.sh`
-  - `conda activate vllm-dev`
+    - `source ~/miniforge3/etc/profile.d/conda.sh`
+    - `conda activate vllm-dev`
 
 Recommendation:
 
@@ -816,45 +816,45 @@ Problem:
   sequence
 - `RWKV7Block._forward_runtime()` still looped over each prefill request in
   Python:
-  - sliced `query_start_loc` one request at a time
-  - loaded/stored KV state one request at a time
-  - never exercised the fused op's existing `cu_seqlens` support
+    - sliced `query_start_loc` one request at a time
+    - loaded/stored KV state one request at a time
+    - never exercised the fused op's existing `cu_seqlens` support
 
 Handling:
 
 - added a varlen shift helper:
-  - `token_shift_with_cache_varlen(...)`
+    - `token_shift_with_cache_varlen(...)`
 - added packed-prefill entrypoints:
-  - `RWKV7Attention.forward_prefill_batch(...)`
-  - `RWKV7FeedForward.forward_prefill_batch(...)`
+    - `RWKV7Attention.forward_prefill_batch(...)`
+    - `RWKV7FeedForward.forward_prefill_batch(...)`
 - added `RWKV7Block._run_prefill_batch(...)`
 - switched the prefill branch of
   [RWKV7Block._forward_runtime()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py)
   to:
-  - slice all prefill tokens as one flat range
-  - build per-request `cu_seqlens` from `query_start_loc`
-  - mask out nonexistent initial states using `seq_lens > query_lens`
-  - batch-load KV state with `_get_kv_states(...)`
-  - batch-store final state with `_store_kv_states(...)`
+    - slice all prefill tokens as one flat range
+    - build per-request `cu_seqlens` from `query_start_loc`
+    - mask out nonexistent initial states using `seq_lens > query_lens`
+    - batch-load KV state with `_get_kv_states(...)`
+    - batch-store final state with `_store_kv_states(...)`
 - kept the old per-request loop behind the existing env switch:
-  - `RWKV7_DISABLE_FUSED_PREFILL=1`
+    - `RWKV7_DISABLE_FUSED_PREFILL=1`
 
 Validation:
 
 - unit tests:
-  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
-  - result: `12 passed, 2 skipped`
+    - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - result: `12 passed, 2 skipped`
 - new coverage:
-  - `test_rwkv7_block_batches_prefill_tokens_without_changing_results`
+    - `test_rwkv7_block_batches_prefill_tokens_without_changing_results`
 - service correctness:
-  - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --disable-compile-cache`
-  - one-shot vs step-by-step still matches on:
-    - `i am`
-    - `北京是`
-    - `The capital of France is`
+    - `python tmp_rwkv7_compare.py --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF --disable-compile-cache`
+    - one-shot vs step-by-step still matches on:
+        - `i am`
+        - `北京是`
+        - `The capital of France is`
 - service batching smoke:
-  - `tmp_rwkv7_long_benchmark.py --cudagraph-mode piecewise --disable-compile-cache --max-tokens 16 --concurrency-levels 4 8`
-  - both `4` and `8` concurrency matched the serial baseline
+    - `tmp_rwkv7_long_benchmark.py --cudagraph-mode piecewise --disable-compile-cache --max-tokens 16 --concurrency-levels 4 8`
+    - both `4` and `8` concurrency matched the serial baseline
 
 Artifacts:
 
@@ -878,39 +878,39 @@ Current interpretation:
 Problem:
 
 - the first packed-prefill smoke used:
-  - `max_tokens=16`
-  - short mixed prompts
-  - one round only
+    - `max_tokens=16`
+    - short mixed prompts
+    - one round only
 - that was compared informally against the earlier eager baseline which used:
-  - `max_tokens=64`
-  - a different scenario mix
+    - `max_tokens=64`
+    - a different scenario mix
 - a later one-shot exact long-input sweep also produced an anomalously bad
   `PIECEWISE` row for:
-  - prompt `1024`
-  - concurrency `8`
-  - aggregate TPS `13.387`
+    - prompt `1024`
+    - concurrency `8`
+    - aggregate TPS `13.387`
 
 Handling:
 
 - added a reusable exact-token benchmark:
-  - [tmp_rwkv7_exact_long_input_bench.py](/home/liu/vllm/tmp_rwkv7_exact_long_input_bench.py)
+    - [tmp_rwkv7_exact_long_input_bench.py](/home/liu/vllm/tmp_rwkv7_exact_long_input_bench.py)
 - reran eager and `PIECEWISE` on exact token lengths:
-  - prompt `1024`
-  - prompt `1984`
-  - concurrency `1/4/8`
-  - `max_tokens=64`
+    - prompt `1024`
+    - prompt `1984`
+    - concurrency `1/4/8`
+    - `max_tokens=64`
 - then did focused reruns on the suspicious rows:
-  - `1024`, concurrency `8`, `rounds=2`
-  - `1984`, concurrency `8`
+    - `1024`, concurrency `8`, `rounds=2`
+    - `1984`, concurrency `8`
 
 Key findings:
 
 - focused steady-state `1024 + 64`, concurrency `8`:
-  - eager: `131.458 / 124.108` TPS
-  - piecewise: `120.680 / 123.058` TPS
+    - eager: `131.458 / 124.108` TPS
+    - piecewise: `120.680 / 123.058` TPS
 - focused `1984 + 64`, concurrency `8`:
-  - eager: `14.594` TPS
-  - piecewise: `80.053` TPS
+    - eager: `14.594` TPS
+    - piecewise: `80.053` TPS
 
 Interpretation:
 
@@ -927,8 +927,8 @@ Why performance is not a clean win everywhere:
 
 - packed prefill only improves the prefill-heavy side of the runtime
 - the decode hot path is still the older tensor implementation:
-  - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:404)
-  - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:748)
+    - [RWKV7FeedForward.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:404)
+    - [RWKV7Attention.forward_decode_batch()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:748)
 - so once prompt length is not extreme enough to dominate the request,
   `PIECEWISE` only gets part of the total request time back
 - exact benchmark `aggregate_tps` is also defined as `completion_tokens / wall_time`,
@@ -942,39 +942,39 @@ Implementation:
   `fused_mul_recurrent_rwkv7(...)` on CUDA instead of the older explicit tensor
   recurrence
 - recurrent input projection and output finalization are now shared between:
-  - `_forward(...)`
-  - `forward_prefill_batch(...)`
-  - `forward_decode_batch(...)`
+    - `_forward(...)`
+    - `forward_prefill_batch(...)`
+    - `forward_decode_batch(...)`
 - the fused op accepts a generic disable knob:
-  - `RWKV7_DISABLE_FUSED_RECURRENT=1`
-  - legacy `RWKV7_DISABLE_FUSED_PREFILL=1` still disables the fused path too
+    - `RWKV7_DISABLE_FUSED_RECURRENT=1`
+    - legacy `RWKV7_DISABLE_FUSED_PREFILL=1` still disables the fused path too
 - added a CUDA regression guard:
-  - `test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda`
+    - `test_rwkv7_block_batches_decode_tokens_without_changing_results_cuda`
 
 Validation:
 
 - unit tests:
-  - `python -m pytest -q tests/model_executor/test_rwkv7.py`
-  - result: `13 passed, 2 skipped`
+    - `python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - result: `13 passed, 2 skipped`
 - service correctness:
-  - `tmp_rwkv7_compare.py --disable-compile-cache`
-  - standard `3` prompts still match one-shot vs step-by-step
-  - log:
-    - [vllm_rwkv7_compare_default_decodefused_20260413.log](/tmp/vllm_rwkv7_compare_default_decodefused_20260413.log)
+    - `tmp_rwkv7_compare.py --disable-compile-cache`
+    - standard `3` prompts still match one-shot vs step-by-step
+    - log:
+        - [vllm_rwkv7_compare_default_decodefused_20260413.log](/tmp/vllm_rwkv7_compare_default_decodefused_20260413.log)
 - exact long-input benchmark, sequential on a single GPU:
-  - eager:
-    - `1024 + 64`, `c=8`: `128.662 / 126.905`, avg `127.784`
-    - `1984 + 64`, `c=8`: `82.291 / 84.238`, avg `83.264`
-  - piecewise:
-    - `1024 + 64`, `c=8`: `123.847 / 124.573`, avg `124.210`
-    - `1984 + 64`, `c=8`: `84.708 / 88.764`, avg `86.736`
+    - eager:
+        - `1024 + 64`, `c=8`: `128.662 / 126.905`, avg `127.784`
+        - `1984 + 64`, `c=8`: `82.291 / 84.238`, avg `83.264`
+    - piecewise:
+        - `1024 + 64`, `c=8`: `123.847 / 124.573`, avg `124.210`
+        - `1984 + 64`, `c=8`: `84.708 / 88.764`, avg `86.736`
 
 Interpretation:
 
 - decode recurrence was indeed one of the remaining RWKV7 bottlenecks
 - after it was fused, the current exact-long steady-state rows cluster tightly:
-  - eager is still slightly ahead at `1024`
-  - `PIECEWISE` is slightly ahead at `1984`
+    - eager is still slightly ahead at `1024`
+    - `PIECEWISE` is slightly ahead at `1984`
 - this means the largest RWKV7 model-specific runtime gaps are now much smaller
   than they were before decode fusion
 - it also means compile is no longer showing a huge model-side throughput win
@@ -994,17 +994,17 @@ Correctness:
 - `tmp_rwkv7_compare.py --enable-prefix-caching --disable-compile-cache`
 - standard `3` prompts still match one-shot vs step-by-step
 - log:
-  - [vllm_rwkv7_compare_prefixcache_20260413.log](/tmp/vllm_rwkv7_compare_prefixcache_20260413.log)
+    - [vllm_rwkv7_compare_prefixcache_20260413.log](/tmp/vllm_rwkv7_compare_prefixcache_20260413.log)
 
 Prefix-caching throughput:
 
 - exact-long benchmark now supports `--enable-prefix-caching`
 - eager:
-  - `1024 + 64`, `c=8`: `130.217 / 210.408`, avg `170.313`
-  - `1984 + 64`, `c=8`: `155.799 / 270.292`, avg `213.046`
+    - `1024 + 64`, `c=8`: `130.217 / 210.408`, avg `170.313`
+    - `1984 + 64`, `c=8`: `155.799 / 270.292`, avg `213.046`
 - piecewise:
-  - `1024 + 64`, `c=8`: `149.130 / 208.119`, avg `178.625`
-  - `1984 + 64`, `c=8`: `165.642 / 256.278`, avg `210.960`
+    - `1024 + 64`, `c=8`: `149.130 / 208.119`, avg `178.625`
+    - `1984 + 64`, `c=8`: `165.642 / 256.278`, avg `210.960`
 
 Interpretation:
 
@@ -1017,15 +1017,15 @@ Interpretation:
 Mixed prompt-length throughput:
 
 - added:
-  - [tmp_rwkv7_mixed_exact_prompt_bench.py](/home/liu/vllm/tmp_rwkv7_mixed_exact_prompt_bench.py)
+    - [tmp_rwkv7_mixed_exact_prompt_bench.py](/home/liu/vllm/tmp_rwkv7_mixed_exact_prompt_bench.py)
 - prompt lengths:
-  - `64/128/256/512/768/1024/1536/1984`
+    - `64/128/256/512/768/1024/1536/1984`
 - without prefix caching:
-  - eager: `149.064 / 150.716`, avg `149.890`
-  - piecewise: `87.009 / 134.828`, avg `110.918`
+    - eager: `149.064 / 150.716`, avg `149.890`
+    - piecewise: `87.009 / 134.828`, avg `110.918`
 - with prefix caching:
-  - eager: `225.201 / 231.280`, avg `228.240`
-  - piecewise: `228.883 / 229.894`, avg `229.388`
+    - eager: `225.201 / 231.280`, avg `228.240`
+    - piecewise: `228.883 / 229.894`, avg `229.388`
 
 Interpretation:
 
@@ -1034,34 +1034,34 @@ Interpretation:
 - once prefix caching is enabled, eager and `PIECEWISE` are effectively tied
   again on this mixed service-style workload
 - at this point, compile is better understood as:
-  - supported
-  - correct on the validated path
-  - not a guaranteed standalone speedup over an already-fixed eager path
-  - compatible with service features like prefix caching
+    - supported
+    - correct on the validated path
+    - not a guaranteed standalone speedup over an already-fixed eager path
+    - compatible with service features like prefix caching
 
 ### 20. Longer outputs and the old compile_no_cg 128/c8 tail item are now covered
 
 Longer-output exact-long benchmark:
 
 - used:
-  - prompt lengths `1024` and `1920`
-  - `max_tokens=128`
-  - concurrency `8`
+    - prompt lengths `1024` and `1920`
+    - `max_tokens=128`
+    - concurrency `8`
 - note:
-  - `1984 + 128` is invalid under the current `2048` cap, so `1920` is the
+    - `1984 + 128` is invalid under the current `2048` cap, so `1920` is the
     longest exact-long row that still fits
 
 Results:
 
 - eager:
-  - `1024 + 128`: `187.512 / 185.750`, avg `186.631`
-  - `1920 + 128`: `137.117 / 137.148`, avg `137.133`
+    - `1024 + 128`: `187.512 / 185.750`, avg `186.631`
+    - `1920 + 128`: `137.117 / 137.148`, avg `137.133`
 - piecewise:
-  - `1024 + 128`: `180.043 / 182.027`, avg `181.035`
-  - `1920 + 128`: `134.320 / 135.409`, avg `134.864`
+    - `1024 + 128`: `180.043 / 182.027`, avg `181.035`
+    - `1920 + 128`: `134.320 / 135.409`, avg `134.864`
 - compile_no_cg:
-  - `1024 + 128`: `177.782 / 175.871`, avg `176.827`
-  - `1920 + 128`: `133.385 / 133.164`, avg `133.275`
+    - `1024 + 128`: `177.782 / 175.871`, avg `176.827`
+    - `1920 + 128`: `133.385 / 133.164`, avg `133.275`
 
 Interpretation:
 
@@ -1073,13 +1073,13 @@ Interpretation:
 Historical tail-item recheck:
 
 - reran the old mixed-prompt scenario directly:
-  - `tmp_rwkv7_long_benchmark.py`
-  - `compile_no_cg`
-  - `max_tokens=128`
-  - concurrency `8`
+    - `tmp_rwkv7_long_benchmark.py`
+    - `compile_no_cg`
+    - `max_tokens=128`
+    - concurrency `8`
 - result:
-  - aggregate TPS `277.310 / 274.227`, avg `275.768`
-  - all requests matched the serial baseline
+    - aggregate TPS `277.310 / 274.227`, avg `275.768`
+    - all requests matched the serial baseline
 
 Conclusion:
 
@@ -1095,22 +1095,22 @@ Workload:
 - prompt set: `default_mixed_8`
 - `max_tokens=64`
 - model:
-  - `RWKV7-Goose-World2.9-0.4B-HF`
+    - `RWKV7-Goose-World2.9-0.4B-HF`
 - rounds `2`, warmup `1`
 - eager and `PIECEWISE` rerun sequentially on one GPU
 
 Results:
 
 - eager:
-  - `1`: `36.107 / 35.839`, avg `35.973`
-  - `2`: `68.850 / 73.769`, avg `71.310`
-  - `4`: `133.740 / 141.088`, avg `137.414`
-  - `8`: `286.786 / 283.853`, avg `285.320`
+    - `1`: `36.107 / 35.839`, avg `35.973`
+    - `2`: `68.850 / 73.769`, avg `71.310`
+    - `4`: `133.740 / 141.088`, avg `137.414`
+    - `8`: `286.786 / 283.853`, avg `285.320`
 - piecewise:
-  - `1`: `34.830 / 35.667`, avg `35.249`
-  - `2`: `69.997 / 70.206`, avg `70.102`
-  - `4`: `129.235 / 129.512`, avg `129.374`
-  - `8`: `271.006 / 257.948`, avg `264.477`
+    - `1`: `34.830 / 35.667`, avg `35.249`
+    - `2`: `69.997 / 70.206`, avg `70.102`
+    - `4`: `129.235 / 129.512`, avg `129.374`
+    - `8`: `271.006 / 257.948`, avg `264.477`
 
 Interpretation:
 
@@ -1261,24 +1261,24 @@ Why this probe exists:
 Commands and raw artifacts:
 
 - eager JSON:
-  - [rwkv7_prefix_hit_eager_20260413.json](/tmp/rwkv7_prefix_hit_eager_20260413.json)
+    - [rwkv7_prefix_hit_eager_20260413.json](/tmp/rwkv7_prefix_hit_eager_20260413.json)
 - eager log:
-  - [vllm_rwkv7_prefix_hit_eager_20260413.log](/tmp/vllm_rwkv7_prefix_hit_eager_20260413.log)
+    - [vllm_rwkv7_prefix_hit_eager_20260413.log](/tmp/vllm_rwkv7_prefix_hit_eager_20260413.log)
 - piecewise JSON:
-  - [rwkv7_prefix_hit_piecewise_20260413.json](/tmp/rwkv7_prefix_hit_piecewise_20260413.json)
+    - [rwkv7_prefix_hit_piecewise_20260413.json](/tmp/rwkv7_prefix_hit_piecewise_20260413.json)
 - piecewise log:
-  - [vllm_rwkv7_prefix_hit_piecewise_20260413.log](/tmp/vllm_rwkv7_prefix_hit_piecewise_20260413.log)
+    - [vllm_rwkv7_prefix_hit_piecewise_20260413.log](/tmp/vllm_rwkv7_prefix_hit_piecewise_20260413.log)
 
 Steady-state summary:
 
 - eager:
-  - hit ratio `0.0`: `109.572 / 122.895`, avg `116.233`
-  - hit ratio `0.5`: `166.636 / 172.240`, avg `169.438`
-  - hit ratio `1.0`: `251.274 / 255.214`, avg `253.244`
+    - hit ratio `0.0`: `109.572 / 122.895`, avg `116.233`
+    - hit ratio `0.5`: `166.636 / 172.240`, avg `169.438`
+    - hit ratio `1.0`: `251.274 / 255.214`, avg `253.244`
 - piecewise:
-  - hit ratio `0.0`: `121.039 / 124.047`, avg `122.543`
-  - hit ratio `0.5`: `163.858 / 174.774`, avg `169.316`
-  - hit ratio `1.0`: `252.544 / 249.909`, avg `251.227`
+    - hit ratio `0.0`: `121.039 / 124.047`, avg `122.543`
+    - hit ratio `0.5`: `163.858 / 174.774`, avg `169.316`
+    - hit ratio `1.0`: `252.544 / 249.909`, avg `251.227`
 
 Correctness and log checks:
 
@@ -1289,14 +1289,14 @@ Interpretation:
 
 - prefix caching remains the dominant service-level lever for RWKV7
 - throughput rises almost monotonically with prefix-hit ratio:
-  - eager: `116.233 -> 169.438 -> 253.244`
-  - piecewise: `122.543 -> 169.316 -> 251.227`
+    - eager: `116.233 -> 169.438 -> 253.244`
+    - piecewise: `122.543 -> 169.316 -> 251.227`
 - `PIECEWISE` is a bit better at `0%` hit, essentially tied at `50%`, and
   slightly behind at `100%`; practically they sit in the same band once cache
   reuse is present
 - this strengthens the current project-level conclusion:
-  - compile/cudagraph is supported and correct on RWKV7
-  - the biggest serving gain still comes from prefix caching itself, not from
+    - compile/cudagraph is supported and correct on RWKV7
+    - the biggest serving gain still comes from prefix caching itself, not from
     compile alone
 
 Important caveat:
@@ -1327,22 +1327,22 @@ To answer that, the existing mixed-prompt benchmark was reused with:
 - output length: `64`
 - prefix caching: disabled
 - execution paths:
-  - eager
-  - `PIECEWISE`
+    - eager
+    - `PIECEWISE`
 - concurrency:
-  - `1, 2, 4, 8, 16, 32, 64`
-  - then `128` in a separate stress pass
+    - `1, 2, 4, 8, 16, 32, 64`
+    - then `128` in a separate stress pass
 
 Raw artifacts:
 
 - piecewise `1..64`:
-  - [rwkv7_piecewise_high_conc_20260413.json](/tmp/rwkv7_piecewise_high_conc_20260413.json)
+    - [rwkv7_piecewise_high_conc_20260413.json](/tmp/rwkv7_piecewise_high_conc_20260413.json)
 - piecewise `128`:
-  - [rwkv7_piecewise_c128_20260413.json](/tmp/rwkv7_piecewise_c128_20260413.json)
+    - [rwkv7_piecewise_c128_20260413.json](/tmp/rwkv7_piecewise_c128_20260413.json)
 - eager `1..64`:
-  - [rwkv7_eager_high_conc_20260413.json](/tmp/rwkv7_eager_high_conc_20260413.json)
+    - [rwkv7_eager_high_conc_20260413.json](/tmp/rwkv7_eager_high_conc_20260413.json)
 - eager `128`:
-  - [rwkv7_eager_c128_20260413.json](/tmp/rwkv7_eager_c128_20260413.json)
+    - [rwkv7_eager_c128_20260413.json](/tmp/rwkv7_eager_c128_20260413.json)
 
 Summary table:
 
@@ -1360,13 +1360,13 @@ Summary table:
 Latency observations:
 
 - eager:
-  - stays near `~2.05s` through `8`
-  - `64`: avg `3.171s`, p95 `3.185s`
-  - `128`: avg `15.553s`, p95 `21.746s`
+    - stays near `~2.05s` through `8`
+    - `64`: avg `3.171s`, p95 `3.185s`
+    - `128`: avg `15.553s`, p95 `21.746s`
 - piecewise:
-  - stays near `~1.87s` to `~2.38s` through `32`
-  - `64`: avg `3.192s`, p95 `3.206s`
-  - `128`: avg `4.875s`, p95 `4.945s`
+    - stays near `~1.87s` to `~2.38s` through `32`
+    - `64`: avg `3.192s`, p95 `3.206s`
+    - `128`: avg `4.875s`, p95 `4.945s`
 
 Correctness:
 
@@ -1404,21 +1404,21 @@ What it does:
 
 - targets a remote OpenAI-compatible vLLM endpoint
 - supports:
-  - `/v1/completions`
-  - `/v1/chat/completions`
+    - `/v1/completions`
+    - `/v1/chat/completions`
 - supports:
-  - fixed-concurrency closed-loop load
-  - arrival-rate-based staggered load for more production-like traffic
+    - fixed-concurrency closed-loop load
+    - arrival-rate-based staggered load for more production-like traffic
 - accepts prompts from:
-  - inline CLI args
-  - `.txt`
-  - `.json`
-  - `.jsonl`
+    - inline CLI args
+    - `.txt`
+    - `.json`
+    - `.jsonl`
 - saves:
-  - per-run config
-  - summary JSON
-  - summary Markdown
-  - per-request JSONL records
+    - per-run config
+    - summary JSON
+    - summary Markdown
+    - per-request JSONL records
 
 Default output directory:
 
@@ -1442,7 +1442,7 @@ python tmp_rwkv7_remote_concurrency_bench.py \
   --return-token-ids
 ```
 
-2. staggered "more real" serving test:
+1. staggered "more real" serving test:
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
@@ -1524,17 +1524,17 @@ enabled the config path no longer falls back from `all` to `align`.
 Implementation summary:
 
 - extended `LinearAttentionMetadata` so `mamba_cache_mode=all` can carry:
-  - `num_computed_tokens`
-  - `block_idx_last_computed_token`
-  - `block_idx_first_scheduled_token`
-  - `block_idx_last_scheduled_token`
+    - `num_computed_tokens`
+    - `block_idx_last_computed_token`
+    - `block_idx_first_scheduled_token`
+    - `block_idx_last_scheduled_token`
 - `LinearAttentionMetadataBuilder` now emits the full block table in `all`
   mode instead of collapsing to a single slot id
 - RWKV7 decode runtime now reads from the last computed block and writes to the
   last scheduled block when a decode step crosses a cache block boundary
 - RWKV7 prefill runtime now writes:
-  - intermediate aligned block-boundary states
-  - plus the final per-sequence state
+    - intermediate aligned block-boundary states
+    - plus the final per-sequence state
 - the block-boundary writeback currently reuses the existing fused recurrent
   output path for normal outputs/final state and computes checkpoint recurrent
   states explicitly for cache writeback correctness
@@ -1575,8 +1575,8 @@ Still pending:
 What was added:
 
 - `tmp_rwkv7_prefix_hit_bench.py` now supports:
-  - `--mamba-cache-mode`
-  - startup log signal extraction in the JSON output
+    - `--mamba-cache-mode`
+    - startup log signal extraction in the JSON output
 - `tests/model_executor/test_rwkv7.py` now also covers multi-sequence cache-all
   prefill correctness
 
@@ -1628,15 +1628,15 @@ python tmp_rwkv7_prefix_hit_bench.py \
 Observed startup signals:
 
 - default RWKV7 startup now says:
-  - `Mamba cache mode is set to 'all' for RWKV7ForCausalLM by default when prefix caching is enabled`
+    - `Mamba cache mode is set to 'all' for RWKV7ForCausalLM by default when prefix caching is enabled`
 - forced `align` stays in `align`
 
 Benchmark summary:
 
 - `all`, hit ratio `0.0 / 0.5 / 1.0`
-  - avg aggregate TPS: `19.404 / 29.758 / 120.398`
+    - avg aggregate TPS: `19.404 / 29.758 / 120.398`
 - `align`, hit ratio `0.0 / 0.5 / 1.0`
-  - avg aggregate TPS: `112.421 / 164.175 / 238.235`
+    - avg aggregate TPS: `112.421 / 164.175 / 238.235`
 - both modes stayed `all_match_serial_baseline=true` in every round
 
 Prefix-cache hit-rate notes from service logs:
@@ -1649,9 +1649,9 @@ Prefix-cache hit-rate notes from service logs:
 Interpretation:
 
 - the new RWKV7 `all` mode plumbing is functionally live:
-  - default config selects `all`
-  - repeated-prefix serving yields non-zero prefix-cache hit rate
-  - outputs remain correct
+    - default config selects `all`
+    - repeated-prefix serving yields non-zero prefix-cache hit rate
+    - outputs remain correct
 - but current throughput is much worse than `align`
 - the most likely cause is the current cache-all recurrent checkpoint writeback,
   which still requires an explicit second recurrent pass to materialize aligned
@@ -1740,17 +1740,17 @@ python tmp_rwkv7_prefix_hit_bench.py \
 Observed startup signals:
 
 - explicit `all` run:
-  - `Prefix caching in Mamba cache 'all' mode is currently enabled`
+    - `Prefix caching in Mamba cache 'all' mode is currently enabled`
 - default run:
-  - `Prefix caching in Mamba cache 'align' mode is currently enabled`
+    - `Prefix caching in Mamba cache 'align' mode is currently enabled`
 
 Updated repeated-prefix summary (`c=8`, `shared_prefix_len=1024`,
 `tail_len=128`, `max_tokens=64`):
 
 - explicit `all`
-  - hit `0.0 / 0.5 / 1.0`: `77.784 / 117.627 / 221.835`
+    - hit `0.0 / 0.5 / 1.0`: `77.784 / 117.627 / 221.835`
 - default `align`
-  - hit `0.0 / 0.5 / 1.0`: `119.735 / 175.788 / 253.456`
+    - hit `0.0 / 0.5 / 1.0`: `119.735 / 175.788 / 253.456`
 - all requests still matched the serial baseline
 
 Interpretation:
@@ -1777,9 +1777,9 @@ What happened:
 Most likely root cause:
 
 - a cache slot for RWKV7 is a composite of:
-  - attn shift state
-  - recurrent state
-  - ffn shift state
+    - attn shift state
+    - recurrent state
+    - ffn shift state
 - direct-writing only the recurrent component made a partially updated slot
   observable before the boundary attn/ffn shift states were written
 - under real serving concurrency, that is unsafe even if the direct-written
@@ -1791,8 +1791,8 @@ Updated runtime decision:
 - do not use recurrent-only direct-write in RWKV7 serving runtime yet
 - keep boundary slot publication atomic at the runtime level
 - still keep the safe no-`torch.cat` store optimization:
-  - boundary block states are stored with one `_store_kv_states(...)`
-  - final output slots are stored with a second `_store_kv_states(...)`
+    - boundary block states are stored with one `_store_kv_states(...)`
+    - final output slots are stored with a second `_store_kv_states(...)`
 
 Validation:
 
@@ -1828,8 +1828,8 @@ python tmp_rwkv7_prefix_hit_bench.py \
 Updated repeated-prefix summary:
 
 - `all` (`safe no-cat`)
-  - hit `0.0 / 0.5 / 1.0`: `116.669 / 120.881 / 231.013`
-  - all requests matched the serial baseline
+    - hit `0.0 / 0.5 / 1.0`: `116.669 / 120.881 / 231.013`
+    - all requests matched the serial baseline
 
 Interpretation:
 
@@ -1867,7 +1867,7 @@ python tmp_rwkv7_prefix_hit_bench.py \
 Result:
 
 - `align`, hit `0.0 / 0.5 / 1.0`
-  - `117.205 / 160.097 / 230.063`
+    - `117.205 / 160.097 / 230.063`
 - all requests still matched the serial baseline
 
 Comparison to the earlier `2026-04-15` align baseline:
@@ -1932,7 +1932,7 @@ python tmp_rwkv7_prefix_hit_bench.py \
 Observed result:
 
 - `align`, hit `0.0 / 0.5 / 1.0`
-  - `115.775 / 165.857 / 221.106`
+    - `115.775 / 165.857 / 221.106`
 - all requests matched the serial baseline
 
 Interpretation:
@@ -1980,14 +1980,14 @@ python tmp_rwkv7_prefix_hit_bench.py \
 Observed result:
 
 - hit `0.0`
-  - rounds: `121.232, 115.219, 121.002, 133.697, 144.498`
-  - median: `121.232`
+    - rounds: `121.232, 115.219, 121.002, 133.697, 144.498`
+    - median: `121.232`
 - hit `0.5`
-  - rounds: `162.771, 186.301, 171.810, 177.612, 174.989`
-  - median: `174.989`
+    - rounds: `162.771, 186.301, 171.810, 177.612, 174.989`
+    - median: `174.989`
 - hit `1.0`
-  - rounds: `241.200, 255.500, 248.332, 250.331, 242.496`
-  - median: `248.332`
+    - rounds: `241.200, 255.500, 248.332, 250.331, 242.496`
+    - median: `248.332`
 - all requests matched the serial baseline
 
 Interpretation:
@@ -2087,8 +2087,8 @@ Setup:
 - repo: `/home/liu/vllm-rwkv7`
 - local env inside repo: `.venv`
 - install path:
-  - `uv venv --python /home/liu/miniforge3/envs/vllm-rwkv7/bin/python --seed`
-  - `VLLM_USE_PRECOMPILED=1 uv pip install --python .venv/bin/python -e . --torch-backend=auto`
+    - `uv venv --python /home/liu/miniforge3/envs/vllm-rwkv7/bin/python --seed`
+    - `VLLM_USE_PRECOMPILED=1 uv pip install --python .venv/bin/python -e . --torch-backend=auto`
 
 Validation results:
 
@@ -2111,9 +2111,9 @@ Interpretation:
 - this is the strongest validation so far that the PR worktree is functionally
   complete enough for upstream review
 - the branch can now be described as:
-  - RWKV7 eager: working
-  - RWKV7 compile + `piecewise` cudagraph: working
-  - RWKV7 targeted tests: passing
+    - RWKV7 eager: working
+    - RWKV7 compile + `piecewise` cudagraph: working
+    - RWKV7 targeted tests: passing
 - performance still follows the known pattern that eager can be faster than
   `piecewise` on smaller / shorter workloads
 
@@ -2152,3 +2152,185 @@ Validation:
    - startup succeeded
    - the startup log still showed compile + cudagraph enablement
    - the empty-graph warning no longer appeared
+
+## 2026-04-17 Update: native `.pth` checkpoint + txt tokenizer support
+
+Native RWKV7 `.pth` support is now wired through on the dev branch while
+keeping the original HF loading path intact.
+
+What was added:
+
+- direct config inference from local `.pt` / `.pth`
+- single-file `.pth` / `.pt` loading in the default loader
+- native RWKV7 weight-name remapping in `rwkv7.py`
+- native RWKV txt tokenizer support
+- native RWKV renderer support for chat/completions
+- metadata guards so local `.pth` / `.txt` are not mistreated as HF repos
+
+Validation:
+
+1. targeted tests
+   - `tests/renderers/test_rwkv.py`
+   - `tests/tokenizers/test_rwkv.py`
+   - `tests/transformers_utils/test_config.py`
+   - `tests/model_executor/model_loader/test_default_loader.py`
+   - `tests/model_executor/test_rwkv7.py`
+   - result: `28 passed, 2 skipped`
+2. real 1.5B checkpoint remap sanity
+   - checkpoint: `rwkv7-g1e-1.5b-20260309-ctx8192.pth`
+   - `state_keys=798`
+   - `mapped_params=795`
+   - `ignored=3` (`blocks.0.att.v0/v1/v2`)
+   - no shape mismatches
+3. real 0.4B native eager generation
+   - checkpoint: `rwkv7-g1d-0.4b-20260210-ctx8192.pth`
+   - tokenizer: `rwkv_vocab_v20250609.txt`
+   - prompt `"The capital of France is"` produced coherent text beginning
+     with `" Paris."`
+   - prompt `"Hello, my name is"` also produced coherent text
+4. real 0.4B native chat generation
+   - offline `LLM.chat(...)` succeeded
+   - output began with `" Hello! How can I assist you today?"`
+5. real 0.4B native `compile + piecewise`
+   - offline `LLM(...)` with
+     `compilation_config={'cudagraph_mode': 'piecewise'}`
+   - generation succeeded
+   - logs confirmed `CompilationMode.VLLM_COMPILE`
+   - logs confirmed `CUDAGraphMode.PIECEWISE`
+   - logs confirmed successful piecewise graph capture
+
+HF regression sanity:
+
+- `get_config('/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF')` still resolves as
+  normal HF RWKV7 config with expected dimensions
+
+## 2026-04-17 native .pth support landed locally
+
+- Branch: `codex/rwkv7-adapter-align`
+- Commit: `b060c05d6` (`Add native RWKV7 .pth checkpoint support`)
+- Scope:
+    - native RWKV7 `.pt/.pth` config inference
+    - single-file `.pt/.pth` loader support
+    - native RWKV7 weight-name remap into vLLM RWKV7 module layout
+    - native RWKV `.txt` tokenizer support
+    - native RWKV renderer for chat templating without HF tokenizer dependency
+    - preserved existing HF RWKV7 loading path
+- Validation:
+    - `pre-commit run` on staged code/tests: passed
+    - `pytest -q tests/renderers/test_rwkv.py tests/tokenizers/test_rwkv.py tests/transformers_utils/test_config.py tests/model_executor/model_loader/test_default_loader.py tests/model_executor/test_rwkv7.py -k 'rwkv or native_pth or txt_tokenizer or single_pth'`
+        - `28 passed, 2 skipped, 3 deselected`
+    - HF config sanity still resolves for `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - native 1.5B `.pth` config inference resolves to `hidden_size=2048`, `layers=24`, `heads=32`, `head_dim=64`, `vocab=65536`, `ctx=8192`
+    - native 0.4B `.pth + .txt` eager generate produces coherent text
+    - native 0.4B `.pth + .txt` compile + piecewise generate also produces coherent text
+
+## 2026-04-17 native RWKV txt tokenizer hot-path cleanup
+
+- Branch: `codex/rwkv7-adapter-align`
+- Scope:
+    - precompute `id -> latin-1 token string` and `string -> id` maps
+    - cache `get_vocab()` / `get_added_vocab()` results
+    - reuse a cached special-id set instead of rebuilding it per call
+- Validation:
+    - `pytest -q tests/tokenizers/test_rwkv.py`
+        - `2 passed`
+    - `.venv/bin/pre-commit run ruff-check --files vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py`
+        - passed
+    - `.venv/bin/pre-commit run ruff-format --files vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py`
+        - passed
+- Local microbenchmark deltas:
+    - native `convert_ids_to_tokens([tid])`: `0.0409s -> 0.0196s`
+    - native `convert_tokens_to_string(tokens)`: `0.0596s -> 0.0437s`
+    - native incremental detokenization loop: `0.0214s -> 0.0193s`
+- Local end-to-end eager check on the same HF weights:
+    - HF tokenizer path: `880.821 output tok/s`
+    - native `.txt` tokenizer path: `879.511 output tok/s`
+    - result: native `.txt` path is now effectively at parity on this workload
+
+## 2026-04-22 HF RWKV fast tokenizer adapter
+
+- Branch: `codex/rwkv7-adapter-align`
+- Scope:
+    - local HF RWKV tokenizer directories are now detected as `tokenizer_mode=rwkv`
+      when `tokenizer_config.json` points at `hf_rwkv_tokenizer.RwkvTokenizer`
+    - `RWKVTokenizer` now uses optional `pyrwkv_tokenizer.WorldTokenizer` as the
+      fast Rust backend when available
+    - vLLM still owns the HF compatibility layer:
+        - `added_tokens.json`
+        - `added_tokens_decoder`
+        - `special_tokens_map.json`
+        - chat-template bos prefix
+    - this preserves the important HF RWKV behavior where `"\n\n"` maps to
+      added special id `65530`, while raw Rust base-vocab tokenization would map
+      it to base id `261`
+- Added tool:
+    - [tmp_rwkv7_tokenizer_speed_smoke.py](/home/liu/vllm/tmp_rwkv7_tokenizer_speed_smoke.py)
+    - purpose: real 0.4B slow-vs-fast tokenizer offline generation smoke
+
+Validation:
+
+```bash
+.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py
+.venv/bin/python -m pytest -q tests/model_executor/test_rwkv7.py
+.venv/bin/pre-commit run ruff-check --files \
+  vllm/tokenizers/rwkv.py \
+  vllm/tokenizers/registry.py \
+  tests/tokenizers/test_rwkv.py \
+  tests/renderers/test_rwkv.py \
+  tmp_rwkv7_tokenizer_speed_smoke.py
+.venv/bin/pre-commit run ruff-format --files \
+  vllm/tokenizers/rwkv.py \
+  vllm/tokenizers/registry.py \
+  tests/tokenizers/test_rwkv.py \
+  tests/renderers/test_rwkv.py \
+  tmp_rwkv7_tokenizer_speed_smoke.py
+```
+
+Results:
+
+- tokenizer/renderer tests: `6 passed`
+- RWKV7 model tests: `23 passed, 2 skipped`
+- ruff check/format: passed
+- real HF 0.1B and 0.4B tokenizer parity:
+    - `resolve_tokenizer_args(...) -> ('rwkv', model_path)`
+    - `get_tokenizer(...).is_fast == True`
+    - token ids match original HF slow tokenizer for:
+        - `北京是`
+        - `User: hi\n\nAssistant:`
+        - `a\n\nb`
+        - `<|rwkv_tokenizer_end_of_text|>x`
+        - mixed English/Chinese text
+    - chat-template rendered text matches the original HF slow tokenizer
+
+Tokenizer-only speed on the 0.4B HF directory:
+
+- workload: `3000` mixed English/Chinese prompt strings
+- slow HF encode loop: best `0.097766s`
+- fast RWKV encode loop: best `0.004333s`
+- encode-loop speedup: about `22.6x`
+- slow HF batch `__call__`: best `0.075943s`
+- fast RWKV batch `__call__`: best `0.008332s`
+- batch speedup: about `9.1x`
+
+Real 0.4B offline `LLM.generate` results:
+
+- long-output workload:
+    - `18` prompts, `369` input tokens, `1152` output tokens per round
+    - fast auto median output TPS: `447.021`
+    - slow HF median output TPS: `454.831`
+    - conclusion: no meaningful output-throughput difference; model decode
+      dominates this workload
+- prompt-heavy workload:
+    - `120` prompts, `2460` input tokens, `120` output tokens per round
+    - fast auto median output TPS: `296.304`
+    - slow HF median output TPS: `303.403`
+    - conclusion: still no stable end-to-end output TPS win; tokenizer rendering
+      is faster, but prefill/model work dominates measured wall time
+
+Practical interpretation:
+
+- fast tokenizer materially reduces tokenizer CPU overhead
+- correctness matches the HF slow tokenizer on the tested RWKV7 paths
+- do not expect a visible output-token/s gain for normal offline generation on
+  the 0.4B model unless the workload is tokenizer-bound or server-side request
+  admission/rendering is the bottleneck
