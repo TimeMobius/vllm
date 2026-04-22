@@ -210,11 +210,6 @@ class RWKVTokenizer(TokenizerLike):
         for token_bytes, token_id in self._token_to_id.items():
             self._root.add(token_bytes, token_id)
 
-        self._fast_backend = (
-            FastWorldTokenizer(str(vocab_path))
-            if FastWorldTokenizer is not None
-            else None
-        )
         self._id_to_token_str = {
             token_id: self._token_bytes_to_str(token_bytes)
             for token_id, token_bytes in self._id_to_token.items()
@@ -239,6 +234,9 @@ class RWKVTokenizer(TokenizerLike):
             if self._token_str_to_id.get(token) != token_id
         }
         self._vocab = {**self._token_str_to_id, **self._added_vocab}
+        self._fast_backend_supports_added_vocab = False
+        self._fast_backend_vocab_size: int | None = None
+        self._fast_backend = self._build_fast_backend()
         max_token_id = max(
             [*self._id_to_token.keys(), *self._special_token_map.values()],
             default=0,
@@ -272,6 +270,56 @@ class RWKVTokenizer(TokenizerLike):
             and bos_token in chat_template
             else ""
         )
+
+    def _build_fast_backend(self) -> Any | None:
+        if FastWorldTokenizer is None:
+            return None
+
+        from_buffer = getattr(FastWorldTokenizer, "from_buffer", None)
+        if self._added_vocab and callable(from_buffer):
+            max_rust_token_id = (1 << 16) - 1
+            if all(
+                0 <= token_id <= max_rust_token_id
+                for token_id in self._added_vocab.values()
+            ):
+                try:
+                    backend = from_buffer(self._build_augmented_vocab_buffer())
+                except Exception:
+                    backend = None
+                else:
+                    self._fast_backend_supports_added_vocab = True
+                    self._fast_backend_vocab_size = self._get_fast_backend_vocab_size(
+                        backend
+                    )
+                    return backend
+
+        try:
+            backend = FastWorldTokenizer(str(self.vocab_path))
+        except Exception:
+            return None
+        self._fast_backend_vocab_size = self._get_fast_backend_vocab_size(backend)
+        return backend
+
+    @staticmethod
+    def _get_fast_backend_vocab_size(backend: Any) -> int | None:
+        vocab_size = getattr(backend, "vocab_size", None)
+        if not callable(vocab_size):
+            return None
+        try:
+            return int(vocab_size())
+        except Exception:
+            return None
+
+    def _build_augmented_vocab_buffer(self) -> bytes:
+        buffer = self.vocab_path.read_bytes()
+        if buffer and not buffer.endswith(b"\n"):
+            buffer += b"\n"
+        for token, token_id in sorted(
+            self._added_vocab.items(), key=lambda item: item[1]
+        ):
+            token_bytes = token.encode("utf-8")
+            buffer += f"{token_id} {token!r} {len(token_bytes)}\n".encode()
+        return buffer
 
     def _build_special_token_map(
         self, metadata: dict[str, Any]
@@ -499,6 +547,16 @@ class RWKVTokenizer(TokenizerLike):
         truncation: bool | None,
         max_length: int | None,
     ) -> list[list[int]]:
+        if self._fast_backend is not None and self._fast_backend_supports_added_vocab:
+            return [
+                self._apply_truncation(
+                    list(ids),
+                    truncation,
+                    max_length,
+                )
+                for ids in self._fast_backend.encode_batch(texts)
+            ]
+
         split_texts = [self._split_special_tokens(text) for text in texts]
         plain_segments = [
             segment
@@ -527,6 +585,12 @@ class RWKVTokenizer(TokenizerLike):
         add_special_tokens: bool = True,
     ) -> list[int]:
         del add_special_tokens
+        if self._fast_backend is not None and self._fast_backend_supports_added_vocab:
+            return self._apply_truncation(
+                list(self._fast_backend.encode(text)),
+                truncation,
+                max_length,
+            )
         return self._encode_segments(
             self._split_special_tokens(text),
             truncation=truncation,
@@ -582,11 +646,19 @@ class RWKVTokenizer(TokenizerLike):
     ) -> str:
         if isinstance(ids, int):
             ids = [ids]
+        ids = list(ids)
+        if skip_special_tokens:
+            ids = [
+                token_id
+                for token_id in ids
+                if token_id not in self._all_special_ids_set
+            ]
+        fast_decoded = self._decode_with_fast_backend(ids)
+        if fast_decoded is not None:
+            return fast_decoded
+
         token_bytes = []
-        special_ids = self._all_special_ids_set if skip_special_tokens else ()
         for token_id in ids:
-            if token_id in special_ids:
-                continue
             if token_id in self._id_to_token:
                 token_bytes.append(self._id_to_token[token_id])
             else:
@@ -594,6 +666,21 @@ class RWKVTokenizer(TokenizerLike):
                 if token is not None:
                     token_bytes.append(token.encode("utf-8"))
         return b"".join(token_bytes).decode("utf-8", errors="replace")
+
+    def _decode_with_fast_backend(self, ids: list[int]) -> str | None:
+        if self._fast_backend is None:
+            return None
+        if self._added_vocab and not self._fast_backend_supports_added_vocab:
+            return None
+        if self._fast_backend_vocab_size is not None and any(
+            token_id < 0 or token_id >= self._fast_backend_vocab_size
+            for token_id in ids
+        ):
+            return None
+        try:
+            return str(self._fast_backend.decode(ids))
+        except Exception:
+            return None
 
     def convert_ids_to_tokens(
         self,

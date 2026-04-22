@@ -2235,3 +2235,84 @@ Conclusion:
 - token ids and chat formatting match the original HF slow tokenizer
 - real offline output throughput does not materially change on this 0.4B setup,
   because model prefill/decode dominates the measured wall time
+
+## 2026-04-22 Rust RWKV tokenizer explicit-id overlay
+
+This iteration supersedes the earlier "hybrid wrapper" limitation. The Rust
+backend now supports the HF RWKV overlay directly when vLLM provides an
+augmented vocab buffer.
+
+Rust repository: `/home/liu/rwkv-tokenizer`
+
+Implemented pieces:
+
+- `rwkv-tokenizer/src/trie.rs`
+    - trie node ids now use `Option<u16>`
+    - token id `0` is a valid terminal id instead of a sentinel
+- `rwkv-tokenizer/src/lib.rs`
+    - vocab loading uses explicit ids from each vocab row
+    - sparse id gaps are tracked with `assigned_ids`
+    - `get_vocab()` skips unassigned gaps
+    - `decode()` can decode explicit id `0` and appended overlay ids
+    - added `WorldTokenizer::from_buffer(&[u8])`
+- `bindings/python/src/lib.rs`
+    - added `WorldTokenizer.from_buffer(bytes)`
+    - changed constructor/decode paths to return Python exceptions rather than
+      panic on I/O or UTF-8 failures
+
+vLLM repository: `/home/liu/vllm`
+
+Implemented pieces:
+
+- `vllm/tokenizers/rwkv.py`
+    - builds an in-memory augmented vocab buffer from the base RWKV vocab plus
+      HF `added_tokens`/special-token ids
+    - uses `WorldTokenizer.from_buffer(...)` when available
+    - direct Rust encode/batch encode is enabled for augmented HF vocab
+    - direct Rust decode is enabled for the same augmented backend
+    - fallback behavior remains for older bindings or missing Rust backend
+
+Important behavior:
+
+- base RWKV vocab still contains `"\n\n"` as a normal token, e.g. base id `261`
+  in the real 0.4B vocab
+- HF RWKV tokenizer overlays `"\n\n"` as an added special token id `65530`
+- vLLM appends the HF overlay row after the base vocab row, so the Rust trie
+  path for `"\n\n"` resolves to the later HF id
+- HF bos/pad/unk token id `0` is now represented in Rust and decodable
+
+Local binding install command:
+
+```bash
+cd /home/liu/vllm
+uv pip install --python .venv/bin/python -e /home/liu/rwkv-tokenizer/bindings/python
+```
+
+Smoke results:
+
+- Rust binding `WorldTokenizer.from_buffer(...)`: available
+- Rust binding `encode("\n\n")`: `[65530]`
+- Rust binding `decode([0, 65530])`:
+  `"<|rwkv_tokenizer_end_of_text|>\n\n"`
+- vLLM tokenizer `is_fast`: `True`
+- vLLM tokenizer `encode("\n\n")`: `[65530]`
+- vLLM tokenizer `decode([0, 65530])`:
+  `"<|rwkv_tokenizer_end_of_text|>\n\n"`
+
+Validation:
+
+- Rust tokenizer crate:
+    - `cargo test --manifest-path rwkv-tokenizer/Cargo.toml`
+    - `6 passed`
+- Rust Python binding:
+    - `cargo check --manifest-path bindings/python/Cargo.toml`
+    - passed
+- vLLM tokenizer/renderer tests:
+    - `.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
+    - `6 passed`
+- vLLM RWKV7 model tests:
+    - `.venv/bin/python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - `23 passed, 2 skipped`
+- vLLM targeted pre-commit:
+    - ruff format/check, forbidden imports, mypy-local
+    - passed

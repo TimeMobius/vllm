@@ -1068,3 +1068,34 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - if API-server request admission becomes CPU-bound under high QPS, rerun
       fast vs slow through `/v1/completions` with concurrent clients rather than
       offline `LLM.generate`
+
+## 2026-04-22 Rust tokenizer overlay follow-up
+
+- [x] Rust tokenizer can now represent explicit token id `0`:
+    - trie terminal id changed from sentinel `0` to `Option<u16>`
+    - required for HF RWKV bos/pad/unk token
+      `<|rwkv_tokenizer_end_of_text|> -> 0`
+- [x] Rust tokenizer can now load an augmented vocab from memory:
+    - `WorldTokenizer::from_buffer(&[u8])`
+    - Python binding exposes `WorldTokenizer.from_buffer(bytes)`
+    - vLLM uses this to append HF added/special tokens onto the base RWKV vocab
+- [x] Rust decode now covers HF overlay ids:
+    - `decode([0, 65530])` returns
+      `"<|rwkv_tokenizer_end_of_text|>\n\n"`
+    - `encode("\n\n")` returns HF id `65530`, not base id `261`, when vLLM
+      builds the augmented buffer
+- [x] vLLM now uses the local `/home/liu/rwkv-tokenizer` binding source:
+    - installed with
+      `uv pip install --python .venv/bin/python -e /home/liu/rwkv-tokenizer/bindings/python`
+    - this is still a compiled Python extension, but the source of truth is the
+      local third-party repo instead of an opaque installed wheel
+- [x] Validation:
+    - Rust crate `cargo test`: `6 passed`
+    - Python binding `cargo check`: passed
+    - vLLM tokenizer/renderer pytest: `6 passed`
+    - vLLM RWKV7 pytest: `23 passed, 2 skipped`
+    - targeted ruff/forbidden-imports/mypy: passed
+- [ ] Optional follow-up:
+    - add packaging metadata in vLLM if we want fresh environments to install
+      `/home/liu/rwkv-tokenizer/bindings/python` automatically instead of
+      running the local `uv pip install -e ...` command manually

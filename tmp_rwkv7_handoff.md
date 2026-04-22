@@ -2334,3 +2334,81 @@ Practical interpretation:
 - do not expect a visible output-token/s gain for normal offline generation on
   the 0.4B model unless the workload is tokenizer-bound or server-side request
   admission/rendering is the bottleneck
+
+## 2026-04-22 Rust tokenizer local-backend update
+
+User request: make the Rust tokenizer understand the HF RWKV added-token overlay
+so vLLM can use the local `/home/liu/rwkv-tokenizer` repository as the tokenizer
+backend source, instead of relying on a separately installed external package.
+
+Rust repo changes in `/home/liu/rwkv-tokenizer`:
+
+- `rwkv-tokenizer/src/trie.rs`
+    - changed trie terminal ids from `u16` sentinel `0` to `Option<u16>`
+    - this makes token id `0` valid instead of impossible to encode
+- `rwkv-tokenizer/src/lib.rs`
+    - parse vocab rows by explicit id instead of append order
+    - added `from_buffer(&[u8])`
+    - added assigned-id tracking so sparse id gaps do not appear in `get_vocab`
+    - decode now works for explicit id `0` and appended HF overlay ids
+- `bindings/python/src/lib.rs`
+    - exposed `WorldTokenizer.from_buffer(bytes)`
+    - constructor/decode now return Python exceptions instead of unwrap panics
+
+vLLM integration:
+
+- installed the local binding into the vLLM `.venv` with:
+
+```bash
+uv pip install --python .venv/bin/python -e /home/liu/rwkv-tokenizer/bindings/python
+```
+
+- `vllm/tokenizers/rwkv.py` now builds an augmented in-memory vocab buffer:
+    - base `rwkv_vocab*.txt`
+    - plus HF `added_tokens`/special-token overlay rows
+    - appended rows intentionally override duplicate trie paths such as
+      `"\n\n"` so Rust returns HF id `65530` instead of base id `261`
+- when `WorldTokenizer.from_buffer` exists, vLLM encode/batch encode/decode can
+  go directly through Rust for the HF RWKV tokenizer semantics
+- fallback remains:
+    - old Rust binding: Python splits specials and uses Rust only for plain text
+    - no Rust binding: pure Python trie path
+
+Smoke result:
+
+- Rust direct:
+    - `WorldTokenizer.from_buffer(...)`
+    - `encode("\n\n") == [65530]`
+    - `decode([0, 65530]) == "<|rwkv_tokenizer_end_of_text|>\n\n"`
+- vLLM direct:
+    - `get_tokenizer("/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF").is_fast`
+      is `True`
+    - `encode("\n\n") == [65530]`
+    - `decode([0, 65530]) == "<|rwkv_tokenizer_end_of_text|>\n\n"`
+
+Validation:
+
+```bash
+cd /home/liu/rwkv-tokenizer
+source ~/.cargo/env
+cargo fmt --manifest-path rwkv-tokenizer/Cargo.toml
+cargo test --manifest-path rwkv-tokenizer/Cargo.toml
+cargo fmt --manifest-path bindings/python/Cargo.toml
+cargo check --manifest-path bindings/python/Cargo.toml
+
+cd /home/liu/vllm
+.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py
+.venv/bin/python -m pytest -q tests/model_executor/test_rwkv7.py
+.venv/bin/pre-commit run ruff-format --files vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py
+.venv/bin/pre-commit run ruff-check --files vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py
+.venv/bin/pre-commit run check-forbidden-imports --files vllm/tokenizers/rwkv.py
+.venv/bin/pre-commit run mypy-local --files vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py
+```
+
+Results:
+
+- Rust tokenizer crate tests: `6 passed`
+- Python binding cargo check: passed
+- vLLM tokenizer/renderer tests: `6 passed`
+- vLLM RWKV7 model tests: `23 passed, 2 skipped`
+- targeted pre-commit: passed
