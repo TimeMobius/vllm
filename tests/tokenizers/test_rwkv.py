@@ -159,6 +159,19 @@ def test_rwkv_tokenizer_preserves_hf_added_token_semantics(tmp_path):
     assert tokenizer.vocab_size == 64
 
 
+def test_rwkv_tokenizer_prioritizes_hf_added_token_boundaries(tmp_path):
+    vocab_path = _write_hf_rwkv_tokenizer_dir(tmp_path)
+    with vocab_path.open("a", encoding="utf-8") as f:
+        f.write("10 'a\\n' 2\n")
+        f.write("11 '\\n' 1\n")
+
+    tokenizer = get_tokenizer(str(tmp_path))
+
+    assert tokenizer.encode("a\n\nb") == [1, 12, 2]
+    assert tokenizer.convert_tokens_to_ids("\n\n") == 12
+    assert tokenizer.decode([1, 12, 2]) == "a\n\nb"
+
+
 def test_rwkv_tokenizer_uses_hf_chat_template_prefix(tmp_path):
     _write_hf_rwkv_tokenizer_dir(tmp_path)
     tokenizer = get_tokenizer(str(tmp_path))

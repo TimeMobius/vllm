@@ -1099,3 +1099,22 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - add packaging metadata in vLLM if we want fresh environments to install
       `/home/liu/rwkv-tokenizer/bindings/python` automatically instead of
       running the local `uv pip install -e ...` command manually
+
+## 2026-04-22 long-text tokenizer benchmark
+
+- [x] Fixed long-text HF added-token boundary correctness:
+    - whole-string augmented Rust encode can mismatch HF slow when a base token
+      overlaps an added special token boundary, e.g. `。\n\nAssistant`
+    - encode/batch encode now keeps Python HF special splitting first, then Rust
+      handles ordinary spans
+    - decode still goes through Rust for augmented backend ids
+- [x] Added regression coverage:
+    - `test_rwkv_tokenizer_prioritizes_hf_added_token_boundaries`
+- [x] Long-text tokenizer speed measured on 0.4B HF tokenizer:
+    - single encode: `16.4x` to `23.0x` faster across `1K` to `512K` chars
+    - decode: `15.7x` to `21.5x` faster across the same text sizes
+    - batch long-prompt encode: `13.7x` to `16.4x` faster
+- [x] Validation:
+    - tokenizer/renderer pytest: `7 passed`
+    - RWKV7 model pytest: `23 passed, 2 skipped`
+    - targeted ruff, mypy-local, forbidden-imports: passed

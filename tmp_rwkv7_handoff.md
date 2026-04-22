@@ -2412,3 +2412,51 @@ Results:
 - vLLM tokenizer/renderer tests: `6 passed`
 - vLLM RWKV7 model tests: `23 passed, 2 skipped`
 - targeted pre-commit: passed
+
+## 2026-04-22 long-text tokenizer benchmark and boundary fix
+
+While benchmarking long prompts, found one important correctness edge case:
+
+- direct whole-string encode through the augmented Rust trie is not equivalent to
+  HF added-token matching
+- example shape: `。\n\nAssistant`
+    - HF slow tokenizer prioritizes added special token `"\n\n" -> 65530`
+    - raw longest-match trie can consume the base token `。\n` first, then leave
+      a single `\n`
+- fix:
+    - keep Python-side HF special-token boundary splitting for encode/batch
+      encode
+    - ordinary non-special spans still go through Rust `encode`/`encode_batch`
+    - decode still goes directly through Rust when the augmented backend is
+      available
+- regression test added:
+    - `test_rwkv_tokenizer_prioritizes_hf_added_token_boundaries`
+
+Long-text tokenizer-only benchmark on
+`/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`:
+
+- single-text encode speedup:
+    - `1K chars`: `16.4x`
+    - `8K chars`: `17.1x`
+    - `32K chars`: `17.4x`
+    - `128K chars`: `23.0x`
+    - `512K chars`: `17.6x`
+- decode speedup:
+    - `1K chars / 329 tokens`: `16.2x`
+    - `8K chars / 2686 tokens`: `17.0x`
+    - `32K chars / 10691 tokens`: `15.7x`
+    - `128K chars / 42751 tokens`: `21.5x`
+    - `512K chars / 170965 tokens`: `20.9x`
+- batch long-prompt encode speedup:
+    - `16 x 8K chars`: `13.7x`
+    - `8 x 32K chars`: `16.3x`
+    - `4 x 128K chars`: `16.4x`
+
+Validation after the fix:
+
+- `tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`:
+    - `7 passed`
+- `tests/model_executor/test_rwkv7.py`:
+    - `23 passed, 2 skipped`
+- targeted ruff format/check, mypy-local, forbidden-imports:
+    - passed

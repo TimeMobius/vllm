@@ -547,16 +547,6 @@ class RWKVTokenizer(TokenizerLike):
         truncation: bool | None,
         max_length: int | None,
     ) -> list[list[int]]:
-        if self._fast_backend is not None and self._fast_backend_supports_added_vocab:
-            return [
-                self._apply_truncation(
-                    list(ids),
-                    truncation,
-                    max_length,
-                )
-                for ids in self._fast_backend.encode_batch(texts)
-            ]
-
         split_texts = [self._split_special_tokens(text) for text in texts]
         plain_segments = [
             segment
@@ -585,12 +575,6 @@ class RWKVTokenizer(TokenizerLike):
         add_special_tokens: bool = True,
     ) -> list[int]:
         del add_special_tokens
-        if self._fast_backend is not None and self._fast_backend_supports_added_vocab:
-            return self._apply_truncation(
-                list(self._fast_backend.encode(text)),
-                truncation,
-                max_length,
-            )
         return self._encode_segments(
             self._split_special_tokens(text),
             truncation=truncation,

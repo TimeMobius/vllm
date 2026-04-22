@@ -2316,3 +2316,71 @@ Validation:
 - vLLM targeted pre-commit:
     - ruff format/check, forbidden imports, mypy-local
     - passed
+
+## 2026-04-22 long-text tokenizer benchmark
+
+The first long-text benchmark exposed a correctness issue in the most aggressive
+direct-Rust encode path. A pure longest-match trie over the augmented vocab can
+consume a base vocab token that overlaps an HF added-token boundary.
+
+Example:
+
+- text shape: `。\n\nAssistant`
+- HF slow behavior:
+    - `。`
+    - added special token `"\n\n" -> 65530`
+    - `Assistant`
+- direct augmented-trie behavior:
+    - base token `。\n`
+    - base token `\n`
+    - `Assistant`
+
+Resolution:
+
+- encode and batch encode now preserve the Python HF special-token splitter
+  before calling Rust
+- ordinary spans still use Rust `encode`/`encode_batch`
+- decode continues to use Rust directly when the augmented backend is available
+- added regression test:
+  `test_rwkv_tokenizer_prioritizes_hf_added_token_boundaries`
+
+Tokenizer-only benchmark on
+`/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`:
+
+Single long-text encode:
+
+| chars | tokens | slow | fast | speedup | fast rate |
+|---:|---:|---:|---:|---:|---:|
+| `1024` | `329` | `0.000315s` | `0.000019s` | `16.4x` | `53.40 Mchars/s` |
+| `8192` | `2686` | `0.002167s` | `0.000126s` | `17.1x` | `64.80 Mchars/s` |
+| `32768` | `10691` | `0.008394s` | `0.000482s` | `17.4x` | `67.93 Mchars/s` |
+| `131072` | `42751` | `0.034252s` | `0.001489s` | `23.0x` | `88.05 Mchars/s` |
+| `524288` | `170965` | `0.133757s` | `0.007611s` | `17.6x` | `68.89 Mchars/s` |
+
+Long token-id decode:
+
+| chars | tokens | slow | fast | speedup | fast rate |
+|---:|---:|---:|---:|---:|---:|
+| `1024` | `329` | `0.000312s` | `0.000019s` | `16.2x` | `17106.0 ktok/s` |
+| `8192` | `2686` | `0.002095s` | `0.000123s` | `17.0x` | `21754.6 ktok/s` |
+| `32768` | `10691` | `0.009107s` | `0.000578s` | `15.7x` | `18487.2 ktok/s` |
+| `131072` | `42751` | `0.036272s` | `0.001684s` | `21.5x` | `25387.2 ktok/s` |
+| `524288` | `170965` | `0.153797s` | `0.007366s` | `20.9x` | `23209.3 ktok/s` |
+
+Batch long-prompt encode:
+
+| batch | chars each | total chars | slow | fast | speedup |
+|---:|---:|---:|---:|---:|---:|
+| `16` | `8192` | `133112` | `0.034504s` | `0.002511s` | `13.7x` |
+| `8` | `32768` | `262620` | `0.068745s` | `0.004220s` | `16.3x` |
+| `4` | `131072` | `524390` | `0.135816s` | `0.008280s` | `16.4x` |
+
+Validation:
+
+- `.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
+    - `7 passed`
+- `.venv/bin/python -m pytest -q tests/model_executor/test_rwkv7.py`
+    - `23 passed, 2 skipped`
+- targeted pre-commit:
+    - ruff format/check, mypy-local, forbidden-imports
+    - passed
