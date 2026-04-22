@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import json
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import huggingface_hub
 from typing_extensions import TypeVar, assert_never
@@ -83,6 +84,46 @@ TokenizerRegistry = _TokenizerRegistry(
 )
 
 
+def _load_json_file(path: Path) -> dict[str, Any]:
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def _is_local_rwkv_hf_tokenizer_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+
+    config = _load_json_file(path / "tokenizer_config.json")
+    if not config:
+        return False
+
+    tokenizer_class = config.get("tokenizer_class")
+    auto_map = config.get("auto_map")
+    auto_tokenizer = (
+        auto_map.get("AutoTokenizer") if isinstance(auto_map, dict) else None
+    )
+    auto_tokenizer_ref = (
+        auto_tokenizer[0]
+        if isinstance(auto_tokenizer, list) and auto_tokenizer
+        else None
+    )
+
+    if (
+        tokenizer_class != "RwkvTokenizer"
+        and auto_tokenizer_ref != "hf_rwkv_tokenizer.RwkvTokenizer"
+    ):
+        return False
+
+    return (
+        any(path.glob("rwkv_vocab*.txt")) or (path / "hf_rwkv_tokenizer.py").is_file()
+    )
+
+
 def resolve_tokenizer_args(
     tokenizer_name: str | Path,
     *args,
@@ -149,7 +190,11 @@ def resolve_tokenizer_args(
     # Native RWKV checkpoints often ship a single txt vocabulary file.
     if tokenizer_mode == "auto":
         tokenizer_path = Path(tokenizer_name)
-        if tokenizer_path.is_file() and tokenizer_path.suffix.lower() == ".txt":
+        if (
+            tokenizer_path.is_file()
+            and tokenizer_path.suffix.lower() == ".txt"
+            or _is_local_rwkv_hf_tokenizer_dir(tokenizer_path)
+        ):
             tokenizer_mode = "rwkv"
 
     # Try to use official Mistral tokenizer if possible
