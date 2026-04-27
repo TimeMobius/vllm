@@ -1231,3 +1231,36 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - evaluate `RWKV7_CLAMPW_CUDA` / recurrent-core alternatives
     - do not replace the recurrent core until decode batch, prefill, varlen,
       prefix-cache, and checkpoint-state behavior have explicit tests
+
+## 2026-04-27 recurrent-core next step
+
+- [x] Evaluated official `rwkv7_clampw` vs current vLLM Triton recurrent kernel:
+    - safe subset only:
+        - contiguous prefill
+        - `K=V=64`
+        - zero initial state
+        - no varlen/checkpoints
+    - correctness:
+        - max abs diff about `2.2e-8` to `5.2e-8`
+    - speed:
+        - official CUDA was about `2.17x-2.62x` faster than current Triton
+- [ ] Implement stateful vLLM-owned CUDA op:
+    - add initial recurrent state load
+    - add final recurrent state store
+    - support decode batch `T=1`
+    - support non-varlen sequence `T>1`
+    - constrain to `head_dim == head_v_dim == 64`
+    - keep current Triton path for varlen and checkpoint-state paths
+- [ ] Add correctness tests before benchmark:
+    - zero initial state
+    - nonzero initial state
+    - decode batch exactness
+    - sequence final-state exactness
+    - fallback guard exactness
+- [x] Rejected simple Triton scalar-value prototype:
+    - correctness passed
+    - performance was worse than current Triton:
+        - `(B=1,T=1024)`: `1.5512ms -> 8.4710ms`
+        - `(B=64,T=1)`: `0.4928ms -> 1.5707ms`
+    - conclusion: recurrent-core speedup needs CUDA shared-memory style, not
+      this Triton blocking

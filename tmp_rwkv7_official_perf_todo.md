@@ -459,6 +459,77 @@
 - decode 不退化
 - 不破坏 prefix cache / mixed scheduling correctness
 
+#### Current Evaluation (2026-04-27)
+
+- Local prototype compared official CUDA `rwkv7_clampw` against current vLLM
+  Triton `fused_mul_recurrent_rwkv7` on their shared safe subset:
+    - `B=1`
+    - contiguous prefill
+    - `K=V=64`
+    - zero initial state
+    - no varlen
+    - no checkpoint-state output
+    - fp32 inputs
+- Stable model-like inputs were used:
+    - `kk` normalized over head dim
+    - `a = sigmoid(randn)`
+    - small `r/k/v`
+    - vLLM receives `w = LOG_DECAY_SCALE * sigmoid(raw_w)`
+    - official CUDA receives `raw_w`, `-kk`, and `kk*a`
+- Correctness on this subset:
+    - max abs diff stayed around `2.2e-8` to `5.2e-8`
+    - mean abs diff stayed around `1.5e-9`
+- Microbenchmark:
+    - seq `16`: official `0.0198ms`, current `0.0519ms`, official `2.62x`
+    - seq `64`: official `0.0883ms`, current `0.1932ms`, official `2.19x`
+    - seq `256`: official `0.3209ms`, current `0.7580ms`, official `2.36x`
+    - seq `1024`: official `1.1598ms`, current `2.5130ms`, official `2.17x`
+- Interpretation:
+    - official CUDA kernel is materially faster for the contiguous zero-state
+      recurrent core
+    - it is not a direct drop-in for vLLM serving because current vLLM needs:
+        - initial recurrent state
+        - final recurrent state
+        - decode batch
+        - varlen prefill
+        - checkpoint states for prefix-cache/cache-all paths
+    - a safe first landing should target only:
+        - decode batch `T=1`
+        - non-varlen `_run_recurrent_sequence`
+        - `K=V=64`
+      while keeping existing Triton for varlen/checkpoint paths
+- Next implementation steps:
+    - create a vLLM-owned CUDA op, not runtime `torch.utils.cpp_extension.load`
+    - add initial-state load and final-state store to the official forward
+      pattern
+    - register behind `RWKV7_USE_ALT_RECURRENT_KERNEL`
+    - route only when shape/dtype constraints are exactly satisfied
+    - add tests for:
+        - zero initial state
+        - nonzero initial state
+        - decode batch `T=1`
+        - sequence `T>1`
+        - fallback when `head_v_dim != head_dim` or varlen/checkpoints are used
+
+#### Rejected Triton Probe (2026-04-27)
+
+- Tried an official-shaped Triton prototype with one program per
+  `(batch, head, value_channel)` and a `[K]` recurrent state vector.
+- Correctness:
+    - matched current vLLM Triton for output and final state on nonzero initial
+      states
+- Performance:
+    - `(B=1,T=16)`: current `0.0376ms`, probe `0.1828ms`
+    - `(B=1,T=64)`: current `0.1323ms`, probe `0.6545ms`
+    - `(B=1,T=256)`: current `0.3918ms`, probe `2.0985ms`
+    - `(B=1,T=1024)`: current `1.5512ms`, probe `8.4710ms`
+    - `(B=16,T=1)`: current `0.1225ms`, probe `0.3766ms`
+    - `(B=64,T=1)`: current `0.4928ms`, probe `1.5707ms`
+- Decision:
+    - Do not land this Triton variant.
+    - The official speedup appears to depend on CUDA shared-memory/block
+      organization, not just scalarizing the value dimension in Triton.
+
 ### P3: Runtime Integration Cleanup
 
 #### 优先级

@@ -2753,3 +2753,53 @@ Operational note:
   explicit as above.
 - Do not run `.venv/bin/python` directly from PowerShell on the WSL path; that
   can trigger the Windows "choose how to open Python" dialog.
+
+## 2026-04-27 RWKV7 recurrent core evaluation
+
+Compared official CUDA `rwkv7_clampw` against vLLM's current Triton
+`fused_mul_recurrent_rwkv7` on the subset where they are directly comparable:
+
+- `B=1`
+- contiguous prefill
+- `K=V=64`
+- zero initial recurrent state
+- no varlen
+- no checkpoint-state output
+- fp32 inputs
+
+Important mapping:
+
+- official CUDA receives raw `w`, `-kk`, and `kk*a`
+- vLLM Triton receives `LOG_DECAY_SCALE * sigmoid(raw_w)`, `kk`, and `a`
+- with model-like stable inputs, outputs match closely:
+    - max abs diff: about `2.2e-8` to `5.2e-8`
+    - mean abs diff: about `1.5e-9`
+
+Prototype benchmark:
+
+- seq `16`: official `0.0198ms`, current `0.0519ms`, official `2.62x`
+- seq `64`: official `0.0883ms`, current `0.1932ms`, official `2.19x`
+- seq `256`: official `0.3209ms`, current `0.7580ms`, official `2.36x`
+- seq `1024`: official `1.1598ms`, current `2.5130ms`, official `2.17x`
+
+Decision:
+
+- Worth implementing, but not as a direct drop-in.
+- Official `rwkv7_clampw` starts from zero state and does not expose vLLM-style
+  final recurrent state.
+- First safe vLLM implementation should add initial/final state support and
+  route only behind `RWKV7_USE_ALT_RECURRENT_KERNEL` for exact supported shapes.
+
+Rejected Triton alternative:
+
+- A stateful Triton prototype with one program per `(batch, head, value_channel)`
+  matched current outputs/final states, but was much slower than the current
+  Triton kernel.
+- Example timings:
+    - `(B=1,T=1024)`: current `1.5512ms`, probe `8.4710ms`
+    - `(B=64,T=1)`: current `0.4928ms`, probe `1.5707ms`
+- Conclusion:
+    - if we pursue this optimization, use a vLLM-owned CUDA op based on the
+      official shared-memory block structure
+    - do not spend more time on this Triton shape unless a fundamentally
+      different blocking strategy is available
