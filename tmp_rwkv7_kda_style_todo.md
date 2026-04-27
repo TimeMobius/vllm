@@ -4,6 +4,10 @@
 
 结论是：**可行，而且比继续硬推“整模型 fullgraph compile”更合理。**
 
+补充性能迁移清单见：
+
+- [tmp_rwkv7_official_perf_todo.md](/home/liu/vllm/tmp_rwkv7_official_perf_todo.md)
+
 ## Progress Update (2026-04-13)
 
 - 远程压测脚本已升级：
