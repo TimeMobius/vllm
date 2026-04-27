@@ -43,9 +43,18 @@
         - decode TTFT / TPOT 改善最明显
         - longer prompt TTFT proxy 也有正收益
 - `mix6 + kk-pre` 组合在 clean serial benchmark 下仍是 net positive。
-- 当前下一项优先级前移为：
-    - `P1: Port Fused CMix / FFN`
-    - 在继续做 attention epilogue 之前，先看 FFN 热路径能否带来更稳定的 decode 收益
+- `P1 CMix` 已完成 probe：
+    - mix-only Triton path correctness 通过
+    - microbench/hook-level 收益不足，未落地
+    - 后续如继续，需要做更大粒度的 FFN 融合
+- `P2 attention epilogue` 已完成首轮迁移：
+    - Triton fused path 已接入
+    - correctness tests 已补
+    - op/hook microbench 显示明确收益
+    - real 0.4B isolated serial benchmark 显示 decode TPOT 有实际收益
+- 当前下一项优先级：
+    - `P2: Evaluate RWKV7_CLAMPW_CUDA`
+    - recurrent 主核替换风险更高，下一步需先做更细的等价和局部 benchmark
 
 ## Non-Goals
 
@@ -360,6 +369,52 @@
 - 一致性测试稳定
 - decode small-batch latency 有可见收益
 
+#### Current Status (2026-04-27)
+
+- `Done (first pass)`
+- 本地接入形态：
+    - Triton fused `lnx+rkvres+xg`
+    - feature flag: `RWKV7_USE_FUSED_LNX_RKVRES_XG`
+    - `o_proj` 仍保留在 vLLM `RowParallelLinear` 路径，避免破坏 TP/量化线性层边界
+- Correctness:
+    - op-level reference equality:
+        - `float32`
+        - `bfloat16`
+    - attention hook equality:
+        - `_finalize_attention_output()` fused path matches unfused path
+    - targeted pytest:
+        - `10 passed`
+- Microbenchmark:
+    - op-level speedup:
+        - tokens `1`: `4.31x`
+        - tokens `16`: `10.19x`
+        - tokens `64`: `6.31x`
+        - tokens `256`: `3.76x`
+        - tokens `1024`: `3.25x`
+        - tokens `2048`: `3.26x`
+    - hook-level speedup including `o_proj`:
+        - tokens `1`: `2.20x`
+        - tokens `16`: `2.13x`
+        - tokens `64`: `1.90x`
+        - tokens `256`: `1.82x`
+        - tokens `1024`: `1.97x`
+        - tokens `2048`: `1.83x`
+- Real 0.4B isolated serial benchmark:
+    - model: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - args:
+        - `--enforce-eager`
+        - `--gpu-memory-utilization 0.6`
+        - rounds `2`, warmup `1`
+    - baseline vs `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`:
+        - prefill proxy `64`: `61.615ms -> 52.390ms` (`+14.97%`)
+        - prefill proxy `1024`: `165.422ms -> 165.970ms` (`-0.33%`)
+        - prefill proxy `1984`: `263.834ms -> 247.408ms` (`+6.23%`)
+        - decode `64 -> 32`: TTFT `+29.80%`, TPOT `+19.34%`
+        - decode `64 -> 64`: TTFT `+15.34%`, TPOT `+11.76%`
+- Decision:
+    - Land behind feature flag.
+    - This is useful on decode and neutral-to-positive on long prefill in the current sample.
+
 ### P2: Evaluate `RWKV7_CLAMPW_CUDA`
 
 #### 优先级
@@ -437,7 +492,7 @@
 1. `P0` 基线与 feature flag
 2. `P1` `tmix_mix6_bf16_v5`
 3. `P1` `tmix_kk_pre_bf16_v5`
-4. `P1` fused CMix
+4. `P1` fused CMix probe
 5. `P2` `tmix_lnx_rkvres_xg_bf16_v1`
 6. `P2` `RWKV7_CLAMPW_CUDA`
 7. `P3` runtime integration cleanup

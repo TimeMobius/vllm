@@ -1196,3 +1196,38 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - push/pull Rust tokenizer commit `aa6f61a`
     - reinstall binding in the target conda env from `bindings/python`
     - rerun the 30B native `.pth` serve command
+
+## 2026-04-27 RWKV7 official fused-kernel perf track
+
+- [x] `P0` perf hook scaffolding:
+    - feature flags are in place for `mix6`, `kk-pre`, epilogue, CMix, and
+      future recurrent-kernel experiments
+- [x] `P1` `mix6`:
+    - Triton path landed behind `RWKV7_USE_FUSED_MIX6`
+    - isolated 0.4B benchmark showed positive decode and short-prefill result
+- [x] `P1` `kk-pre`:
+    - Triton path landed behind `RWKV7_USE_FUSED_KK_PRE`
+    - isolated 0.4B benchmark showed strongest decode improvement among the
+      first two kernels
+- [x] `P1` CMix probe:
+    - mix-only fusion was tested and rejected
+    - reason: hook-level speed was not better enough to land
+    - next CMix attempt should fuse a larger FFN region, not just `addcmul`
+- [x] `P2` attention epilogue:
+    - Triton `lnx+rkvres+xg` path landed behind
+      `RWKV7_USE_FUSED_LNX_RKVRES_XG`
+    - correctness:
+        - op-level float32/bfloat16 equality passed
+        - `_finalize_attention_output` hook equality passed
+        - targeted RWKV7 pytest: `10 passed`
+    - microbench:
+        - op-level: about `3.25x-10.19x`
+        - hook-level including `o_proj`: about `1.82x-2.20x`
+    - real 0.4B isolated benchmark:
+        - decode `64 -> 32` TPOT: `37.934ms -> 30.600ms`
+        - decode `64 -> 64` TPOT: `38.243ms -> 33.744ms`
+        - long prefill proxy `1984`: `263.834ms -> 247.408ms`
+- [ ] Next:
+    - evaluate `RWKV7_CLAMPW_CUDA` / recurrent-core alternatives
+    - do not replace the recurrent core until decode batch, prefill, varlen,
+      prefix-cache, and checkpoint-state behavior have explicit tests

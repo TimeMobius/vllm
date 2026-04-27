@@ -2661,3 +2661,95 @@ print("vocab_size:", tok.vocab_size())
 print("encode smoke:", tok.encode("hello\n\nworld")[:16])
 PY
 ```
+
+## 2026-04-27 RWKV7 attention epilogue Triton path
+
+Implemented a feature-flagged Triton path for the attention epilogue:
+
+- flag: `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+- fused region:
+    - groupnorm over each local value head
+    - `r*k*r_k` residual correction
+    - output gate `* g`
+- deliberately not fused:
+    - `o_proj`, which stays on vLLM `RowParallelLinear`
+    - this keeps tensor parallel and quantization boundaries unchanged
+
+Validation commands:
+
+```bash
+cd /home/liu/vllm
+export PATH=/home/liu/vllm/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+.venv/bin/python -m pytest \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_perf_flags_from_env \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_mix6_triton_matches_reference \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_kk_pre_triton_matches_reference \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_lnx_rkvres_xg_triton_matches_reference \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_perf_hooks_match_reference_formulas \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_attention_mix6_flag_matches_reference \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_attention_kk_pre_flag_matches_reference \
+  tests/model_executor/test_rwkv7.py::test_rwkv7_attention_lnx_rkvres_xg_flag_matches_reference \
+  -q
+```
+
+Result:
+
+- `10 passed`
+
+Real 0.4B isolated benchmark commands:
+
+```bash
+cd /home/liu/vllm
+export PATH=/home/liu/vllm/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+unset RWKV7_USE_FUSED_MIX6 RWKV7_USE_FUSED_KK_PRE \
+  RWKV7_USE_FUSED_LNX_RKVRES_XG RWKV7_USE_FUSED_CMIX \
+  RWKV7_USE_ALT_RECURRENT_KERNEL
+.venv/bin/python tmp_rwkv7_ttft_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --dtype auto \
+  --gpu-memory-utilization 0.6 \
+  --port 8071 \
+  --rounds 2 \
+  --warmup 1 \
+  --prompt-lengths 64 1024 1984 \
+  --decode-output-lengths 32 64 \
+  --decode-prompt-len 64 \
+  --warmup-prompt-len 64 \
+  --enforce-eager \
+  --log /tmp/vllm_rwkv7_epilogue_baseline.log
+
+unset RWKV7_USE_FUSED_MIX6 RWKV7_USE_FUSED_KK_PRE \
+  RWKV7_USE_FUSED_CMIX RWKV7_USE_ALT_RECURRENT_KERNEL
+export RWKV7_USE_FUSED_LNX_RKVRES_XG=1
+.venv/bin/python tmp_rwkv7_ttft_benchmark.py \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --dtype auto \
+  --gpu-memory-utilization 0.6 \
+  --port 8072 \
+  --rounds 2 \
+  --warmup 1 \
+  --prompt-lengths 64 1024 1984 \
+  --decode-output-lengths 32 64 \
+  --decode-prompt-len 64 \
+  --warmup-prompt-len 64 \
+  --enforce-eager \
+  --log /tmp/vllm_rwkv7_epilogue_fused.log
+```
+
+Results:
+
+- prefill proxy:
+    - `64`: `61.615ms -> 52.390ms`
+    - `1024`: `165.422ms -> 165.970ms`
+    - `1984`: `263.834ms -> 247.408ms`
+- decode:
+    - `64 -> 32`: TTFT `108.119ms -> 75.901ms`, TPOT `37.934ms -> 30.600ms`
+    - `64 -> 64`: TTFT `92.324ms -> 78.167ms`, TPOT `38.243ms -> 33.744ms`
+
+Operational note:
+
+- When launching benchmark commands from Codex/PowerShell, keep the WSL `PATH`
+  explicit as above.
+- Do not run `.venv/bin/python` directly from PowerShell on the WSL path; that
+  can trigger the Windows "choose how to open Python" dialog.

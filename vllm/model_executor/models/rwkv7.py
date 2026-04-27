@@ -27,6 +27,7 @@ from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7_with_checkpoints,
     rwkv7_kk_pre,
     rwkv7_kk_pre_reference,
+    rwkv7_lnx_rkvres_xg,
     rwkv7_mix6,
     rwkv7_mix6_reference,
 )
@@ -949,19 +950,35 @@ class RWKV7Attention(nn.Module):
     ) -> torch.Tensor:
         output = recurrent_output.reshape(-1, self.local_value_dim)
         if self.perf_flags.use_fused_lnx_rkvres_xg and recurrent_output.is_cuda:
-            # Future fused post-attention epilogues will route through this hook.
-            pass
-
-        output = self.g_norm(output)
-        local_r_k = self.r_k[
-            self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
-            * self.local_num_heads
-        ].to(torch.float32)
-        correction = (
-            (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
-        ).reshape(-1, self.local_value_dim)
-        output = (output + correction) * g.to(torch.float32)
-        output = output.to(hidden_dtype)
+            weight = self.g_norm.weight[self.value_start : self.value_end].contiguous()
+            bias = self.g_norm.bias[self.value_start : self.value_end].contiguous()
+            local_r_k = self.r_k[
+                self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
+                * self.local_num_heads
+            ].to(torch.float32)
+            output = rwkv7_lnx_rkvres_xg(
+                recurrent_output=recurrent_output.contiguous(),
+                r=r.contiguous(),
+                k=k.contiguous(),
+                v=v.contiguous(),
+                r_k=local_r_k.contiguous(),
+                weight=weight,
+                bias=bias,
+                g=g.contiguous(),
+                eps=self.g_norm.eps,
+                output_dtype=hidden_dtype,
+            )
+        else:
+            output = self.g_norm(output)
+            local_r_k = self.r_k[
+                self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
+                * self.local_num_heads
+            ].to(torch.float32)
+            correction = (
+                (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
+            ).reshape(-1, self.local_value_dim)
+            output = (output + correction) * g.to(torch.float32)
+            output = output.to(hidden_dtype)
         output, _ = self.o_proj(output)
         return output
 

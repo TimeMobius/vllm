@@ -279,6 +279,212 @@ def rwkv7_kk_pre(
     return k_out, kk_out
 
 
+@triton.jit
+def rwkv7_lnx_rkvres_xg_fwd_kernel(
+    recurrent_output,
+    r,
+    k,
+    v,
+    r_k,
+    weight,
+    bias,
+    g,
+    out,
+    num_heads,
+    head_dim,
+    head_v_dim,
+    eps,
+    BLOCK_K: tl.constexpr,
+    BLOCK_V: tl.constexpr,
+):
+    row_head = tl.program_id(0).to(tl.int64)
+    head_idx = row_head % num_heads
+    token_idx = row_head // num_heads
+
+    k_offsets = tl.arange(0, BLOCK_K)
+    v_offsets = tl.arange(0, BLOCK_V)
+    mask_k = k_offsets < head_dim
+    mask_v = v_offsets < head_v_dim
+
+    key_base = row_head * head_dim
+    value_base = row_head * head_v_dim
+    gate_base = token_idx * num_heads * head_v_dim + head_idx * head_v_dim
+    r_k_base = head_idx * head_dim
+    affine_base = head_idx * head_v_dim
+
+    x_vals = tl.load(
+        recurrent_output + value_base + v_offsets,
+        mask=mask_v,
+        other=0,
+    ).to(tl.float32)
+    mean = tl.sum(x_vals, axis=0) / head_v_dim
+    centered = tl.where(mask_v, x_vals - mean, 0.0)
+    var = tl.sum(centered * centered, axis=0) / head_v_dim
+    rstd = tl.rsqrt(var + eps)
+
+    r_vals = tl.load(r + key_base + k_offsets, mask=mask_k, other=0).to(tl.float32)
+    k_vals = tl.load(k + key_base + k_offsets, mask=mask_k, other=0).to(tl.float32)
+    r_k_vals = tl.load(r_k + r_k_base + k_offsets, mask=mask_k, other=0).to(tl.float32)
+    correction_scale = tl.sum(r_vals * k_vals * r_k_vals, axis=0)
+
+    v_vals = tl.load(v + value_base + v_offsets, mask=mask_v, other=0).to(tl.float32)
+    weight_vals = tl.load(weight + affine_base + v_offsets, mask=mask_v, other=0).to(
+        tl.float32
+    )
+    bias_vals = tl.load(bias + affine_base + v_offsets, mask=mask_v, other=0).to(
+        tl.float32
+    )
+    g_vals = tl.load(g + gate_base + v_offsets, mask=mask_v, other=0).to(tl.float32)
+
+    y = centered * rstd * weight_vals + bias_vals + correction_scale * v_vals
+    tl.store(out + gate_base + v_offsets, y * g_vals, mask=mask_v)
+
+
+def rwkv7_lnx_rkvres_xg_reference(
+    recurrent_output: torch.Tensor,
+    r: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    r_k: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    g: torch.Tensor,
+    *,
+    eps: float,
+    output_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    if output_dtype is None:
+        output_dtype = g.dtype
+    num_heads = recurrent_output.shape[1]
+    local_value_dim = recurrent_output.shape[1] * recurrent_output.shape[2]
+    output = torch.nn.functional.group_norm(
+        recurrent_output.reshape(-1, local_value_dim).to(torch.float32).unsqueeze(-1),
+        num_groups=num_heads,
+        weight=weight.to(torch.float32),
+        bias=bias.to(torch.float32),
+        eps=eps,
+    ).squeeze(-1)
+    correction = ((r * k * r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v).reshape(
+        -1, local_value_dim
+    )
+    return ((output + correction) * g.to(torch.float32)).to(output_dtype)
+
+
+def rwkv7_lnx_rkvres_xg(
+    recurrent_output: torch.Tensor,
+    r: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    r_k: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    g: torch.Tensor,
+    *,
+    eps: float,
+    output_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    if recurrent_output.ndim != 3:
+        raise ValueError(f"`recurrent_output` must be 3D, got {recurrent_output.ndim}.")
+    if r.shape != k.shape:
+        raise ValueError(f"`r` and `k` must match, got {r.shape} and {k.shape}.")
+    if recurrent_output.shape != v.shape:
+        raise ValueError(
+            "`recurrent_output` and `v` must match, got "
+            f"{recurrent_output.shape} and {v.shape}."
+        )
+    if recurrent_output.shape[:2] != r.shape[:2]:
+        raise ValueError(
+            "`recurrent_output` and `r` must share token/head dimensions, got "
+            f"{recurrent_output.shape[:2]} and {r.shape[:2]}."
+        )
+    if r_k.shape != r.shape[1:]:
+        raise ValueError(f"`r_k` must have shape {r.shape[1:]}, got {r_k.shape}.")
+
+    num_tokens, num_heads, head_v_dim = recurrent_output.shape
+    head_dim = r.shape[-1]
+    local_value_dim = num_heads * head_v_dim
+    if weight.shape != (local_value_dim,) or bias.shape != (local_value_dim,):
+        raise ValueError(
+            "`weight` and `bias` must match the flattened local value dimension "
+            f"{local_value_dim}, got {weight.shape} and {bias.shape}."
+        )
+    if g.shape != (num_tokens, local_value_dim):
+        raise ValueError(
+            f"`g` must have shape {(num_tokens, local_value_dim)}, got {g.shape}."
+        )
+
+    if output_dtype is None:
+        output_dtype = g.dtype
+
+    if (
+        not HAS_TRITON
+        or recurrent_output.device.type != "cuda"
+        or recurrent_output.numel() == 0
+        or not recurrent_output.is_contiguous()
+        or not r.is_contiguous()
+        or not k.is_contiguous()
+        or not v.is_contiguous()
+        or not r_k.is_contiguous()
+        or not weight.is_contiguous()
+        or not bias.is_contiguous()
+        or not g.is_contiguous()
+    ):
+        return rwkv7_lnx_rkvres_xg_reference(
+            recurrent_output=recurrent_output,
+            r=r,
+            k=k,
+            v=v,
+            r_k=r_k,
+            weight=weight,
+            bias=bias,
+            g=g,
+            eps=eps,
+            output_dtype=output_dtype,
+        )
+
+    block_k = triton.next_power_of_2(head_dim)
+    block_v = triton.next_power_of_2(head_v_dim)
+    if block_k > 1024 or block_v > 1024:
+        return rwkv7_lnx_rkvres_xg_reference(
+            recurrent_output=recurrent_output,
+            r=r,
+            k=k,
+            v=v,
+            r_k=r_k,
+            weight=weight,
+            bias=bias,
+            g=g,
+            eps=eps,
+            output_dtype=output_dtype,
+        )
+
+    out = torch.empty(
+        (num_tokens, local_value_dim),
+        device=g.device,
+        dtype=output_dtype,
+    )
+    num_warps = 4 if max(block_k, block_v) <= 64 else 8
+    rwkv7_lnx_rkvres_xg_fwd_kernel[(num_tokens * num_heads,)](
+        recurrent_output=recurrent_output,
+        r=r,
+        k=k,
+        v=v,
+        r_k=r_k,
+        weight=weight,
+        bias=bias,
+        g=g,
+        out=out,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        head_v_dim=head_v_dim,
+        eps=eps,
+        BLOCK_K=block_k,
+        BLOCK_V=block_v,
+        num_warps=num_warps,
+    )
+    return out
+
+
 @triton.heuristics(
     {
         "USE_INITIAL_STATE": lambda args: args["h0"] is not None,
