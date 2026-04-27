@@ -4,6 +4,7 @@
 
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from itertools import islice
 
 import regex as re
@@ -102,6 +103,15 @@ _NATIVE_RWKV7_LORA_SPECS = {
     "att.v2": ("attn.v_lora.lora.2.weight", "transpose"),
     "att.v0": ("attn.v_lora.lora.2.bias", "squeeze"),
 }
+
+
+@dataclass(frozen=True)
+class RWKV7PerfFlags:
+    use_fused_mix6: bool = False
+    use_fused_kk_pre: bool = False
+    use_fused_lnx_rkvres_xg: bool = False
+    use_fused_cmix: bool = False
+    use_alt_recurrent_kernel: bool = False
 
 
 def get_tp_world_size() -> int:
@@ -241,6 +251,27 @@ def _rwkv7_packed_prefill_enabled() -> bool:
 
 def _can_use_rwkv7_fused_recurrent(hidden_states: torch.Tensor) -> bool:
     return hidden_states.device.type == "cuda" and _rwkv7_packed_prefill_enabled()
+
+
+def _rwkv7_env_flag_enabled(name: str) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_rwkv7_perf_flags() -> RWKV7PerfFlags:
+    return RWKV7PerfFlags(
+        use_fused_mix6=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_MIX6"),
+        use_fused_kk_pre=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_KK_PRE"),
+        use_fused_lnx_rkvres_xg=_rwkv7_env_flag_enabled(
+            "RWKV7_USE_FUSED_LNX_RKVRES_XG"
+        ),
+        use_fused_cmix=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_CMIX"),
+        use_alt_recurrent_kernel=_rwkv7_env_flag_enabled(
+            "RWKV7_USE_ALT_RECURRENT_KERNEL"
+        ),
+    )
 
 
 def _custom_op_optional_tensor(
@@ -533,6 +564,7 @@ class RWKV7FeedForward(nn.Module):
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.act_fn = get_activation_fn(config.hidden_act)
+        self.perf_flags = _load_rwkv7_perf_flags()
         self.x_k = nn.Parameter(torch.zeros(self.hidden_size))
         self.key = ColumnParallelLinear(
             self.hidden_size,
@@ -549,14 +581,26 @@ class RWKV7FeedForward(nn.Module):
             prefix=f"{prefix}.value",
         )
 
+    def _mix_ffn_inputs(
+        self, hidden_states: torch.Tensor, delta: torch.Tensor
+    ) -> torch.Tensor:
+        if self.perf_flags.use_fused_cmix and hidden_states.is_cuda:
+            # Future fused CMix kernels will route through this hook.
+            pass
+        return hidden_states.addcmul(delta, self.x_k)
+
+    def _apply_ffn(self, mixed: torch.Tensor) -> torch.Tensor:
+        hidden, _ = self.key(mixed)
+        hidden = self.act_fn(hidden)
+        hidden, _ = self.value(hidden)
+        return hidden
+
     def forward(
         self, hidden_states: torch.Tensor, cached_state: torch.Tensor | None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         delta, final_state = token_shift_with_cache(hidden_states, cached_state)
-        mixed = hidden_states.addcmul(delta, self.x_k)
-        hidden, _ = self.key(mixed)
-        hidden = self.act_fn(hidden)
-        hidden, _ = self.value(hidden)
+        mixed = self._mix_ffn_inputs(hidden_states, delta)
+        hidden = self._apply_ffn(mixed)
         return hidden, final_state
 
     def forward_decode_batch(
@@ -565,10 +609,8 @@ class RWKV7FeedForward(nn.Module):
         cached_state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         delta = cached_state.to(hidden_states.dtype) - hidden_states
-        mixed = hidden_states.addcmul(delta, self.x_k)
-        hidden, _ = self.key(mixed)
-        hidden = self.act_fn(hidden)
-        hidden, _ = self.value(hidden)
+        mixed = self._mix_ffn_inputs(hidden_states, delta)
+        hidden = self._apply_ffn(mixed)
         return hidden, hidden_states
 
     def forward_prefill_batch(
@@ -582,10 +624,8 @@ class RWKV7FeedForward(nn.Module):
             query_start_loc,
             cached_state,
         )
-        mixed = hidden_states.addcmul(delta, self.x_k)
-        hidden, _ = self.key(mixed)
-        hidden = self.act_fn(hidden)
-        hidden, _ = self.value(hidden)
+        mixed = self._mix_ffn_inputs(hidden_states, delta)
+        hidden = self._apply_ffn(mixed)
         return hidden, final_state
 
 
@@ -614,6 +654,7 @@ class RWKV7Attention(nn.Module):
         self.key_end = self.key_start + self.local_key_dim
         self.value_start = self.tp_rank * self.local_value_dim
         self.value_end = self.value_start + self.local_value_dim
+        self.perf_flags = _load_rwkv7_perf_flags()
 
         self.x_r = nn.Parameter(torch.zeros(1, 1, self.hidden_size))
         self.x_w = nn.Parameter(torch.zeros(1, 1, self.hidden_size))
@@ -704,6 +745,57 @@ class RWKV7Attention(nn.Module):
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
 
+    def _mix_recurrent_inputs(
+        self,
+        hidden_states: torch.Tensor,
+        delta: torch.Tensor,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        x_r = self.x_r.squeeze(0).squeeze(0)
+        x_w = self.x_w.squeeze(0).squeeze(0)
+        x_k = self.x_k.squeeze(0).squeeze(0)
+        x_v = self.x_v.squeeze(0).squeeze(0)
+        x_a = self.x_a.squeeze(0).squeeze(0)
+        x_g = self.x_g.squeeze(0).squeeze(0)
+
+        if self.perf_flags.use_fused_mix6 and hidden_states.is_cuda:
+            # Future fused mix6 kernels will route through this hook.
+            pass
+
+        xr = hidden_states.addcmul(delta, x_r)
+        xw = hidden_states.addcmul(delta, x_w)
+        xk = hidden_states.addcmul(delta, x_k)
+        xv = hidden_states.addcmul(delta, x_v)
+        xa = hidden_states.addcmul(delta, x_a)
+        xg = hidden_states.addcmul(delta, x_g)
+        return xr, xw, xk, xv, xa, xg
+
+    def _prepare_recurrent_key_terms(
+        self,
+        k: torch.Tensor,
+        a: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        local_k_k = self.k_k[self.key_start : self.key_end].view(
+            1, self.local_num_heads, self.head_dim
+        )
+        local_k_a = self.k_a[self.key_start : self.key_end].view(
+            1, self.local_num_heads, self.head_dim
+        )
+
+        if self.perf_flags.use_fused_kk_pre and k.is_cuda:
+            # Future fused kk-pre kernels will route through this hook.
+            pass
+
+        kk = F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
+        k = k * (1 + (a - 1) * local_k_a.to(torch.float32))
+        return k, kk
+
     def _project_recurrent_inputs(
         self,
         hidden_states: torch.Tensor,
@@ -719,19 +811,7 @@ class RWKV7Attention(nn.Module):
         torch.Tensor,
         torch.Tensor,
     ]:
-        x_r = self.x_r.squeeze(0).squeeze(0)
-        x_w = self.x_w.squeeze(0).squeeze(0)
-        x_k = self.x_k.squeeze(0).squeeze(0)
-        x_v = self.x_v.squeeze(0).squeeze(0)
-        x_a = self.x_a.squeeze(0).squeeze(0)
-        x_g = self.x_g.squeeze(0).squeeze(0)
-
-        xr = hidden_states.addcmul(delta, x_r)
-        xw = hidden_states.addcmul(delta, x_w)
-        xk = hidden_states.addcmul(delta, x_k)
-        xv = hidden_states.addcmul(delta, x_v)
-        xa = hidden_states.addcmul(delta, x_a)
-        xg = hidden_states.addcmul(delta, x_g)
+        xr, xw, xk, xv, xa, xg = self._mix_recurrent_inputs(hidden_states, delta)
 
         r, _ = self.r_proj(xr)
         w = LOG_DECAY_SCALE * self.w_lora(xw).sigmoid()
@@ -755,15 +835,86 @@ class RWKV7Attention(nn.Module):
         a = a.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
         v = v.view(-1, self.local_num_heads, self.head_v_dim).to(torch.float32)
 
-        local_k_k = self.k_k[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
-        )
-        local_k_a = self.k_a[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
-        )
-        kk = F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
-        k = k * (1 + (a - 1) * local_k_a.to(torch.float32))
+        k, kk = self._prepare_recurrent_key_terms(k, a)
         return r, w, k, v, kk, a, g, v_first_out
+
+    def _run_recurrent_sequence(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        r: torch.Tensor,
+        w: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        kk: torch.Tensor,
+        a: torch.Tensor,
+        recurrent_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.perf_flags.use_alt_recurrent_kernel and hidden_states.is_cuda:
+            # Future alternative recurrent kernels will route through this hook.
+            pass
+
+        if _can_use_rwkv7_fused_recurrent(hidden_states):
+            recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
+                r=r.unsqueeze(0),
+                w=w.unsqueeze(0),
+                k=k.unsqueeze(0),
+                v=v.unsqueeze(0),
+                kk=kk.unsqueeze(0),
+                a=a.unsqueeze(0),
+                initial_state=recurrent_state.unsqueeze(0),
+                output_final_state=True,
+            )
+            return recurrent_output.squeeze(0), final_recurrent_state.squeeze(0)
+
+        outputs: list[torch.Tensor] = []
+        for idx in range(hidden_states.shape[0]):
+            sa = (recurrent_state * (-kk[idx]).unsqueeze(-1)).sum(dim=-2)
+            recurrent_state = (
+                torch.exp(w[idx]).unsqueeze(-1) * recurrent_state
+                + (kk[idx] * a[idx]).unsqueeze(-1) * sa.unsqueeze(-2)
+                + k[idx].unsqueeze(-1) * v[idx].unsqueeze(-2)
+            )
+            outputs.append((recurrent_state * r[idx].unsqueeze(-1)).sum(dim=-2))
+        return torch.stack(outputs, dim=0), recurrent_state
+
+    def _run_recurrent_decode_batch(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        r: torch.Tensor,
+        w: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        kk: torch.Tensor,
+        a: torch.Tensor,
+        recurrent_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.perf_flags.use_alt_recurrent_kernel and hidden_states.is_cuda:
+            # Future alternative recurrent kernels will route through this hook.
+            pass
+
+        if _can_use_rwkv7_fused_recurrent(hidden_states):
+            recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
+                r=r.unsqueeze(1),
+                w=w.unsqueeze(1),
+                k=k.unsqueeze(1),
+                v=v.unsqueeze(1),
+                kk=kk.unsqueeze(1),
+                a=a.unsqueeze(1),
+                initial_state=recurrent_state,
+                output_final_state=True,
+            )
+            return recurrent_output.squeeze(1), final_recurrent_state
+
+        sa = (recurrent_state * (-kk).unsqueeze(-1)).sum(dim=-2)
+        final_recurrent_state = (
+            torch.exp(w).unsqueeze(-1) * recurrent_state
+            + (kk * a).unsqueeze(-1) * sa.unsqueeze(-2)
+            + k.unsqueeze(-1) * v.unsqueeze(-2)
+        )
+        recurrent_output = (final_recurrent_state * r.unsqueeze(-1)).sum(dim=-2)
+        return recurrent_output, final_recurrent_state
 
     def _finalize_attention_output(
         self,
@@ -775,8 +926,11 @@ class RWKV7Attention(nn.Module):
         hidden_dtype: torch.dtype,
     ) -> torch.Tensor:
         output = recurrent_output.reshape(-1, self.local_value_dim)
-        output = self.g_norm(output)
+        if self.perf_flags.use_fused_lnx_rkvres_xg and recurrent_output.is_cuda:
+            # Future fused post-attention epilogues will route through this hook.
+            pass
 
+        output = self.g_norm(output)
         local_r_k = self.r_k[
             self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
             * self.local_num_heads
@@ -816,31 +970,16 @@ class RWKV7Attention(nn.Module):
         else:
             recurrent_state = recurrent_state.to(torch.float32)
 
-        if _can_use_rwkv7_fused_recurrent(hidden_states):
-            recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
-                r=r.unsqueeze(0),
-                w=w.unsqueeze(0),
-                k=k.unsqueeze(0),
-                v=v.unsqueeze(0),
-                kk=kk.unsqueeze(0),
-                a=a.unsqueeze(0),
-                initial_state=recurrent_state.unsqueeze(0),
-                output_final_state=True,
-            )
-            recurrent_output = recurrent_output.squeeze(0)
-            final_recurrent_state = final_recurrent_state.squeeze(0)
-        else:
-            outputs: list[torch.Tensor] = []
-            for idx in range(hidden_states.shape[0]):
-                sa = (recurrent_state * (-kk[idx]).unsqueeze(-1)).sum(dim=-2)
-                recurrent_state = (
-                    torch.exp(w[idx]).unsqueeze(-1) * recurrent_state
-                    + (kk[idx] * a[idx]).unsqueeze(-1) * sa.unsqueeze(-2)
-                    + k[idx].unsqueeze(-1) * v[idx].unsqueeze(-2)
-                )
-                outputs.append((recurrent_state * r[idx].unsqueeze(-1)).sum(dim=-2))
-            recurrent_output = torch.stack(outputs, dim=0)
-            final_recurrent_state = recurrent_state
+        recurrent_output, final_recurrent_state = self._run_recurrent_sequence(
+            hidden_states=hidden_states,
+            r=r,
+            w=w,
+            k=k,
+            v=v,
+            kk=kk,
+            a=a,
+            recurrent_state=recurrent_state,
+        )
 
         output = self._finalize_attention_output(
             recurrent_output,
@@ -918,26 +1057,16 @@ class RWKV7Attention(nn.Module):
         )
         recurrent_state = recurrent_state.to(torch.float32)
 
-        if _can_use_rwkv7_fused_recurrent(hidden_states):
-            recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
-                r=r.unsqueeze(1),
-                w=w.unsqueeze(1),
-                k=k.unsqueeze(1),
-                v=v.unsqueeze(1),
-                kk=kk.unsqueeze(1),
-                a=a.unsqueeze(1),
-                initial_state=recurrent_state,
-                output_final_state=True,
-            )
-            recurrent_output = recurrent_output.squeeze(1)
-        else:
-            sa = (recurrent_state * (-kk).unsqueeze(-1)).sum(dim=-2)
-            final_recurrent_state = (
-                torch.exp(w).unsqueeze(-1) * recurrent_state
-                + (kk * a).unsqueeze(-1) * sa.unsqueeze(-2)
-                + k.unsqueeze(-1) * v.unsqueeze(-2)
-            )
-            recurrent_output = (final_recurrent_state * r.unsqueeze(-1)).sum(dim=-2)
+        recurrent_output, final_recurrent_state = self._run_recurrent_decode_batch(
+            hidden_states=hidden_states,
+            r=r,
+            w=w,
+            k=k,
+            v=v,
+            kk=kk,
+            a=a,
+            recurrent_state=recurrent_state,
+        )
 
         output = self._finalize_attention_output(
             recurrent_output,

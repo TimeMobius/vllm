@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer
 
 from vllm.config import (
@@ -37,7 +38,14 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
     get_temporal_copy_spec,
 )
 from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
-from vllm.model_executor.models.rwkv7 import RWKV7Block, RWKV7ForCausalLM, RWKV7Model
+from vllm.model_executor.models.rwkv7 import (
+    RWKV7Attention,
+    RWKV7Block,
+    RWKV7FeedForward,
+    RWKV7ForCausalLM,
+    RWKV7Model,
+    _load_rwkv7_perf_flags,
+)
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
@@ -459,6 +467,135 @@ def _allocate_kv_cache(model: RWKV7ForCausalLM, *, device: torch.device) -> None
             torch.zeros((1, *shape), dtype=dtype, device=device)
             for shape, dtype in zip(state_shapes, state_dtypes)
         )
+
+
+def test_rwkv7_perf_flags_from_env(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_FUSED_MIX6", "1")
+    monkeypatch.setenv("RWKV7_USE_FUSED_KK_PRE", "true")
+    monkeypatch.setenv("RWKV7_USE_FUSED_LNX_RKVRES_XG", "on")
+    monkeypatch.setenv("RWKV7_USE_FUSED_CMIX", "yes")
+    monkeypatch.setenv("RWKV7_USE_ALT_RECURRENT_KERNEL", "1")
+
+    flags = _load_rwkv7_perf_flags()
+
+    assert flags.use_fused_mix6 is True
+    assert flags.use_fused_kk_pre is True
+    assert flags.use_fused_lnx_rkvres_xg is True
+    assert flags.use_fused_cmix is True
+    assert flags.use_alt_recurrent_kernel is True
+
+
+def test_rwkv7_perf_hooks_match_reference_formulas():
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attn = RWKV7Attention(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.attn",
+            )
+            ffn = RWKV7FeedForward(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.ffn",
+            )
+            _initialize_module_parameters(attn)
+            _initialize_module_parameters(ffn)
+
+            hidden_states = torch.randn(5, config.hidden_size, dtype=torch.float32)
+            delta = torch.randn_like(hidden_states)
+
+            mixed = ffn._mix_ffn_inputs(hidden_states, delta)
+            torch.testing.assert_close(mixed, hidden_states.addcmul(delta, ffn.x_k))
+
+            helper_outputs = attn._mix_recurrent_inputs(hidden_states, delta)
+            expected_outputs = (
+                hidden_states.addcmul(delta, attn.x_r.squeeze(0).squeeze(0)),
+                hidden_states.addcmul(delta, attn.x_w.squeeze(0).squeeze(0)),
+                hidden_states.addcmul(delta, attn.x_k.squeeze(0).squeeze(0)),
+                hidden_states.addcmul(delta, attn.x_v.squeeze(0).squeeze(0)),
+                hidden_states.addcmul(delta, attn.x_a.squeeze(0).squeeze(0)),
+                hidden_states.addcmul(delta, attn.x_g.squeeze(0).squeeze(0)),
+            )
+            for got, expected in zip(helper_outputs, expected_outputs):
+                torch.testing.assert_close(got, expected)
+
+            k = torch.randn(
+                5,
+                attn.local_num_heads,
+                attn.head_dim,
+                dtype=torch.float32,
+            )
+            a = torch.randn_like(k)
+            prepared_k, kk = attn._prepare_recurrent_key_terms(k, a)
+            local_k_k = attn.k_k[attn.key_start : attn.key_end].view(
+                1, attn.local_num_heads, attn.head_dim
+            )
+            local_k_a = attn.k_a[attn.key_start : attn.key_end].view(
+                1, attn.local_num_heads, attn.head_dim
+            )
+            torch.testing.assert_close(
+                kk, F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
+            )
+            torch.testing.assert_close(
+                prepared_k,
+                k * (1 + (a - 1) * local_k_a.to(torch.float32)),
+            )
+
+            recurrent_output = torch.randn(
+                5,
+                attn.local_num_heads,
+                attn.head_v_dim,
+                dtype=torch.float32,
+            )
+            r = torch.randn(
+                5,
+                attn.local_num_heads,
+                attn.head_dim,
+                dtype=torch.float32,
+            )
+            v = torch.randn(
+                5,
+                attn.local_num_heads,
+                attn.head_v_dim,
+                dtype=torch.float32,
+            )
+            g = torch.randn(
+                5,
+                attn.local_value_dim,
+                dtype=torch.float32,
+            )
+
+            epilogue_out = attn._finalize_attention_output(
+                recurrent_output,
+                r,
+                prepared_k,
+                v,
+                g,
+                torch.float32,
+            )
+            manual = attn.g_norm(recurrent_output.reshape(-1, attn.local_value_dim))
+            local_r_k = attn.r_k[
+                attn.tp_rank * attn.local_num_heads : (attn.tp_rank + 1)
+                * attn.local_num_heads
+            ].to(torch.float32)
+            correction = (
+                (r * prepared_k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
+            ).reshape(-1, attn.local_value_dim)
+            manual = (manual + correction) * g.to(torch.float32)
+            manual, _ = attn.o_proj(manual)
+            torch.testing.assert_close(epilogue_out, manual)
+        finally:
+            cleanup_dist_env_and_memory()
 
 
 def test_rwkv7_block_forward_without_metadata():
