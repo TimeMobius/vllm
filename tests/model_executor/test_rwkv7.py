@@ -30,6 +30,8 @@ from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_kk_pre,
+    rwkv7_kk_pre_reference,
     rwkv7_mix6,
     rwkv7_mix6_reference,
     rwkv7_recurrent_reference,
@@ -505,6 +507,20 @@ def test_rwkv7_mix6_triton_matches_reference(dtype):
         torch.testing.assert_close(got, ref, atol=tol, rtol=tol)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_kk_pre_triton_matches_reference():
+    k = torch.randn(19, 8, 64, device="cuda", dtype=torch.float32)
+    a = torch.randn_like(k)
+    k_k = torch.randn(8, 64, device="cuda", dtype=torch.float32)
+    k_a = torch.randn(8, 64, device="cuda", dtype=torch.float32)
+
+    expected_k, expected_kk = rwkv7_kk_pre_reference(k, k_k, a, k_a)
+    actual_k, actual_kk = rwkv7_kk_pre(k, k_k, a, k_a)
+
+    torch.testing.assert_close(actual_k, expected_k, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(actual_kk, expected_kk, atol=1e-6, rtol=1e-6)
+
+
 def test_rwkv7_perf_hooks_match_reference_formulas():
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
@@ -664,6 +680,59 @@ def test_rwkv7_attention_mix6_flag_matches_reference(monkeypatch):
 
             for got, ref in zip(actual, expected):
                 torch.testing.assert_close(got, ref, atol=2e-2, rtol=2e-2)
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_attention_kk_pre_flag_matches_reference(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_FUSED_KK_PRE", "1")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attn = RWKV7Attention(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.attn.fused_kk_pre",
+            )
+            _initialize_module_parameters(attn)
+            attn = attn.cuda()
+
+            k = torch.randn(
+                13,
+                attn.local_num_heads,
+                attn.head_dim,
+                device="cuda",
+                dtype=torch.float32,
+            )
+            a = torch.randn_like(k)
+            local_k_k = attn.k_k[attn.key_start : attn.key_end].view(
+                attn.local_num_heads, attn.head_dim
+            )
+            local_k_a = attn.k_a[attn.key_start : attn.key_end].view(
+                attn.local_num_heads, attn.head_dim
+            )
+
+            actual_k, actual_kk = attn._prepare_recurrent_key_terms(k, a)
+            expected_k, expected_kk = rwkv7_kk_pre_reference(
+                k,
+                local_k_k.to(torch.float32),
+                a,
+                local_k_a.to(torch.float32),
+            )
+
+            torch.testing.assert_close(actual_k, expected_k, atol=1e-6, rtol=1e-6)
+            torch.testing.assert_close(actual_kk, expected_kk, atol=1e-6, rtol=1e-6)
         finally:
             cleanup_dist_env_and_memory()
 

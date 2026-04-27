@@ -170,6 +170,115 @@ def rwkv7_mix6(
     return xr, xw, xk, xv, xa, xg
 
 
+@triton.jit
+def rwkv7_kk_pre_fwd_kernel(
+    k,
+    a,
+    k_k,
+    k_a,
+    k_out,
+    kk_out,
+    num_rows,
+    num_heads,
+    head_dim,
+    eps,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    if row >= num_rows:
+        return
+
+    offsets = tl.arange(0, BLOCK_SIZE)
+    mask = offsets < head_dim
+    head_idx = row % num_heads
+
+    row_offset = row * head_dim
+    head_offset = head_idx * head_dim
+
+    k_vals = tl.load(k + row_offset + offsets, mask=mask, other=0).to(tl.float32)
+    a_vals = tl.load(a + row_offset + offsets, mask=mask, other=0).to(tl.float32)
+    k_k_vals = tl.load(k_k + head_offset + offsets, mask=mask, other=0).to(tl.float32)
+    k_a_vals = tl.load(k_a + head_offset + offsets, mask=mask, other=0).to(tl.float32)
+
+    kk_raw = k_vals * k_k_vals
+    rstd = tl.rsqrt(tl.sum(kk_raw * kk_raw, axis=0) + eps)
+    kk_vals = kk_raw * rstd
+    k_adj = k_vals * (1 + (a_vals - 1) * k_a_vals)
+
+    tl.store(k_out + row_offset + offsets, k_adj, mask=mask)
+    tl.store(kk_out + row_offset + offsets, kk_vals, mask=mask)
+
+
+def rwkv7_kk_pre_reference(
+    k: torch.Tensor,
+    k_k: torch.Tensor,
+    a: torch.Tensor,
+    k_a: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    kk = torch.nn.functional.normalize(k * k_k, dim=-1, p=2.0)
+    k_adj = k * (1 + (a - 1) * k_a)
+    return k_adj, kk
+
+
+def rwkv7_kk_pre(
+    k: torch.Tensor,
+    k_k: torch.Tensor,
+    a: torch.Tensor,
+    k_a: torch.Tensor,
+    *,
+    eps: float = 1e-12,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if k.shape != a.shape:
+        raise ValueError(f"`k` and `a` must match, got {k.shape} and {a.shape}.")
+    if k.ndim != 3:
+        raise ValueError(f"`k` must be 3D, got {k.ndim}.")
+    if k_k.shape != k_a.shape:
+        raise ValueError(
+            f"`k_k` and `k_a` must match, got {k_k.shape} and {k_a.shape}."
+        )
+    if k_k.ndim != 2:
+        raise ValueError(f"`k_k` must be 2D, got {k_k.ndim}.")
+    if k.shape[1:] != k_k.shape:
+        raise ValueError(
+            "`k_k`/`k_a` must match the head layout of `k`, got "
+            f"{k.shape[1:]} and {k_k.shape}."
+        )
+
+    if (
+        not HAS_TRITON
+        or k.device.type != "cuda"
+        or k.numel() == 0
+        or not k.is_contiguous()
+        or not a.is_contiguous()
+    ):
+        return rwkv7_kk_pre_reference(k=k, k_k=k_k, a=a, k_a=k_a)
+
+    output_dtype = torch.result_type(k, k_k)
+    k_out = torch.empty_like(k, dtype=output_dtype)
+    kk_out = torch.empty_like(k, dtype=output_dtype)
+    num_rows = k.shape[0] * k.shape[1]
+    num_heads = k.shape[1]
+    head_dim = k.shape[2]
+    block_size = triton.next_power_of_2(head_dim)
+    num_warps = 4 if block_size <= 64 else 8
+
+    rwkv7_kk_pre_fwd_kernel[(num_rows,)](
+        k=k,
+        a=a,
+        k_k=k_k,
+        k_a=k_a,
+        k_out=k_out,
+        kk_out=kk_out,
+        num_rows=num_rows,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        eps=eps,
+        BLOCK_SIZE=block_size,
+        num_warps=num_warps,
+    )
+    return k_out, kk_out
+
+
 @triton.heuristics(
     {
         "USE_INITIAL_STATE": lambda args: args["h0"] is not None,

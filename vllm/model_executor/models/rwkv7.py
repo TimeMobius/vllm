@@ -25,6 +25,8 @@ from vllm.forward_context import get_forward_context, is_forward_context_availab
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_kk_pre,
+    rwkv7_kk_pre_reference,
     rwkv7_mix6,
     rwkv7_mix6_reference,
 )
@@ -795,19 +797,26 @@ class RWKV7Attention(nn.Module):
         a: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         local_k_k = self.k_k[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
+            self.local_num_heads, self.head_dim
         )
         local_k_a = self.k_a[self.key_start : self.key_end].view(
-            1, self.local_num_heads, self.head_dim
+            self.local_num_heads, self.head_dim
         )
 
         if self.perf_flags.use_fused_kk_pre and k.is_cuda:
-            # Future fused kk-pre kernels will route through this hook.
-            pass
+            return rwkv7_kk_pre(
+                k=k,
+                k_k=local_k_k.to(torch.float32),
+                a=a,
+                k_a=local_k_a.to(torch.float32),
+            )
 
-        kk = F.normalize(k * local_k_k.to(torch.float32), dim=-1, p=2.0)
-        k = k * (1 + (a - 1) * local_k_a.to(torch.float32))
-        return k, kk
+        return rwkv7_kk_pre_reference(
+            k=k,
+            k_k=local_k_k.to(torch.float32),
+            a=a,
+            k_a=local_k_a.to(torch.float32),
+        )
 
     def _project_recurrent_inputs(
         self,
