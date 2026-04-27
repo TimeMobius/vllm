@@ -30,6 +30,8 @@ from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_mix6,
+    rwkv7_mix6_reference,
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
 )
@@ -485,6 +487,24 @@ def test_rwkv7_perf_flags_from_env(monkeypatch):
     assert flags.use_alt_recurrent_kernel is True
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_rwkv7_mix6_triton_matches_reference(dtype):
+    if dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("bfloat16 is not supported on this CUDA device.")
+
+    hidden_states = torch.randn(17, 64, device="cuda", dtype=dtype)
+    delta = torch.randn_like(hidden_states)
+    params = [torch.randn(64, device="cuda", dtype=dtype) for _ in range(6)]
+
+    expected = rwkv7_mix6_reference(hidden_states, delta, *params)
+    actual = rwkv7_mix6(hidden_states, delta, *params)
+
+    tol = 1e-6 if dtype is torch.float32 else 2e-2
+    for got, ref in zip(actual, expected):
+        torch.testing.assert_close(got, ref, atol=tol, rtol=tol)
+
+
 def test_rwkv7_perf_hooks_match_reference_formulas():
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
@@ -594,6 +614,56 @@ def test_rwkv7_perf_hooks_match_reference_formulas():
             manual = (manual + correction) * g.to(torch.float32)
             manual, _ = attn.o_proj(manual)
             torch.testing.assert_close(epilogue_out, manual)
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_attention_mix6_flag_matches_reference(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_FUSED_MIX6", "1")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attn = RWKV7Attention(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.attn.fused_mix6",
+            )
+            _initialize_module_parameters(attn)
+            attn = attn.cuda()
+
+            hidden_states = torch.randn(
+                13,
+                config.hidden_size,
+                device="cuda",
+                dtype=torch.bfloat16,
+            )
+            delta = torch.randn_like(hidden_states)
+
+            actual = attn._mix_recurrent_inputs(hidden_states, delta)
+            expected = rwkv7_mix6_reference(
+                hidden_states,
+                delta,
+                attn.x_r.squeeze(0).squeeze(0),
+                attn.x_w.squeeze(0).squeeze(0),
+                attn.x_k.squeeze(0).squeeze(0),
+                attn.x_v.squeeze(0).squeeze(0),
+                attn.x_a.squeeze(0).squeeze(0),
+                attn.x_g.squeeze(0).squeeze(0),
+            )
+
+            for got, ref in zip(actual, expected):
+                torch.testing.assert_close(got, ref, atol=2e-2, rtol=2e-2)
         finally:
             cleanup_dist_env_and_memory()
 

@@ -25,6 +25,8 @@ from vllm.forward_context import get_forward_context, is_forward_context_availab
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_mix6,
+    rwkv7_mix6_reference,
 )
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -765,16 +767,27 @@ class RWKV7Attention(nn.Module):
         x_g = self.x_g.squeeze(0).squeeze(0)
 
         if self.perf_flags.use_fused_mix6 and hidden_states.is_cuda:
-            # Future fused mix6 kernels will route through this hook.
-            pass
+            return rwkv7_mix6(
+                hidden_states=hidden_states,
+                delta=delta,
+                x_r=x_r,
+                x_w=x_w,
+                x_k=x_k,
+                x_v=x_v,
+                x_a=x_a,
+                x_g=x_g,
+            )
 
-        xr = hidden_states.addcmul(delta, x_r)
-        xw = hidden_states.addcmul(delta, x_w)
-        xk = hidden_states.addcmul(delta, x_k)
-        xv = hidden_states.addcmul(delta, x_v)
-        xa = hidden_states.addcmul(delta, x_a)
-        xg = hidden_states.addcmul(delta, x_g)
-        return xr, xw, xk, xv, xa, xg
+        return rwkv7_mix6_reference(
+            hidden_states=hidden_states,
+            delta=delta,
+            x_r=x_r,
+            x_w=x_w,
+            x_k=x_k,
+            x_v=x_v,
+            x_a=x_a,
+            x_g=x_g,
+        )
 
     def _prepare_recurrent_key_terms(
         self,

@@ -23,6 +23,153 @@ def _rwkv7_fused_recurrent_disabled() -> bool:
     )
 
 
+@triton.jit
+def rwkv7_mix6_fwd_kernel(
+    x,
+    delta,
+    x_r,
+    x_w,
+    x_k,
+    x_v,
+    x_a,
+    x_g,
+    xr,
+    xw,
+    xk,
+    xv,
+    xa,
+    xg,
+    numel,
+    hidden_size,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0).to(tl.int64)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < numel
+    cols = offsets % hidden_size
+
+    x_vals = tl.load(x + offsets, mask=mask, other=0).to(tl.float32)
+    delta_vals = tl.load(delta + offsets, mask=mask, other=0).to(tl.float32)
+
+    x_r_vals = tl.load(x_r + cols, mask=mask, other=0).to(tl.float32)
+    x_w_vals = tl.load(x_w + cols, mask=mask, other=0).to(tl.float32)
+    x_k_vals = tl.load(x_k + cols, mask=mask, other=0).to(tl.float32)
+    x_v_vals = tl.load(x_v + cols, mask=mask, other=0).to(tl.float32)
+    x_a_vals = tl.load(x_a + cols, mask=mask, other=0).to(tl.float32)
+    x_g_vals = tl.load(x_g + cols, mask=mask, other=0).to(tl.float32)
+
+    tl.store(xr + offsets, x_vals + delta_vals * x_r_vals, mask=mask)
+    tl.store(xw + offsets, x_vals + delta_vals * x_w_vals, mask=mask)
+    tl.store(xk + offsets, x_vals + delta_vals * x_k_vals, mask=mask)
+    tl.store(xv + offsets, x_vals + delta_vals * x_v_vals, mask=mask)
+    tl.store(xa + offsets, x_vals + delta_vals * x_a_vals, mask=mask)
+    tl.store(xg + offsets, x_vals + delta_vals * x_g_vals, mask=mask)
+
+
+def rwkv7_mix6_reference(
+    hidden_states: torch.Tensor,
+    delta: torch.Tensor,
+    x_r: torch.Tensor,
+    x_w: torch.Tensor,
+    x_k: torch.Tensor,
+    x_v: torch.Tensor,
+    x_a: torch.Tensor,
+    x_g: torch.Tensor,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    xr = hidden_states.addcmul(delta, x_r)
+    xw = hidden_states.addcmul(delta, x_w)
+    xk = hidden_states.addcmul(delta, x_k)
+    xv = hidden_states.addcmul(delta, x_v)
+    xa = hidden_states.addcmul(delta, x_a)
+    xg = hidden_states.addcmul(delta, x_g)
+    return xr, xw, xk, xv, xa, xg
+
+
+def rwkv7_mix6(
+    hidden_states: torch.Tensor,
+    delta: torch.Tensor,
+    x_r: torch.Tensor,
+    x_w: torch.Tensor,
+    x_k: torch.Tensor,
+    x_v: torch.Tensor,
+    x_a: torch.Tensor,
+    x_g: torch.Tensor,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    if hidden_states.shape != delta.shape:
+        raise ValueError(
+            "`hidden_states` and `delta` must have the same shape, got "
+            f"{hidden_states.shape} and {delta.shape}."
+        )
+    if hidden_states.ndim != 2:
+        raise ValueError(f"`hidden_states` must be 2D, got {hidden_states.ndim}.")
+
+    if (
+        not HAS_TRITON
+        or hidden_states.device.type != "cuda"
+        or hidden_states.numel() == 0
+        or not hidden_states.is_contiguous()
+        or not delta.is_contiguous()
+    ):
+        return rwkv7_mix6_reference(
+            hidden_states=hidden_states,
+            delta=delta,
+            x_r=x_r,
+            x_w=x_w,
+            x_k=x_k,
+            x_v=x_v,
+            x_a=x_a,
+            x_g=x_g,
+        )
+
+    numel = hidden_states.numel()
+    hidden_size = hidden_states.shape[-1]
+    output_dtype = torch.result_type(hidden_states, x_r)
+    xr = torch.empty_like(hidden_states, dtype=output_dtype)
+    xw = torch.empty_like(hidden_states, dtype=output_dtype)
+    xk = torch.empty_like(hidden_states, dtype=output_dtype)
+    xv = torch.empty_like(hidden_states, dtype=output_dtype)
+    xa = torch.empty_like(hidden_states, dtype=output_dtype)
+    xg = torch.empty_like(hidden_states, dtype=output_dtype)
+    block_size = min(2048, triton.next_power_of_2(hidden_size))
+    num_warps = 4 if block_size <= 1024 else 8
+    grid = (triton.cdiv(numel, block_size),)
+    rwkv7_mix6_fwd_kernel[grid](
+        x=hidden_states,
+        delta=delta,
+        x_r=x_r,
+        x_w=x_w,
+        x_k=x_k,
+        x_v=x_v,
+        x_a=x_a,
+        x_g=x_g,
+        xr=xr,
+        xw=xw,
+        xk=xk,
+        xv=xv,
+        xa=xa,
+        xg=xg,
+        numel=numel,
+        hidden_size=hidden_size,
+        BLOCK_SIZE=block_size,
+        num_warps=num_warps,
+    )
+    return xr, xw, xk, xv, xa, xg
+
+
 @triton.heuristics(
     {
         "USE_INITIAL_STATE": lambda args: args["h0"] is not None,
@@ -108,9 +255,10 @@ def fused_recurrent_rwkv7_fwd_kernel(
         b_act_a = -b_kk
         b_b = b_kk * b_a
 
-        b_h = exp(b_w)[:, None] * b_h + b_b[:, None] * tl.sum(
-            b_act_a[:, None] * b_h, 0
-        )[None, :]
+        b_h = (
+            exp(b_w)[:, None] * b_h
+            + b_b[:, None] * tl.sum(b_act_a[:, None] * b_h, 0)[None, :]
+        )
         b_h += b_k[:, None] * b_v[None, :]
         b_o = tl.sum(b_h * b_r[:, None], 0)
 
@@ -218,9 +366,7 @@ def _rwkv7_recurrent_reference_impl(
     if r.ndim != 4:
         raise ValueError(f"`r` must be 4D, got {r.ndim}.")
     if cu_seqlens is not None and r.shape[0] != 1:
-        raise ValueError(
-            "When `cu_seqlens` is provided, the batch size must be 1."
-        )
+        raise ValueError("When `cu_seqlens` is provided, the batch size must be 1.")
     if output_checkpoint_states and (
         checkpoint_positions is None or checkpoint_offsets is None
     ):
@@ -283,22 +429,21 @@ def _rwkv7_recurrent_reference_impl(
         for tok_idx in range(start, end):
             local_token_idx = tok_idx - start
             tensor_token_idx = tok_idx if cu_seqlens is not None else local_token_idx
-            sa = (
-                state * (-kk[batch_idx, tensor_token_idx]).unsqueeze(-1)
-            ).sum(dim=-2)
+            sa = (state * (-kk[batch_idx, tensor_token_idx]).unsqueeze(-1)).sum(dim=-2)
             state = (
                 torch.exp(w[batch_idx, tensor_token_idx]).unsqueeze(-1) * state
                 + (
-                    kk[batch_idx, tensor_token_idx]
-                    * a[batch_idx, tensor_token_idx]
+                    kk[batch_idx, tensor_token_idx] * a[batch_idx, tensor_token_idx]
                 ).unsqueeze(-1)
                 * sa.unsqueeze(-2)
                 + k[batch_idx, tensor_token_idx].unsqueeze(-1)
                 * v[batch_idx, tensor_token_idx].unsqueeze(-2)
             )
             out[batch_idx, tensor_token_idx] = (
-                state * r[batch_idx, tensor_token_idx].unsqueeze(-1)
-            ).sum(dim=-2).to(out.dtype)
+                (state * r[batch_idx, tensor_token_idx].unsqueeze(-1))
+                .sum(dim=-2)
+                .to(out.dtype)
+            )
 
             if (
                 checkpoint_states is not None
@@ -411,9 +556,7 @@ def _fused_mul_recurrent_rwkv7_impl(
         )
 
     if cu_seqlens is not None and r.shape[0] != 1:
-        raise ValueError(
-            "When `cu_seqlens` is provided, the batch size must be 1."
-        )
+        raise ValueError("When `cu_seqlens` is provided, the batch size must be 1.")
 
     B, T, H, K = r.shape
     V = v.shape[-1]

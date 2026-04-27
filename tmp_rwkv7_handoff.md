@@ -15,6 +15,23 @@
     - Benchmark results are now tracked separately in:
         - [tmp_rwkv7_benchmark_records.md](/home/liu/vllm/tmp_rwkv7_benchmark_records.md)
 
+## Workspace Execution Note
+
+- Current Codex shell entrypoint is Windows PowerShell, while this repo and
+  `.venv/bin/python` live inside WSL.
+- Do **not** run Linux virtualenv executables directly from PowerShell like:
+    - `.venv/bin/python -m pytest ...`
+    - `.venv/bin/python -m pre_commit ...`
+- Doing so may trigger a Windows "how do you want to open this file?" dialog,
+  because PowerShell is trying to open a Linux ELF path instead of executing it.
+- Use WSL explicitly for all repo-local Python / pre-commit commands:
+    - `bash -lc '.venv/bin/python -m pytest ...'`
+    - `bash -lc '.venv/bin/python -m pre_commit run ...'`
+    - `bash -lc '.venv/bin/python - <<\"PY\" ... PY'`
+- Same rule for other Linux-only executables inside the repo:
+    - prefer `bash -lc '...'`
+    - or `wsl bash -lc '...'`
+
 ## Latest Update (2026-04-13)
 
 - Upgraded the remote serving benchmark utility:
@@ -733,7 +750,7 @@ Handling:
 - added a dedicated RWKV7 fused recurrent op at
   [vllm/model_executor/layers/fla/ops/rwkv7.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/rwkv7.py)
 - exported it through
-  [vllm/model_executor/layers/fla/ops/__init__.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/__init__.py)
+  [vllm/model_executor/layers/fla/ops/**init**.py](/home/liu/vllm/vllm/model_executor/layers/fla/ops/__init__.py)
 - switched the sequence-prefill branch of
   [RWKV7Attention._forward()](/home/liu/vllm/vllm/model_executor/models/rwkv7.py:550)
   from the Python token loop to `fused_mul_recurrent_rwkv7(...)`
@@ -1347,7 +1364,7 @@ Raw artifacts:
 Summary table:
 
 | concurrency | eager TPS | piecewise TPS |
-|---|---:|---:|
+| --- | ---: | ---: |
 | `1` | `31.156` | `29.302` |
 | `2` | `62.260` | `68.573` |
 | `4` | `123.345` | `135.256` |
