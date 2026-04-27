@@ -286,6 +286,37 @@
 - decode ITL 改善最明显
 - FFN 输出与现有实现严格对齐
 
+#### Current Probe (2026-04-27)
+
+- Tried a minimal first pass that only fuses:
+    - `mixed = hidden_states + delta * x_k`
+- Correctness result:
+    - Triton/reference equality passed
+    - FFN hook equality passed
+- Microbenchmark result:
+    - op-level:
+        - rows `32`: `0.82x` of PyTorch reference
+        - rows `256`: `1.16x`
+        - rows `2048`: `0.99x`
+    - hook-level:
+        - rows `32`: `0.53x`
+        - rows `256`: `0.86x`
+        - rows `2048`: `0.98x`
+- Decision:
+    - Do not land the mix-only CMix Triton path.
+    - This is too small a slice; launch overhead and PyTorch's existing
+      elementwise path are already good enough.
+    - A useful CMix migration likely needs to fuse a larger region, at least:
+        - token mixing
+        - key projection
+        - `sqrelu`
+      and ideally evaluate whether the second projection can stay on the
+      existing `RowParallelLinear` path without losing most of the gain.
+- Next action:
+    - Inspect whether official `_CmixLayerV2Fn` can be split into a vLLM-safe
+      forward-only kernel that respects tensor parallel and quantized linear
+      constraints.
+
 ### P2: Port `tmix_lnx_rkvres_xg_bf16_v1`
 
 #### 优先级
