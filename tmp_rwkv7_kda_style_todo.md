@@ -8,6 +8,40 @@
 
 - [tmp_rwkv7_official_perf_todo.md](/home/liu/vllm/tmp_rwkv7_official_perf_todo.md)
 
+## Progress Update (2026-04-27)
+
+- `RWKV7_USE_FUSED_MIX6` 与 `RWKV7_USE_FUSED_KK_PRE` 已接入。
+- 这两项都已经做完：
+    - Triton / reference 数值等价测试
+    - model hook 接入测试
+    - isolated serial end-to-end benchmark
+- benchmark 方法也校正了：
+    - 不再并行跑多组 flag
+    - 不再通过 PowerShell 拼接 `export PATH=...:$PATH`
+    - 统一改成：
+        - 单独 bash 脚本
+        - 显式 clean Linux `PATH`
+        - 一次只测一组 flag
+- clean serial benchmark 结论：
+    - baseline
+        - prefill TTFT proxy:
+            - `64`: `63.519ms`
+            - `1024`: `180.642ms`
+            - `1984`: `269.706ms`
+        - decode:
+            - `64 -> 32`: TTFT `105.311ms`, TPOT `38.565ms`
+            - `64 -> 64`: TTFT `90.251ms`, TPOT `36.891ms`
+    - `mix6` only
+        - short TTFT / decode 有正收益
+    - `kk-pre` only
+        - decode 收益最明显
+        - longer prompt TTFT 也改善
+    - `mix6 + kk-pre`
+        - clean serial run 下整体仍然 net positive
+- 当前下一步：
+    - 继续按 [tmp_rwkv7_official_perf_todo.md](/home/liu/vllm/tmp_rwkv7_official_perf_todo.md)
+      做 `P1: Fused CMix / FFN`
+
 ## Progress Update (2026-04-13)
 
 - 远程压测脚本已升级：

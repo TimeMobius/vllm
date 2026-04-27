@@ -31,6 +31,84 @@
 - Same rule for other Linux-only executables inside the repo:
     - prefer `bash -lc '...'`
     - or `wsl bash -lc '...'`
+- Do not inject Linux `export PATH=...:$PATH` snippets directly through a
+  PowerShell-wrapped command string.
+    - In this Codex setup, `$PATH` can be expanded on the wrong side and pull
+      in Windows paths with spaces / parentheses.
+    - That can silently contaminate benchmark startup and produce misleading
+      failures such as Triton `gcc: cannot execute 'as'`.
+- Preferred benchmark launch pattern:
+    - write a small bash script
+    - set an explicit clean Linux path inside it, for example:
+        - `export PATH=/home/liu/vllm/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+    - then run `.venv/bin/python tmp_rwkv7_ttft_benchmark.py ...`
+
+## Latest Update (2026-04-27)
+
+- RWKV7 perf flags landed and were benchmarked in isolation:
+    - `RWKV7_USE_FUSED_MIX6`
+    - `RWKV7_USE_FUSED_KK_PRE`
+- Earlier failed TTFT startup was traced to benchmark launch contamination,
+  not Triton / vLLM itself:
+    - direct `vllm serve` works
+    - isolated `spawn` + Triton `CudaUtils()` works
+    - the bad path was a PowerShell-mediated command that polluted Linux
+      `PATH`
+- Clean serial TTFT benchmark recipe on local `0.4B`:
+    - model:
+        - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - script:
+        - [tmp_rwkv7_ttft_benchmark.py](/home/liu/vllm/tmp_rwkv7_ttft_benchmark.py)
+    - config:
+        - `--enforce-eager`
+        - `--gpu-memory-utilization 0.8`
+        - `--rounds 2`
+        - `--warmup 1`
+        - prompt lengths: `64 / 1024 / 1984`
+        - decode: prompt `64`, output `32 / 64`
+- Clean serial benchmark summary:
+    - baseline:
+        - ready: `36.045s`
+        - prefill TTFT proxy:
+            - `64`: `63.519ms`
+            - `1024`: `180.642ms`
+            - `1984`: `269.706ms`
+        - decode:
+            - `32 tok`: TTFT `105.311ms`, TPOT `38.565ms`
+            - `64 tok`: TTFT `90.251ms`, TPOT `36.891ms`
+    - `mix6` only:
+        - ready: `32.041s`
+        - prefill TTFT proxy:
+            - `64`: `46.759ms`
+            - `1024`: `188.143ms`
+            - `1984`: `262.678ms`
+        - decode:
+            - `32 tok`: TTFT `83.037ms`, TPOT `34.156ms`
+            - `64 tok`: TTFT `85.123ms`, TPOT `34.285ms`
+    - `kk-pre` only:
+        - ready: `44.054s`
+        - prefill TTFT proxy:
+            - `64`: `61.461ms`
+            - `1024`: `155.154ms`
+            - `1984`: `255.132ms`
+        - decode:
+            - `32 tok`: TTFT `76.515ms`, TPOT `30.689ms`
+            - `64 tok`: TTFT `79.815ms`, TPOT `34.709ms`
+    - `mix6 + kk-pre`:
+        - ready: `32.034s`
+        - prefill TTFT proxy:
+            - `64`: `49.576ms`
+            - `1024`: `171.582ms`
+            - `1984`: `248.333ms`
+        - decode:
+            - `32 tok`: TTFT `81.696ms`, TPOT `32.168ms`
+            - `64 tok`: TTFT `76.448ms`, TPOT `33.565ms`
+- Interpretation:
+    - `mix6` helps short prompt TTFT and decode latency
+    - `kk-pre` helps decode most clearly and also improves longer prompt TTFT
+    - combined flags remain net positive on the clean serial run
+    - next perf item can move forward to fused `CMix`, but keep the same
+      isolated benchmark discipline
 
 ## Latest Update (2026-04-13)
 

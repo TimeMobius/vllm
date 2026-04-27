@@ -27,6 +27,26 @@
 - 只迁移局部 kernel / fused epilogue
 - 每一步都必须保持 vLLM 现有调度接口与 correctness
 
+## Progress Update (2026-04-27)
+
+- `P0` hook / flag scaffolding 已完成。
+- `P1 mix6` 已完成首轮迁移：
+    - Triton fused path 已接入
+    - correctness tests 已补
+    - isolated serial benchmark 显示：
+        - short prefill TTFT proxy 改善明显
+        - decode TTFT / TPOT 也有正收益
+- `P1 kk-pre` 已完成首轮迁移：
+    - Triton fused path 已接入
+    - correctness tests 已补
+    - isolated serial benchmark 显示：
+        - decode TTFT / TPOT 改善最明显
+        - longer prompt TTFT proxy 也有正收益
+- `mix6 + kk-pre` 组合在 clean serial benchmark 下仍是 net positive。
+- 当前下一项优先级前移为：
+    - `P1: Port Fused CMix / FFN`
+    - 在继续做 attention epilogue 之前，先看 FFN 热路径能否带来更稳定的 decode 收益
+
 ## Non-Goals
 
 - 不在这一轮里处理 QRWKV checkpoint 质量问题
@@ -139,6 +159,24 @@
 - first-step compare 一致
 - decode ITL 有明确改善
 
+#### 当前状态
+
+- `Done (first pass)`
+- 本地接入形态：
+    - Triton fused `mix6`
+    - feature flag: `RWKV7_USE_FUSED_MIX6`
+- 当前 isolated serial benchmark 结论：
+    - prefill TTFT proxy:
+        - prompt `64`: `63.519ms -> 46.759ms` (`+26.39%`)
+        - prompt `1024`: `180.642ms -> 188.143ms` (`-4.15%`)
+        - prompt `1984`: `269.706ms -> 262.678ms` (`+2.61%`)
+    - decode:
+        - `64 -> 32`: TTFT `+21.15%`, TPOT `+11.43%`
+        - `64 -> 64`: TTFT `+5.68%`, TPOT `+7.06%`
+- 结论：
+    - 对 short prompt 和 decode 路径是有效优化
+    - 对长 prompt prefill 不是主收益点
+
 ### P1: Port `tmix_kk_pre_bf16_v5`
 
 #### 优先级
@@ -185,6 +223,24 @@
 
 - long prompt step-by-step 不漂
 - pure torch / vLLM / official demo rnn 数值趋势一致
+
+#### 当前状态
+
+- `Done (first pass)`
+- 本地接入形态：
+    - Triton fused `kk-pre`
+    - feature flag: `RWKV7_USE_FUSED_KK_PRE`
+- 当前 isolated serial benchmark 结论：
+    - prefill TTFT proxy:
+        - prompt `64`: `63.519ms -> 61.461ms` (`+3.24%`)
+        - prompt `1024`: `180.642ms -> 155.154ms` (`+14.11%`)
+        - prompt `1984`: `269.706ms -> 255.132ms` (`+5.40%`)
+    - decode:
+        - `64 -> 32`: TTFT `+27.34%`, TPOT `+20.42%`
+        - `64 -> 64`: TTFT `+11.56%`, TPOT `+5.91%`
+- 结论：
+    - 目前是两项里对 decode 收益更稳定的一项
+    - 对 longer prompt TTFT 也比 `mix6` 更直接
 
 ### P1: Port Fused CMix / FFN
 
