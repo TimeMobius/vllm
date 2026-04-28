@@ -118,6 +118,55 @@
         - if CMix is revisited, it should be as a **larger-region FFN fuse**,
           not just CUDA `sqrelu`
 
+## Latest Update (2026-04-28, Runtime Cleanup)
+
+- Landed a first runtime-side cleanup for RWKV7 `cache_all + packed prefill`:
+    - [vllm/model_executor/models/rwkv7.py](/home/liu/vllm/vllm/model_executor/models/rwkv7.py)
+    - old path:
+        - Python `for prefill_idx in range(num_prefills)`
+        - repeated `.item()`
+        - list append + `torch.cat(...)`
+        - per-request checkpoint metadata assembly
+    - new path:
+        - `_rwkv7_cache_all_packed_checkpoint_metadata(...)`
+        - tensorized assembly of:
+            - `checkpoint_positions`
+            - `checkpoint_absolute_positions`
+            - `checkpoint_counts`
+            - `block_slot_ids`
+- Scope:
+    - only affects:
+        - `cache_all`
+        - packed prefill enabled
+    - does **not** change:
+        - normal decode path
+        - non-`cache_all` prefill path
+        - recurrent math kernels
+- Focused tests that passed:
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_cache_all_packed_checkpoint_metadata_matches_reference`
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_block_cache_all_prefill_writes_aligned_states`
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_block_cache_all_prefill_batches_multiple_sequences_with_prefix_states`
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_block_cache_all_prefill_batches_multiple_sequences`
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_block_cache_all_decode_writes_next_block_slot`
+    - result:
+        - `5 passed`
+- Local metadata microbenchmark:
+    - workload:
+        - `num_prefills=64`
+        - `max_blocks=16`
+    - CPU:
+        - old Python loop `1.917ms`
+        - new helper `0.085ms`
+        - `22.49x`
+    - CUDA:
+        - old Python loop `34.149ms`
+        - new helper `1.288ms`
+        - `26.52x`
+- Interpretation:
+    - this is a real runtime cleanup win
+    - but it only helps when RWKV7 is running the `cache_all` prefix-caching path
+    - it is not expected to move plain non-prefix decode TPS by itself
+
 ## Latest Update (2026-04-28)
 
 - Added an experimental alternate RWKV7 recurrent CUDA path behind:

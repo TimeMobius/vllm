@@ -678,6 +678,46 @@
 - kernel 收益能真正体现在 wall-clock
 - 不是只在 isolated microbenchmark 里好看
 
+#### Current Status (2026-04-28)
+
+- `Done (first targeted cleanup)`
+- 本地首轮落点：
+    - `cache_all + packed prefill`
+    - 把 `_forward_runtime()` 里的逐 request checkpoint metadata 组装：
+        - Python `for` loop
+        - repeated `.item()`
+        - list append + `torch.cat(...)`
+      改成了张量 helper：
+        - `_rwkv7_cache_all_packed_checkpoint_metadata(...)`
+- Correctness:
+    - helper/reference equality:
+        - `test_rwkv7_cache_all_packed_checkpoint_metadata_matches_reference`
+    - integrated cache-all coverage:
+        - aligned-state prefill
+        - multi-prefill
+        - multi-prefill with nonzero prefix state
+        - cache-all decode slot update
+    - focused pytest:
+        - `5 passed`
+- Microbenchmark:
+    - workload:
+        - `num_prefills=64`
+        - `max_blocks=16`
+    - CPU:
+        - old Python loop `1.917ms`
+        - new helper `0.085ms`
+        - `22.49x`
+    - CUDA:
+        - old Python loop `34.149ms`
+        - new helper `1.288ms`
+        - `26.52x`
+- Decision:
+    - Keep this cleanup.
+    - It is a real runtime-side win for the `cache_all` prefix-caching path.
+    - It does not by itself answer the more general “plain decode TPS” question,
+      so the next `P3` work should keep targeting other Python-side metadata
+      hotspots if they exist.
+
 ## Recommended Execution Order
 
 1. `P0` 基线与 feature flag

@@ -106,6 +106,31 @@
         - 更完整 `CMix / FFN` 区域融合评估
         - 或 `P3 runtime cleanup`
 
+## Progress Update (2026-04-28, Runtime Cleanup)
+
+- `P3 runtime cleanup` 已完成一个很具体的首轮落点：
+    - `cache_all + packed prefill`
+    - 把原来 Python 侧逐 request 拼 checkpoint metadata 的逻辑，
+      改成了张量化 helper
+- 这一步不是改 attention/FFN 数学：
+    - 只是在 `_forward_runtime()` 里减少：
+        - `.item()`
+        - Python `for` 循环
+        - list append / `torch.cat(...)`
+- 当前 benchmark 结论很明确：
+    - metadata helper 单独测：
+        - CPU 约 `22.5x`
+        - CUDA 约 `26.5x`
+    - 但收益范围要说清楚：
+        - 只影响 `cache_all` 路径
+        - 不等于普通 decode TPS 会直接同步涨这么多
+- 当前判断：
+    - 这是值得保留的 runtime cleanup
+    - 也说明 “减少 Python / metadata 开销” 这条路线是对的
+    - 后续如果继续做 `P3`，优先看：
+        - 还有没有类似的 per-request metadata 组装逻辑
+        - 是否能继续把 prefix-caching 相关路径去 Python 化
+
 ## Progress Update (2026-04-13)
 
 - 远程压测脚本已升级：
