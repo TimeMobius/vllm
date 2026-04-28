@@ -25,6 +25,8 @@ from vllm.forward_context import get_forward_context, is_forward_context_availab
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_alt_recurrent,
+    rwkv7_alt_recurrent_available,
     rwkv7_kk_pre,
     rwkv7_kk_pre_reference,
     rwkv7_lnx_rkvres_xg,
@@ -256,6 +258,33 @@ def _rwkv7_packed_prefill_enabled() -> bool:
 
 def _can_use_rwkv7_fused_recurrent(hidden_states: torch.Tensor) -> bool:
     return hidden_states.device.type == "cuda" and _rwkv7_packed_prefill_enabled()
+
+
+def _can_use_rwkv7_alt_recurrent(
+    *,
+    hidden_states: torch.Tensor,
+    r: torch.Tensor,
+    w: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kk: torch.Tensor,
+    a: torch.Tensor,
+    recurrent_state: torch.Tensor,
+    head_dim: int,
+    head_v_dim: int,
+) -> bool:
+    if (
+        hidden_states.device.type != "cuda"
+        or not _rwkv7_packed_prefill_enabled()
+        or not rwkv7_alt_recurrent_available()
+        or hidden_states.numel() == 0
+        or head_dim != 64
+        or head_v_dim != 64
+    ):
+        return False
+
+    tensors = (r, w, k, v, kk, a, recurrent_state)
+    return all(t.dtype == torch.float32 and t.is_contiguous() for t in tensors)
 
 
 def _rwkv7_env_flag_enabled(name: str) -> bool:
@@ -873,9 +902,28 @@ class RWKV7Attention(nn.Module):
         a: torch.Tensor,
         recurrent_state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.perf_flags.use_alt_recurrent_kernel and hidden_states.is_cuda:
-            # Future alternative recurrent kernels will route through this hook.
-            pass
+        if self.perf_flags.use_alt_recurrent_kernel and _can_use_rwkv7_alt_recurrent(
+            hidden_states=hidden_states,
+            r=r,
+            w=w,
+            k=k,
+            v=v,
+            kk=kk,
+            a=a,
+            recurrent_state=recurrent_state,
+            head_dim=self.head_dim,
+            head_v_dim=self.head_v_dim,
+        ):
+            recurrent_output, final_recurrent_state = rwkv7_alt_recurrent(
+                r=r.unsqueeze(0),
+                w=w.unsqueeze(0),
+                k=k.unsqueeze(0),
+                v=v.unsqueeze(0),
+                kk=kk.unsqueeze(0),
+                a=a.unsqueeze(0),
+                initial_state=recurrent_state.unsqueeze(0),
+            )
+            return recurrent_output.squeeze(0), final_recurrent_state.squeeze(0)
 
         if _can_use_rwkv7_fused_recurrent(hidden_states):
             recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
@@ -913,9 +961,28 @@ class RWKV7Attention(nn.Module):
         a: torch.Tensor,
         recurrent_state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.perf_flags.use_alt_recurrent_kernel and hidden_states.is_cuda:
-            # Future alternative recurrent kernels will route through this hook.
-            pass
+        if self.perf_flags.use_alt_recurrent_kernel and _can_use_rwkv7_alt_recurrent(
+            hidden_states=hidden_states,
+            r=r,
+            w=w,
+            k=k,
+            v=v,
+            kk=kk,
+            a=a,
+            recurrent_state=recurrent_state,
+            head_dim=self.head_dim,
+            head_v_dim=self.head_v_dim,
+        ):
+            recurrent_output, final_recurrent_state = rwkv7_alt_recurrent(
+                r=r.unsqueeze(1),
+                w=w.unsqueeze(1),
+                k=k.unsqueeze(1),
+                v=v.unsqueeze(1),
+                kk=kk.unsqueeze(1),
+                a=a.unsqueeze(1),
+                initial_state=recurrent_state,
+            )
+            return recurrent_output.squeeze(1), final_recurrent_state
 
         if _can_use_rwkv7_fused_recurrent(hidden_states):
             recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(

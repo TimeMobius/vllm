@@ -34,6 +34,12 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   ops.impl("get_cuda_view_from_cpu_tensor", torch::kCPU,
            &get_cuda_view_from_cpu_tensor);
 
+  ops.def(
+      "rwkv7_alt_recurrent("
+      "    Tensor r, Tensor w, Tensor k, Tensor v, Tensor kk, Tensor a, "
+      "Tensor? initial_state=None) -> (Tensor, Tensor)");
+  ops.impl("rwkv7_alt_recurrent", torch::kCUDA, &rwkv7_alt_recurrent);
+
   // Attention ops
   // Compute the attention between an input query and the cached
   // keys/values using PagedAttention.

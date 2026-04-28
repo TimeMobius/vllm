@@ -11,6 +11,7 @@ import os
 
 import torch
 
+import vllm._custom_ops as custom_ops
 from vllm.triton_utils import HAS_TRITON, tl, triton
 
 from .op import exp
@@ -21,6 +22,24 @@ def _rwkv7_fused_recurrent_disabled() -> bool:
         os.getenv("RWKV7_DISABLE_FUSED_RECURRENT") == "1"
         or os.getenv("RWKV7_DISABLE_FUSED_PREFILL") == "1"
     )
+
+
+def rwkv7_alt_recurrent_available() -> bool:
+    return hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_alt_recurrent")
+
+
+def rwkv7_alt_recurrent(
+    r: torch.Tensor,
+    w: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kk: torch.Tensor,
+    a: torch.Tensor,
+    initial_state: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if not rwkv7_alt_recurrent_available():
+        raise RuntimeError("RWKV7 alternate recurrent CUDA op is not available.")
+    return custom_ops.rwkv7_alt_recurrent(r, w, k, v, kk, a, initial_state)
 
 
 @triton.jit

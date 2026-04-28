@@ -104,7 +104,39 @@ if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "scaled_fp4_quant"):
         return None
 
 
+if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_alt_recurrent"):
+
+    @register_fake("_C::rwkv7_alt_recurrent")
+    def _rwkv7_alt_recurrent_fake(
+        r: torch.Tensor,
+        w: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        kk: torch.Tensor,
+        a: torch.Tensor,
+        initial_state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        final_state = torch.empty(
+            (r.shape[0], r.shape[2], r.shape[3], v.shape[3]),
+            device=r.device,
+            dtype=torch.float32,
+        )
+        return torch.empty_like(v, dtype=torch.float32), final_state
+
+
 # page attention ops
+def rwkv7_alt_recurrent(
+    r: torch.Tensor,
+    w: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kk: torch.Tensor,
+    a: torch.Tensor,
+    initial_state: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.ops._C.rwkv7_alt_recurrent(r, w, k, v, kk, a, initial_state)
+
+
 def paged_attention_v1(
     out: torch.Tensor,
     query: torch.Tensor,

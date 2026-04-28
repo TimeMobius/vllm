@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 
+import vllm.model_executor.models.rwkv7 as rwkv7_model
 from vllm.config import (
     CacheConfig,
     DeviceConfig,
@@ -30,6 +31,7 @@ from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_alt_recurrent,
     rwkv7_kk_pre,
     rwkv7_kk_pre_reference,
     rwkv7_lnx_rkvres_xg,
@@ -76,6 +78,23 @@ def _make_config() -> RWKV7Config:
         v_low_rank_dim=16,
         norm_bias=True,
         value_dim=64,
+    )
+
+
+def _make_alt_recurrent_config() -> RWKV7Config:
+    return RWKV7Config(
+        vocab_size=128,
+        hidden_size=256,
+        hidden_ratio=2,
+        num_hidden_layers=2,
+        head_dim=64,
+        num_heads=4,
+        decay_low_rank_dim=32,
+        gate_low_rank_dim=32,
+        a_low_rank_dim=32,
+        v_low_rank_dim=32,
+        norm_bias=True,
+        value_dim=256,
     )
 
 
@@ -473,6 +492,37 @@ def _allocate_kv_cache(model: RWKV7ForCausalLM, *, device: torch.device) -> None
             torch.zeros((1, *shape), dtype=dtype, device=device)
             for shape, dtype in zip(state_shapes, state_dtypes)
         )
+
+
+def _make_stable_rwkv7_recurrent_inputs(
+    *,
+    batch_size: int,
+    seq_len: int,
+    num_heads: int,
+    head_dim: int,
+    head_v_dim: int,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    return {
+        "r": torch.randn(batch_size, seq_len, num_heads, head_dim, device=device).mul_(
+            0.25
+        ),
+        "w": torch.randn(batch_size, seq_len, num_heads, head_dim, device=device)
+        .mul_(0.2)
+        .add_(-1.0),
+        "k": torch.randn(batch_size, seq_len, num_heads, head_dim, device=device).mul_(
+            0.25
+        ),
+        "v": torch.randn(
+            batch_size, seq_len, num_heads, head_v_dim, device=device
+        ).mul_(0.25),
+        "kk": torch.randn(batch_size, seq_len, num_heads, head_dim, device=device).mul_(
+            0.2
+        ),
+        "a": torch.randn(batch_size, seq_len, num_heads, head_dim, device=device).mul_(
+            0.2
+        ),
+    }
 
 
 def test_rwkv7_perf_flags_from_env(monkeypatch):
@@ -1104,6 +1154,274 @@ def test_rwkv7_fused_recurrent_checkpoint_states_match_reference():
     torch.testing.assert_close(out_fused, out_ref, rtol=2e-3, atol=1e-1)
     torch.testing.assert_close(state_fused, state_ref, rtol=2e-3, atol=1e-1)
     torch.testing.assert_close(checkpoint_fused, checkpoint_ref, rtol=2e-3, atol=1e-1)
+
+
+def test_rwkv7_alt_recurrent_matches_reference():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise the RWKV7 alt recurrent op.")
+
+    torch.manual_seed(3)
+    device = torch.device("cuda")
+    batch_size = 3
+    seq_len = 19
+    num_heads = 4
+    head_dim = 64
+    head_v_dim = 64
+
+    inputs = _make_stable_rwkv7_recurrent_inputs(
+        batch_size=batch_size,
+        seq_len=seq_len,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        head_v_dim=head_v_dim,
+        device=device,
+    )
+    initial_state = torch.randn(
+        batch_size, num_heads, head_dim, head_v_dim, device=device
+    ).mul_(0.1)
+
+    out_ref, state_ref = rwkv7_recurrent_reference(
+        initial_state=initial_state,
+        output_final_state=True,
+        **inputs,
+    )
+    out_alt, state_alt = rwkv7_alt_recurrent(
+        initial_state=initial_state.contiguous(),
+        **{name: tensor.contiguous() for name, tensor in inputs.items()},
+    )
+
+    torch.testing.assert_close(out_alt, out_ref, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(state_alt, state_ref, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_attention_alt_recurrent_sequence_matches_reference(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_ALT_RECURRENT_KERNEL", "1")
+
+    config = _make_alt_recurrent_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attn = RWKV7Attention(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.attn.alt_recurrent_sequence",
+            )
+            _initialize_module_parameters(attn)
+            attn = attn.cuda()
+
+            def _fail_fused(*args, **kwargs):
+                raise AssertionError("expected the alt recurrent kernel path")
+
+            monkeypatch.setattr(rwkv7_model, "fused_mul_recurrent_rwkv7", _fail_fused)
+
+            seq_len = 13
+            inputs = _make_stable_rwkv7_recurrent_inputs(
+                batch_size=1,
+                seq_len=seq_len,
+                num_heads=attn.local_num_heads,
+                head_dim=attn.head_dim,
+                head_v_dim=attn.head_v_dim,
+                device=torch.device("cuda"),
+            )
+            recurrent_state = torch.randn(
+                attn.local_num_heads,
+                attn.head_dim,
+                attn.head_v_dim,
+                device="cuda",
+            ).mul_(0.1)
+            hidden_states = torch.randn(
+                seq_len, config.hidden_size, device="cuda", dtype=torch.bfloat16
+            )
+
+            actual_out, actual_state = attn._run_recurrent_sequence(
+                hidden_states=hidden_states,
+                r=inputs["r"].squeeze(0).contiguous(),
+                w=inputs["w"].squeeze(0).contiguous(),
+                k=inputs["k"].squeeze(0).contiguous(),
+                v=inputs["v"].squeeze(0).contiguous(),
+                kk=inputs["kk"].squeeze(0).contiguous(),
+                a=inputs["a"].squeeze(0).contiguous(),
+                recurrent_state=recurrent_state.contiguous(),
+            )
+            expected_out, expected_state = rwkv7_recurrent_reference(
+                initial_state=recurrent_state.unsqueeze(0),
+                output_final_state=True,
+                **inputs,
+            )
+
+            torch.testing.assert_close(
+                actual_out, expected_out.squeeze(0), rtol=1e-6, atol=1e-6
+            )
+            torch.testing.assert_close(
+                actual_state, expected_state.squeeze(0), rtol=1e-6, atol=1e-6
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_attention_alt_recurrent_decode_matches_reference(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_ALT_RECURRENT_KERNEL", "1")
+
+    config = _make_alt_recurrent_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attn = RWKV7Attention(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.attn.alt_recurrent_decode",
+            )
+            _initialize_module_parameters(attn)
+            attn = attn.cuda()
+
+            def _fail_fused(*args, **kwargs):
+                raise AssertionError("expected the alt recurrent kernel path")
+
+            monkeypatch.setattr(rwkv7_model, "fused_mul_recurrent_rwkv7", _fail_fused)
+
+            batch_size = 5
+            inputs = _make_stable_rwkv7_recurrent_inputs(
+                batch_size=batch_size,
+                seq_len=1,
+                num_heads=attn.local_num_heads,
+                head_dim=attn.head_dim,
+                head_v_dim=attn.head_v_dim,
+                device=torch.device("cuda"),
+            )
+            recurrent_state = torch.randn(
+                batch_size,
+                attn.local_num_heads,
+                attn.head_dim,
+                attn.head_v_dim,
+                device="cuda",
+            ).mul_(0.1)
+            hidden_states = torch.randn(
+                batch_size, config.hidden_size, device="cuda", dtype=torch.bfloat16
+            )
+
+            actual_out, actual_state = attn._run_recurrent_decode_batch(
+                hidden_states=hidden_states,
+                r=inputs["r"].squeeze(1).contiguous(),
+                w=inputs["w"].squeeze(1).contiguous(),
+                k=inputs["k"].squeeze(1).contiguous(),
+                v=inputs["v"].squeeze(1).contiguous(),
+                kk=inputs["kk"].squeeze(1).contiguous(),
+                a=inputs["a"].squeeze(1).contiguous(),
+                recurrent_state=recurrent_state.contiguous(),
+            )
+            expected_out, expected_state = rwkv7_recurrent_reference(
+                initial_state=recurrent_state,
+                output_final_state=True,
+                **inputs,
+            )
+
+            torch.testing.assert_close(
+                actual_out, expected_out.squeeze(1), rtol=1e-6, atol=1e-6
+            )
+            torch.testing.assert_close(
+                actual_state, expected_state, rtol=1e-6, atol=1e-6
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_attention_alt_recurrent_falls_back_for_unsupported_head_dim(
+    monkeypatch,
+):
+    monkeypatch.setenv("RWKV7_USE_ALT_RECURRENT_KERNEL", "1")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attn = RWKV7Attention(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.attn.alt_recurrent_fallback",
+            )
+            _initialize_module_parameters(attn)
+            attn = attn.cuda()
+
+            def _fail_alt(*args, **kwargs):
+                raise AssertionError("unexpected alt recurrent kernel call")
+
+            monkeypatch.setattr(rwkv7_model, "rwkv7_alt_recurrent", _fail_alt)
+
+            seq_len = 11
+            inputs = _make_stable_rwkv7_recurrent_inputs(
+                batch_size=1,
+                seq_len=seq_len,
+                num_heads=attn.local_num_heads,
+                head_dim=attn.head_dim,
+                head_v_dim=attn.head_v_dim,
+                device=torch.device("cuda"),
+            )
+            recurrent_state = torch.randn(
+                attn.local_num_heads,
+                attn.head_dim,
+                attn.head_v_dim,
+                device="cuda",
+            ).mul_(0.1)
+            hidden_states = torch.randn(
+                seq_len, config.hidden_size, device="cuda", dtype=torch.bfloat16
+            )
+
+            actual_out, actual_state = attn._run_recurrent_sequence(
+                hidden_states=hidden_states,
+                r=inputs["r"].squeeze(0).contiguous(),
+                w=inputs["w"].squeeze(0).contiguous(),
+                k=inputs["k"].squeeze(0).contiguous(),
+                v=inputs["v"].squeeze(0).contiguous(),
+                kk=inputs["kk"].squeeze(0).contiguous(),
+                a=inputs["a"].squeeze(0).contiguous(),
+                recurrent_state=recurrent_state.contiguous(),
+            )
+            expected_out, expected_state = fused_mul_recurrent_rwkv7(
+                r=inputs["r"],
+                w=inputs["w"],
+                k=inputs["k"],
+                v=inputs["v"],
+                kk=inputs["kk"],
+                a=inputs["a"],
+                initial_state=recurrent_state.unsqueeze(0),
+                output_final_state=True,
+            )
+
+            torch.testing.assert_close(
+                actual_out, expected_out.squeeze(0), rtol=2e-4, atol=1e-3
+            )
+            torch.testing.assert_close(
+                actual_state, expected_state.squeeze(0), rtol=2e-4, atol=1e-3
+            )
+        finally:
+            cleanup_dist_env_and_memory()
 
 
 def test_rwkv7_block_updates_cached_states():

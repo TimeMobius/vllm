@@ -16,6 +16,8 @@ from .layernorm_guard import RMSNormGated
 from .rwkv7 import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_alt_recurrent,
+    rwkv7_alt_recurrent_available,
     rwkv7_kk_pre,
     rwkv7_kk_pre_reference,
     rwkv7_lnx_rkvres_xg,
@@ -34,6 +36,8 @@ __all__ = [
     "fused_sigmoid_gating_delta_rule_update",
     "fused_mul_recurrent_rwkv7",
     "fused_mul_recurrent_rwkv7_with_checkpoints",
+    "rwkv7_alt_recurrent",
+    "rwkv7_alt_recurrent_available",
     "rwkv7_kk_pre",
     "rwkv7_kk_pre_reference",
     "rwkv7_lnx_rkvres_xg",

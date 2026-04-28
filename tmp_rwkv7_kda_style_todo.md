@@ -42,6 +42,35 @@
     - 继续按 [tmp_rwkv7_official_perf_todo.md](/home/liu/vllm/tmp_rwkv7_official_perf_todo.md)
       做 `P1: Fused CMix / FFN`
 
+## Progress Update (2026-04-28)
+
+- `RWKV7_USE_ALT_RECURRENT_KERNEL` 已完成首轮接入：
+    - vLLM-owned CUDA op 已加入 `_C`
+    - 只在受限路径尝试启用：
+        - `_run_recurrent_sequence()`
+        - `_run_recurrent_decode_batch()`
+    - varlen / checkpoint / shape 不满足时仍走现有 Triton fallback
+- 这一步也已经做完：
+    - direct op 数值等价测试
+    - attention hook 接入测试
+    - focused pytest
+    - local `0.4B` isolated serial benchmark
+- benchmark 结论要分两层看：
+    - 内核层：
+        - `B=1,T=1,H=16,K=64,V=64`
+        - alt CUDA 比当前 Triton 快约 `47%`
+    - 服务层：
+        - focused `64 -> 256` decode-heavy rerun
+        - TTFT / latency / TPOT 只有温和收益
+        - 大致在 `+3% ~ +11%` 这个量级
+- 当前判断：
+    - 这条路径值得保留，但只能算“实验性正收益”
+    - 还不足以直接改默认
+    - 下一步不应该继续围着 recurrent 小修小补
+    - 更值得回到：
+        - 更大粒度 `CMix / FFN`
+        - 或 `P3 runtime integration cleanup`
+
 ## Progress Update (2026-04-13)
 
 - 远程压测脚本已升级：

@@ -52,9 +52,14 @@
     - correctness tests 已补
     - op/hook microbench 显示明确收益
     - real 0.4B isolated serial benchmark 显示 decode TPOT 有实际收益
+- `P2 recurrent alt kernel` 已完成首轮迁移与评估：
+    - vLLM-owned CUDA op 已接入
+    - correctness tests 已补
+    - isolated op microbench 显示 recurrent 主核本体明显更快
+    - real 0.4B isolated serial benchmark 显示收益较温和，且样本对口径比较敏感
 - 当前下一项优先级：
-    - `P2: Evaluate RWKV7_CLAMPW_CUDA`
-    - recurrent 主核替换风险更高，下一步需先做更细的等价和局部 benchmark
+    - 回到更大粒度的 `CMix / FFN` 或 runtime cleanup
+    - `ALT recurrent` 先保留在 feature flag 后面，后续再做更大模型 / 更长 decode 验证
 
 ## Non-Goals
 
@@ -510,6 +515,75 @@
         - decode batch `T=1`
         - sequence `T>1`
         - fallback when `head_v_dim != head_dim` or varlen/checkpoints are used
+
+#### Current Status (2026-04-28)
+
+- `Done (experimental first pass)`
+- 本地接入形态：
+    - new vLLM-owned CUDA op:
+        - `torch.ops._C.rwkv7_alt_recurrent`
+    - feature flag:
+        - `RWKV7_USE_ALT_RECURRENT_KERNEL`
+    - 当前只在这些路径尝试启用：
+        - `_run_recurrent_sequence()`
+        - `_run_recurrent_decode_batch()`
+    - 这些路径继续保留原 Triton fallback：
+        - varlen / packed prefill
+        - checkpoint-state collection
+        - `head_dim != 64`
+        - `head_v_dim != 64`
+        - 非 fp32 / 非 contiguous 输入
+- Correctness:
+    - direct op equality:
+        - nonzero initial state
+        - `T=1`
+        - `T>1`
+    - attention hook equality:
+        - sequence path matches reference
+        - decode-batch path matches reference
+        - unsupported head shapes fall back correctly
+    - focused pytest:
+        - `tests/model_executor/test_rwkv7.py -k "alt_recurrent or fused_recurrent_matches_reference or checkpoint_states_match_reference" -v`
+        - `4 passed`
+- Local microbenchmark on representative `0.4B`-style shapes (`H=16,K=64,V=64`):
+    - decode-like `B=1,T=1`:
+        - current Triton: `0.0341ms`
+        - alt CUDA: `0.0179ms`
+        - alt CUDA `+47.35%`
+    - contiguous sequence `B=1,T=256`:
+        - current Triton: `0.3609ms`
+        - alt CUDA: `0.2501ms`
+        - alt CUDA `+30.71%`
+- Real `0.4B` isolated serial benchmark:
+    - model:
+        - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - args:
+        - `--enforce-eager`
+        - `--gpu-memory-utilization 0.8`
+    - first mixed run (`prompt 64/1984`, decode `64 -> 256`, rounds `2`):
+        - result was noisy / conflicting and did not give a stable conclusion
+    - focused decode-heavy rerun (`prompt 64`, decode `64 -> 256`, rounds `4`):
+        - baseline:
+            - TTFT `93.020ms`
+            - latency `9807.160ms`
+            - TPOT `38.095ms`
+        - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`:
+            - TTFT `82.514ms`
+            - latency `9456.780ms`
+            - TPOT `36.762ms`
+        - improvement:
+            - TTFT `+11.29%`
+            - latency `+3.57%`
+            - TPOT `+3.50%`
+- Decision:
+    - Land behind feature flag only.
+    - The recurrent kernel itself is clearly faster, but end-to-end serving gain
+      is currently modest on local `0.4B`.
+    - Do not make it default yet.
+    - Next validation should prefer:
+        - larger RWKV7 checkpoints
+        - longer decode-heavy runs
+        - before spending more time on prefill-side integration
 
 #### Rejected Triton Probe (2026-04-27)
 

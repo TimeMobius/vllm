@@ -3,7 +3,7 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest committed checkpoint before this round: `f94fd358bedcc9eaa9cd9d7c72a4a295b2d553ff`
+- Latest committed checkpoint before this round: `88942e005`
 - Current service status:
     - No `vllm serve` process is running now.
     - No test ports are currently listening.
@@ -42,6 +42,66 @@
     - set an explicit clean Linux path inside it, for example:
         - `export PATH=/home/liu/vllm/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
     - then run `.venv/bin/python tmp_rwkv7_ttft_benchmark.py ...`
+- Another easy mistake in this PowerShell + WSL setup:
+    - do not leave raw `|` outside quotes in a repo-root command string
+    - one accidental benchmark helper command produced a junk file named:
+        - `32|prefill`
+    - if a one-off filename like that appears, inspect it first, then remove it
+      before committing
+
+## Latest Update (2026-04-28)
+
+- Added an experimental alternate RWKV7 recurrent CUDA path behind:
+    - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+- Scope of the current landing:
+    - new `_C` op:
+        - `rwkv7_alt_recurrent`
+    - only routed from:
+        - `_run_recurrent_sequence()`
+        - `_run_recurrent_decode_batch()`
+    - varlen / checkpoint-state paths still use existing Triton recurrent
+- Focused tests that passed:
+    - `tests/model_executor/test_rwkv7.py -k "alt_recurrent or fused_recurrent_matches_reference or checkpoint_states_match_reference" -v`
+    - result:
+        - `4 passed`
+- Important build note:
+    - full editable reinstall was noisy / expensive for this iteration
+    - a reliable local bring-up path was:
+        - configure a dedicated manual build dir
+        - build only target `_C`
+        - install component `_C` back into the repo prefix
+    - commands used:
+        - `cmake -G Ninja -DCMAKE_MAKE_PROGRAM=/home/liu/vllm/.venv/bin/ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DVLLM_TARGET_DEVICE=cuda -DVLLM_PYTHON_EXECUTABLE=/home/liu/vllm/.venv/bin/python -DFETCHCONTENT_BASE_DIR=/home/liu/vllm/.deps -DNVCC_THREADS=1 -DCMAKE_JOB_POOL_COMPILE:STRING=compile -DCMAKE_JOB_POOLS:STRING=compile=1 -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc ..`
+        - `cmake --build . -j=1 --target=_C`
+        - `cmake --install . --prefix /home/liu/vllm --component _C`
+- Local microbenchmark verdict on representative `0.4B`-style shapes:
+    - `B=1,T=1,H=16,K=64,V=64`:
+        - current Triton `0.0341ms`
+        - alt CUDA `0.0179ms`
+        - alt `+47.35%`
+    - `B=1,T=256,H=16,K=64,V=64`:
+        - current Triton `0.3609ms`
+        - alt CUDA `0.2501ms`
+        - alt `+30.71%`
+- Real `0.4B` isolated serial benchmark verdict:
+    - model:
+        - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - focused decode-heavy rerun:
+        - prompt `64`
+        - output `256`
+        - rounds `4`
+    - baseline:
+        - TTFT `93.020ms`
+        - latency `9807.160ms`
+        - TPOT `38.095ms`
+    - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`:
+        - TTFT `82.514ms`
+        - latency `9456.780ms`
+        - TPOT `36.762ms`
+    - interpretation:
+        - end-to-end gain exists, but is only modest on local `0.4B`
+        - keep the flag off by default
+        - validate on larger checkpoints / longer decode before promoting it
 
 ## Latest Update (2026-04-27)
 

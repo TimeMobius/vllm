@@ -190,6 +190,11 @@ void cutlass_mla_decode(torch::Tensor const& out, torch::Tensor const& q_nope,
 
 torch::Tensor get_cuda_view_from_cpu_tensor(torch::Tensor& cpu_tensor);
 
+std::tuple<torch::Tensor, torch::Tensor> rwkv7_alt_recurrent(
+    const torch::Tensor& r, const torch::Tensor& w, const torch::Tensor& k,
+    const torch::Tensor& v, const torch::Tensor& kk, const torch::Tensor& a,
+    const std::optional<torch::Tensor>& initial_state);
+
 #ifndef USE_ROCM
 
 torch::Tensor awq_gemm(torch::Tensor _in_feats, torch::Tensor _kernel,

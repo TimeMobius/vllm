@@ -303,6 +303,7 @@ set(VLLM_EXT_SRC
   "csrc/quantization/activation_kernels.cu"
   "csrc/cuda_utils_kernels.cu"
   "csrc/custom_all_reduce.cu"
+  "csrc/rwkv7_alt_recurrent.cu"
   "csrc/torch_bindings.cpp")
 
 if(VLLM_GPU_LANG STREQUAL "CUDA")
