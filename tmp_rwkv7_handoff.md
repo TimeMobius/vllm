@@ -3,7 +3,7 @@
 ## Current Status
 
 - Branch: `codex/rwkv7-adapter-align`
-- Latest committed checkpoint before this round: `88942e005`
+- Latest committed checkpoint before this round: `6d2f95a75`
 - Current service status:
     - No `vllm serve` process is running now.
     - No test ports are currently listening.
@@ -48,6 +48,75 @@
         - `32|prefill`
     - if a one-off filename like that appears, inspect it first, then remove it
       before committing
+
+## Latest Update (2026-04-28, CMix Probe)
+
+- Added an experimental RWKV7 CMix activation path behind:
+    - `RWKV7_USE_FUSED_CMIX=1`
+- Scope of the current landing:
+    - new generic `_C` op:
+        - `relu2`
+    - [vllm/model_executor/layers/activation.py](/home/liu/vllm/vllm/model_executor/layers/activation.py)
+      now routes `ReLUSquaredActivation` through CUDA instead of native
+      `torch.relu(x).square()`
+    - [vllm/model_executor/models/rwkv7.py](/home/liu/vllm/vllm/model_executor/models/rwkv7.py)
+      now uses that CUDA `sqrelu` path only when:
+        - `RWKV7_USE_FUSED_CMIX=1`
+        - activation is `sqrelu`
+    - note:
+        - this is **not** a full official `_CmixLayerV2Fn` port yet
+        - `_mix_ffn_inputs()` still uses the existing `addcmul` fallback
+- Focused tests that passed:
+    - `tests/kernels/core/test_activation.py::test_activation -v`
+        - result:
+            - `72 passed`
+    - `tests/model_executor/test_rwkv7.py -k fused_cmix_activation -v`
+        - result:
+            - `2 passed`
+- Local microbenchmark verdict:
+    - generic `relu2` op on `0.4B`-style `intermediate_size=4096` shapes:
+        - mostly flat
+        - typical range was roughly:
+            - `0.86x ~ 1.08x`
+    - direct `RWKV7FeedForward._apply_ffn()` microbench:
+        - tokens `64`: `1.00x`
+        - tokens `256`: `1.12x`
+        - tokens `1024`: `0.99x`
+        - tokens `4096`: `1.00x`
+    - interpretation:
+        - the activation-only slice is too small to produce a strong,
+          stable hook-level win by itself
+- Real `0.4B` isolated serial benchmark verdict:
+    - model:
+        - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - clean rerun artifacts:
+        - baseline JSON:
+            - `/tmp/rwkv7_cmix_baseline_2.json`
+        - fused JSON:
+            - `/tmp/rwkv7_cmix_fused_2.json`
+    - recorded A/B summary:
+        - prefill proxy:
+            - `64`: `54.491ms -> 49.507ms` (`+9.15%`)
+            - `256`: `51.221ms -> 54.318ms` (`-6.05%`)
+            - `1024`: `143.342ms -> 141.674ms` (`+1.16%`)
+            - `1984`: `259.712ms -> 259.664ms` (flat)
+        - decode `64 -> 32`:
+            - TTFT `86.556ms -> 78.211ms` (`+9.64%`)
+            - latency `1049.604ms -> 1074.779ms` (`-2.40%`)
+            - TPOT `31.301ms -> 32.147ms` (`-2.70%`)
+        - decode `64 -> 64`:
+            - TTFT `92.038ms -> 75.254ms` (`+18.24%`)
+            - latency `2391.228ms -> 2068.131ms` (`+13.51%`)
+            - TPOT `36.495ms -> 31.633ms` (`+13.32%`)
+    - interpretation:
+        - this path can help decode-heavy cases
+        - but the benefit is much noisier and less universal than:
+            - `mix6`
+            - `kk-pre`
+            - fused attention epilogue
+        - keep it behind the feature flag
+        - if CMix is revisited, it should be as a **larger-region FFN fuse**,
+          not just CUDA `sqrelu`
 
 ## Latest Update (2026-04-28)
 

@@ -22,6 +22,7 @@ from vllm.distributed.parallel_state import (
     model_parallel_is_initialized,
 )
 from vllm.forward_context import get_forward_context, is_forward_context_available
+from vllm.model_executor.layers.activation import ReLUSquaredActivation
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
@@ -598,6 +599,9 @@ class RWKV7FeedForward(nn.Module):
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.act_fn = get_activation_fn(config.hidden_act)
+        self.fused_sqrelu = (
+            ReLUSquaredActivation() if config.hidden_act == "sqrelu" else None
+        )
         self.perf_flags = _load_rwkv7_perf_flags()
         self.x_k = nn.Parameter(torch.zeros(self.hidden_size))
         self.key = ColumnParallelLinear(
@@ -623,9 +627,18 @@ class RWKV7FeedForward(nn.Module):
             pass
         return hidden_states.addcmul(delta, self.x_k)
 
+    def _activate_ffn(self, hidden: torch.Tensor) -> torch.Tensor:
+        if (
+            self.perf_flags.use_fused_cmix
+            and self.fused_sqrelu is not None
+            and hidden.is_cuda
+        ):
+            return self.fused_sqrelu(hidden)
+        return self.act_fn(hidden)
+
     def _apply_ffn(self, mixed: torch.Tensor) -> torch.Tensor:
         hidden, _ = self.key(mixed)
-        hidden = self.act_fn(hidden)
+        hidden = self._activate_ffn(hidden)
         hidden, _ = self.value(hidden)
         return hidden
 

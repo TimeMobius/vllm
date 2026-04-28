@@ -71,6 +71,41 @@
         - 更大粒度 `CMix / FFN`
         - 或 `P3 runtime integration cleanup`
 
+## Progress Update (2026-04-28, CMix Probe)
+
+- `RWKV7_USE_FUSED_CMIX` 已完成一轮更保守的 probe：
+    - 这次不是直接硬搬官方 `_CmixLayerV2Fn`
+    - 而是先把其中最独立的一块：
+        - `sqrelu`
+      抽成通用 CUDA `_C.relu2`
+    - RWKV7 FFN 只在 flag 打开时走这个 CUDA activation
+- 这一步已经做完：
+    - CUDA op correctness 测试
+    - RWKV7 hook-level 开关测试
+    - direct microbenchmark
+    - local `0.4B` isolated serial benchmark
+- 当前 benchmark 结论：
+    - activation op 本体：
+        - 大多只有近似持平
+    - direct `RWKV7FeedForward._apply_ffn()`：
+        - 只有个别 token 数有小幅改善
+        - 整体并没有像 recurrent / epilogue 那样明确
+    - real `0.4B` serial benchmark：
+        - `64 -> 64` decode 有正收益
+        - `64 -> 32` 只有 TTFT 改善，latency/TPOT 带噪声
+        - longer prefill proxy 基本接近平盘
+- 当前判断：
+    - 这条路径可以保留为实验开关
+    - 但不能当作已经验证过的主收益项
+    - 如果继续做 `CMix / FFN`，方向应该是：
+        - 更大粒度 fuse
+        - 而不是只盯着 `sqrelu`
+- 当前下一步建议：
+    - 优先回到 [tmp_rwkv7_official_perf_todo.md](/home/liu/vllm/tmp_rwkv7_official_perf_todo.md)
+      里的：
+        - 更完整 `CMix / FFN` 区域融合评估
+        - 或 `P3 runtime cleanup`
+
 ## Progress Update (2026-04-13)
 
 - 远程压测脚本已升级：

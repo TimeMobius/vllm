@@ -331,6 +331,52 @@
       forward-only kernel that respects tensor parallel and quantized linear
       constraints.
 
+#### Current Probe (2026-04-28)
+
+- Landed a more conservative first pass:
+    - generic CUDA `_C.relu2`
+    - `ReLUSquaredActivation` now has a real CUDA backend
+    - RWKV7 FFN routes `sqrelu` through it only when:
+        - `RWKV7_USE_FUSED_CMIX=1`
+- Correctness:
+    - `tests/kernels/core/test_activation.py::test_activation -v`
+        - `72 passed`
+    - `tests/model_executor/test_rwkv7.py -k fused_cmix_activation -v`
+        - `2 passed`
+- Microbenchmark:
+    - generic `relu2` op on `0.4B`-style `intermediate_size=4096` shapes:
+        - roughly `0.86x ~ 1.08x`
+    - direct `RWKV7FeedForward._apply_ffn()`:
+        - tokens `64`: `1.00x`
+        - tokens `256`: `1.12x`
+        - tokens `1024`: `0.99x`
+        - tokens `4096`: `1.00x`
+- Real `0.4B` isolated serial benchmark:
+    - model: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - rerun artifacts:
+        - baseline `/tmp/rwkv7_cmix_baseline_2.json`
+        - fused `/tmp/rwkv7_cmix_fused_2.json`
+    - summary:
+        - prefill proxy:
+            - `64`: `+9.15%`
+            - `256`: `-6.05%`
+            - `1024`: `+1.16%`
+            - `1984`: flat
+        - decode `64 -> 32`:
+            - TTFT `+9.64%`
+            - latency `-2.40%`
+            - TPOT `-2.70%`
+        - decode `64 -> 64`:
+            - TTFT `+18.24%`
+            - latency `+13.51%`
+            - TPOT `+13.32%`
+- Decision:
+    - Keep this path behind the feature flag.
+    - Do **not** treat it as the final CMix migration.
+    - The activation-only slice is too small and too noisy.
+    - If CMix is revisited, the next serious version should target a larger
+      FFN region, not just CUDA `sqrelu`.
+
 ### P2: Port `tmix_lnx_rkvres_xg_bf16_v1`
 
 #### 优先级

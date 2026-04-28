@@ -471,9 +471,15 @@ class ReLUSquaredActivation(CustomOp):
         """PyTorch-native implementation equivalent to forward()."""
         return torch.square(F.relu(x))
 
+    def __init__(self):
+        super().__init__()
+        if current_platform.is_cuda_alike():
+            self.op = torch.ops._C.relu2
+
     def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
-        # TODO : implement cuda kernels
-        return self.forward_native(x)
+        out = torch.empty_like(x)
+        self.op(out, x)
+        return out
 
 
 # --8<-- [start:xielu]

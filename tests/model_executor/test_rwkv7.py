@@ -742,6 +742,107 @@ def test_rwkv7_perf_hooks_match_reference_formulas():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_feed_forward_fused_cmix_activation_matches_reference(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_FUSED_CMIX", "1")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            ffn = RWKV7FeedForward(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.ffn.fused_cmix",
+            )
+            _initialize_module_parameters(ffn)
+            ffn = ffn.cuda()
+
+            assert ffn.fused_sqrelu is not None
+
+            mixed = torch.randn(
+                23,
+                config.hidden_size,
+                device="cuda",
+                dtype=ffn.key.weight.dtype,
+            )
+            called = {"value": False}
+            original_forward = ffn.fused_sqrelu._forward_method
+
+            def _wrapped(x: torch.Tensor) -> torch.Tensor:
+                called["value"] = True
+                return original_forward(x)
+
+            monkeypatch.setattr(ffn.fused_sqrelu, "_forward_method", _wrapped)
+
+            expected_hidden, _ = ffn.key(mixed)
+            expected_hidden = torch.square(torch.relu(expected_hidden))
+            expected_out, _ = ffn.value(expected_hidden)
+            actual_out = ffn._apply_ffn(mixed)
+
+            assert called["value"]
+            torch.testing.assert_close(actual_out, expected_out, rtol=1e-5, atol=2e-2)
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_feed_forward_fused_cmix_activation_falls_back_without_flag(
+    monkeypatch,
+):
+    monkeypatch.delenv("RWKV7_USE_FUSED_CMIX", raising=False)
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            ffn = RWKV7FeedForward(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.ffn.fallback_cmix",
+            )
+            _initialize_module_parameters(ffn)
+            ffn = ffn.cuda()
+
+            assert ffn.fused_sqrelu is not None
+
+            def _fail_forward(*args, **kwargs):
+                raise AssertionError("fused sqrelu path should not be used")
+
+            monkeypatch.setattr(ffn.fused_sqrelu, "_forward_method", _fail_forward)
+            mixed = torch.randn(
+                11,
+                config.hidden_size,
+                device="cuda",
+                dtype=ffn.key.weight.dtype,
+            )
+
+            expected_hidden, _ = ffn.key(mixed)
+            expected_hidden = torch.square(torch.relu(expected_hidden))
+            expected_out, _ = ffn.value(expected_hidden)
+            actual_out = ffn._apply_ffn(mixed)
+
+            torch.testing.assert_close(actual_out, expected_out, rtol=1e-5, atol=2e-2)
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_rwkv7_attention_mix6_flag_matches_reference(monkeypatch):
     monkeypatch.setenv("RWKV7_USE_FUSED_MIX6", "1")
 
