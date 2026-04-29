@@ -846,6 +846,63 @@
     - do not spend more time on cache-dtype tweaks unless a different
       state-layout design appears
 
+## 2026-04-29 Evaluation Note: direct-linear path for small-token decode
+
+- Landed a new experimental flag:
+    - `RWKV7_USE_DIRECT_LINEAR=1`
+- Scope:
+    - RWKV7 internal linears only
+    - CUDA only
+    - tensor parallel size `== 1`
+    - unquantized linear method only
+- Main idea:
+    - bypass the generic linear wrapper path for small RWKV7 internal
+      projections and call `F.linear(...)` directly
+    - target decode-side wrapper overhead instead of recurrent math itself
+- Covered paths:
+    - `RWKV7LoRA`
+    - attention recurrent-input projections
+    - attention `o_proj`
+    - FFN `key/value`
+- Correctness:
+    - full `tests/model_executor/test_rwkv7.py -v`
+        - `43 passed, 2 skipped`
+    - added direct-path equality coverage for attention and FFN
+- Isolated `0.4B` serving benchmark:
+    - prefill proxy:
+        - `64`: `66.572ms -> 54.778ms`
+        - `1024`: `114.386ms -> 118.653ms`
+        - `1984`: `200.983ms -> 207.067ms`
+    - decode `64 -> 32`:
+        - TTFT `86.361ms -> 69.866ms`
+        - latency `1265.979ms -> 969.283ms`
+        - TPOT `38.052ms -> 29.273ms`
+    - decode `64 -> 64`:
+        - TTFT `89.619ms -> 73.887ms`
+        - latency `2450.318ms -> 1900.853ms`
+        - TPOT `37.471ms -> 28.999ms`
+- Real prompt validation:
+    - mixed workload:
+        - `zh_short`
+        - `en_code`
+        - `long_context`
+    - long prompt was shortened to stay below the `2048` context limit while
+      still asking for `64` output tokens
+    - results:
+        - short decode-heavy request improved clearly:
+            - `zh_short` TTFT `117.920ms -> 105.838ms`
+            - latency `2386.135ms -> 2170.705ms`
+            - TPOT `36.584ms -> 32.776ms`
+        - medium and long prompts were roughly flat or slightly slower:
+            - `en_code` latency `2298.492ms -> 2307.628ms`
+            - `long_context` latency `2462.533ms -> 2467.528ms`
+- Conclusion:
+    - this is the first confirmed win on the `small token decode` follow-up
+      track
+    - the benefit is workload-dependent and strongest when decode dominates
+    - keep it behind a feature flag for now; do not default-enable until a
+      broader workload sweep confirms the tradeoff
+
 ## Recommended Execution Order
 
 1. `P0` 基线与 feature flag

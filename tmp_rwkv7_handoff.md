@@ -3137,6 +3137,128 @@ Operational notes from this run:
 - when generating wrapper scripts, make sure `$@` is preserved literally
   instead of being expanded during script creation
 
+## 2026-04-29 Added RWKV7 direct-linear decode fast path
+
+Implemented a new experimental perf flag:
+
+- `RWKV7_USE_DIRECT_LINEAR=1`
+
+What it does:
+
+- for RWKV7 internal linears only
+- when all of the following are true:
+    - CUDA
+    - tensor parallel size `== 1`
+    - unquantized linear method
+- bypasses the generic `ReplicatedLinear` / `ColumnParallelLinear` /
+  `RowParallelLinear` wrapper path and calls `F.linear(...)` directly
+
+Covered RWKV7 subpaths:
+
+- `RWKV7LoRA`
+- attention recurrent-input projections:
+    - `r_proj`
+    - `k_proj`
+    - `v_proj`
+    - `w_lora`
+    - `a_lora`
+    - `v_lora`
+    - `g_lora`
+- attention output projection:
+    - `o_proj`
+- FFN:
+    - `key`
+    - `value`
+
+Motivation:
+
+- decode profile showed many small GEMM / GEMV launches
+- a focused `_project_recurrent_inputs` microbench already showed that
+  removing wrapper overhead alone was worth about `1.03x-1.23x`
+
+Correctness:
+
+- full `tests/model_executor/test_rwkv7.py -v`
+    - `43 passed, 2 skipped`
+- added direct-path coverage:
+    - perf flag parsing
+    - attention direct-linear flag A/B equality
+    - FFN direct-linear flag A/B equality
+
+Real `0.4B` A/B serving benchmark:
+
+- model: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+- both sides enabled:
+    - `RWKV7_USE_FUSED_MIX6=1`
+    - `RWKV7_USE_FUSED_KK_PRE=1`
+    - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+    - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - `RWKV7_USE_FUSED_CMIX=1`
+- only toggled:
+    - off: `RWKV7_USE_DIRECT_LINEAR` unset
+    - on: `RWKV7_USE_DIRECT_LINEAR=1`
+
+Summary:
+
+- prefill proxy:
+    - `64`: `66.572ms -> 54.778ms`
+    - `1024`: `114.386ms -> 118.653ms`
+    - `1984`: `200.983ms -> 207.067ms`
+- decode `64 -> 32`:
+    - TTFT `86.361ms -> 69.866ms`
+    - latency `1265.979ms -> 969.283ms`
+    - TPOT `38.052ms -> 29.273ms`
+- decode `64 -> 64`:
+    - TTFT `89.619ms -> 73.887ms`
+    - latency `2450.318ms -> 1900.853ms`
+    - TPOT `37.471ms -> 28.999ms`
+
+Round-by-round note:
+
+- the decode improvement was consistent across all 4 rounds
+- unlike the rejected shift-state cache-dtype probe, this was not driven by a
+  single outlier
+
+Decision:
+
+- keep this optimization
+- for now, keep it behind `RWKV7_USE_DIRECT_LINEAR`
+- this is currently the best confirmed `small token decode` optimization after
+  the recurrent / epilogue work
+
+Real prompt validation:
+
+- used an ad-hoc `/tmp/rwkv7_real_usage_bench.py` mixed workload
+- workload shape:
+    - `zh_short`
+    - `en_code`
+    - `long_context`
+- benchmark note:
+    - the long-context prompt had to be shortened from `48` repeated
+      paragraphs to `32` so the `2048` context limit still allowed `64`
+      output tokens
+- with the same RWKV7 perf flags on both sides and only toggling
+  `RWKV7_USE_DIRECT_LINEAR`
+- results:
+    - `zh_short` (`16` prompt tokens, `64` output tokens):
+        - TTFT `117.920ms -> 105.838ms`
+        - latency `2386.135ms -> 2170.705ms`
+        - TPOT `36.584ms -> 32.776ms`
+    - `en_code` (`24` prompt tokens, `64` output tokens):
+        - TTFT `87.012ms -> 90.099ms`
+        - latency `2298.492ms -> 2307.628ms`
+        - TPOT `35.103ms -> 35.767ms`
+    - `long_context` (`1650` prompt tokens, `64` output tokens):
+        - TTFT `212.819ms -> 223.924ms`
+        - latency `2462.533ms -> 2467.528ms`
+        - TPOT `35.710ms -> 35.895ms`
+- interpretation:
+    - the gain is real for short, decode-heavy requests
+    - long-context / prefill-heavy requests are basically flat and can even be
+      slightly slower
+    - this matches the intended target of the optimization, so it is still
+      worth keeping as an experimental decode-oriented flag
+
 ## 2026-04-27 RWKV7 recurrent core evaluation
 
 Compared official CUDA `rwkv7_clampw` against vLLM's current Triton

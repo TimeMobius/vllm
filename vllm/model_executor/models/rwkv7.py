@@ -38,6 +38,7 @@ from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear,
     RowParallelLinear,
+    UnquantizedLinearMethod,
 )
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.mamba.abstract import MambaBase
@@ -120,6 +121,7 @@ class RWKV7PerfFlags:
     use_fused_lnx_rkvres_xg: bool = False
     use_fused_cmix: bool = False
     use_alt_recurrent_kernel: bool = False
+    use_direct_linear: bool = False
 
 
 def get_tp_world_size() -> int:
@@ -130,6 +132,21 @@ def get_tp_world_size() -> int:
 
 def get_tp_rank() -> int:
     return get_tensor_model_parallel_rank() if model_parallel_is_initialized() else 0
+
+
+def _can_use_rwkv7_direct_linear(linear, x: torch.Tensor) -> bool:
+    return (
+        x.is_cuda
+        and getattr(linear, "tp_size", 1) == 1
+        and isinstance(getattr(linear, "quant_method", None), UnquantizedLinearMethod)
+    )
+
+
+def _rwkv7_direct_linear(linear, x: torch.Tensor) -> torch.Tensor:
+    bias = None
+    if getattr(linear, "bias", None) is not None and not linear.skip_bias_add:
+        bias = linear.bias
+    return F.linear(x, linear.weight, bias)
 
 
 def sqrelu(x: torch.Tensor) -> torch.Tensor:
@@ -306,6 +323,7 @@ def _load_rwkv7_perf_flags() -> RWKV7PerfFlags:
         use_alt_recurrent_kernel=_rwkv7_env_flag_enabled(
             "RWKV7_USE_ALT_RECURRENT_KERNEL"
         ),
+        use_direct_linear=_rwkv7_env_flag_enabled("RWKV7_USE_DIRECT_LINEAR"),
     )
 
 
@@ -574,6 +592,7 @@ class RWKV7LoRA(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        self.use_direct_linear = _load_rwkv7_perf_flags().use_direct_linear
         if activation is None:
             act = nn.Identity()
         elif activation == "sigmoid":
@@ -603,7 +622,21 @@ class RWKV7LoRA(nn.Module):
             ),
         )
 
+    def _can_use_direct_cuda_fast_path(self, x: torch.Tensor) -> bool:
+        return (
+            self.use_direct_linear
+            and _can_use_rwkv7_direct_linear(self.lora[0], x)
+            and (_can_use_rwkv7_direct_linear(self.lora[2], x))
+        )
+
+    def _forward_direct(self, x: torch.Tensor) -> torch.Tensor:
+        x = _rwkv7_direct_linear(self.lora[0], x)
+        x = self.lora[1](x)
+        return _rwkv7_direct_linear(self.lora[2], x)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self._can_use_direct_cuda_fast_path(x):
+            return self._forward_direct(x)
         x, _ = self.lora[0](x)
         x = self.lora[1](x)
         x, bias = self.lora[2](x)
@@ -688,6 +721,18 @@ class RWKV7FeedForward(nn.Module):
             prefix=f"{prefix}.value",
         )
 
+    def _can_use_direct_cuda_fast_path(self, mixed: torch.Tensor) -> bool:
+        return (
+            self.perf_flags.use_direct_linear
+            and _can_use_rwkv7_direct_linear(self.key, mixed)
+            and (_can_use_rwkv7_direct_linear(self.value, mixed))
+        )
+
+    def _apply_ffn_direct(self, mixed: torch.Tensor) -> torch.Tensor:
+        hidden = _rwkv7_direct_linear(self.key, mixed)
+        hidden = self._activate_ffn(hidden)
+        return _rwkv7_direct_linear(self.value, hidden)
+
     def _mix_ffn_inputs(
         self, hidden_states: torch.Tensor, delta: torch.Tensor
     ) -> torch.Tensor:
@@ -706,6 +751,8 @@ class RWKV7FeedForward(nn.Module):
         return self.act_fn(hidden)
 
     def _apply_ffn(self, mixed: torch.Tensor) -> torch.Tensor:
+        if self._can_use_direct_cuda_fast_path(mixed):
+            return self._apply_ffn_direct(mixed)
         hidden, _ = self.key(mixed)
         hidden = self._activate_ffn(hidden)
         hidden, _ = self.value(hidden)
@@ -861,6 +908,21 @@ class RWKV7Attention(nn.Module):
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
 
+    def _can_use_direct_cuda_fast_path(self, hidden_states: torch.Tensor) -> bool:
+        return self.perf_flags.use_direct_linear and (
+            _can_use_rwkv7_direct_linear(self.r_proj, hidden_states)
+            and _can_use_rwkv7_direct_linear(self.k_proj, hidden_states)
+            and _can_use_rwkv7_direct_linear(self.v_proj, hidden_states)
+            and _can_use_rwkv7_direct_linear(self.o_proj, hidden_states)
+            and self.w_lora._can_use_direct_cuda_fast_path(hidden_states)
+            and self.a_lora._can_use_direct_cuda_fast_path(hidden_states)
+            and self.g_lora._can_use_direct_cuda_fast_path(hidden_states)
+            and (
+                self.layer_idx == 0
+                or self.v_lora._can_use_direct_cuda_fast_path(hidden_states)
+            )
+        )
+
     def _mix_recurrent_inputs(
         self,
         hidden_states: torch.Tensor,
@@ -946,22 +1008,38 @@ class RWKV7Attention(nn.Module):
         torch.Tensor,
     ]:
         xr, xw, xk, xv, xa, xg = self._mix_recurrent_inputs(hidden_states, delta)
+        if self._can_use_direct_cuda_fast_path(hidden_states):
+            r = _rwkv7_direct_linear(self.r_proj, xr)
+            w = LOG_DECAY_SCALE * self.w_lora._forward_direct(xw).sigmoid()
+            k = _rwkv7_direct_linear(self.k_proj, xk)
+            v = _rwkv7_direct_linear(self.v_proj, xv)
 
-        r, _ = self.r_proj(xr)
-        w = LOG_DECAY_SCALE * self.w_lora(xw).sigmoid()
-        k, _ = self.k_proj(xk)
-        v, _ = self.v_proj(xv)
+            if self.layer_idx == 0:
+                v_first_out = v
+            else:
+                if v_first is None:
+                    raise ValueError("RWKV7 layers after layer 0 require `v_first`.")
+                v = torch.lerp(v, v_first, self.v_lora._forward_direct(xv).sigmoid())
+                v_first_out = v_first
 
-        if self.layer_idx == 0:
-            v_first_out = v
+            a = self.a_lora._forward_direct(xa).sigmoid()
+            g = self.g_lora._forward_direct(xg)
         else:
-            if v_first is None:
-                raise ValueError("RWKV7 layers after layer 0 require `v_first`.")
-            v = torch.lerp(v, v_first, self.v_lora(xv).sigmoid())
-            v_first_out = v_first
+            r, _ = self.r_proj(xr)
+            w = LOG_DECAY_SCALE * self.w_lora(xw).sigmoid()
+            k, _ = self.k_proj(xk)
+            v, _ = self.v_proj(xv)
 
-        a = self.a_lora(xa).sigmoid()
-        g = self.g_lora(xg)
+            if self.layer_idx == 0:
+                v_first_out = v
+            else:
+                if v_first is None:
+                    raise ValueError("RWKV7 layers after layer 0 require `v_first`.")
+                v = torch.lerp(v, v_first, self.v_lora(xv).sigmoid())
+                v_first_out = v_first
+
+            a = self.a_lora(xa).sigmoid()
+            g = self.g_lora(xg)
 
         r = r.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
         w = w.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
@@ -1128,6 +1206,10 @@ class RWKV7Attention(nn.Module):
             ).reshape(-1, self.local_value_dim)
             output = (output + correction) * g.to(torch.float32)
             output = output.to(hidden_dtype)
+        if self.perf_flags.use_direct_linear and _can_use_rwkv7_direct_linear(
+            self.o_proj, output
+        ):
+            return _rwkv7_direct_linear(self.o_proj, output)
         output, _ = self.o_proj(output)
         return output
 

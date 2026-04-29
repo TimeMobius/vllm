@@ -1407,11 +1407,37 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
 - [x] Decision:
     - reject the shift-state cache-dtype change
     - keep all three RWKV7 states on the existing stable dtype path
-- [ ] Next decode-track candidate:
-    - inspect whether `T=1` decode can reuse a tighter attention/block path or
-      reduce the number of small GEMM launches without material memory growth
-    - likely hotspots remain in the stacked projection / LoRA wrapper path,
-      not in the recurrent kernel itself
+- [x] Next decode-track candidate:
+    - reduce the number of small GEMM launches / wrapper hops in the stacked
+      projection and LoRA path
+    - landed behind `RWKV7_USE_DIRECT_LINEAR`
+    - direct `F.linear(...)` fast path is only enabled for:
+        - CUDA
+        - tensor parallel size `== 1`
+        - unquantized RWKV7 internal linears
+    - covered areas:
+        - `RWKV7LoRA`
+        - attention recurrent-input projections
+        - attention `o_proj`
+        - FFN `key/value`
+- [x] Correctness:
+    - full `tests/model_executor/test_rwkv7.py -v` passed
+    - added equality tests for attention and FFN direct-linear flag paths
+- [x] Benchmark:
+    - isolated `0.4B` decode benchmark showed a strong decode win
+    - real prompt validation showed:
+        - clear gain on short, decode-heavy requests
+        - near-flat or slightly negative result on longer prefill-heavy prompts
+- [x] Decision:
+    - keep `RWKV7_USE_DIRECT_LINEAR`
+    - do not default-enable it yet
+    - treat it as a decode-oriented experimental flag until more workload
+      coverage is profiled
+- [ ] Next follow-up:
+    - inspect whether the direct-linear path should become decode-only or
+      thresholded by prompt shape
+    - if not, the next decode-track optimization should look beyond wrapper
+      overhead and profile block-level launch structure
 
 ## 2026-04-27 RWKV7 official fused-kernel perf track
 
