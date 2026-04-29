@@ -1336,6 +1336,56 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - if `CMix / FFN` is revisited, try a more complete region fuse
     - otherwise move to a different runtime/kernel hotspot
 
+## 2026-04-29 full local CMix / FFN probe
+
+- [x] Evaluated a fuller local FFN fused path:
+    - custom local `_C.rwkv7_cmix_layer`
+    - fused region:
+        - `mix + key GEMM + relu^2 + value GEMM`
+    - TP design:
+        - op returned local row-parallel output
+        - TP all-reduce stayed in Python wrapper
+- [x] Correctness:
+    - direct kernel parity passed
+    - hook/fallback CUDA tests passed during the probe
+- [x] Direct FFN microbench:
+    - decode-like small token blocks:
+        - `1`: `1.01x`
+        - `4`: `1.01x`
+        - `8`: `1.03x`
+        - `64`: `1.11x`
+    - larger token blocks:
+        - `1024`: `1.10x`
+        - `1984`: `1.09x`
+- [x] Real `0.4B` isolated eager benchmark:
+    - fixed-on flags:
+        - `RWKV7_USE_FUSED_MIX6=1`
+        - `RWKV7_USE_FUSED_KK_PRE=1`
+        - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+        - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - only toggled:
+        - `RWKV7_USE_FUSED_CMIX`
+    - prefill proxy:
+        - `64`: `45.393ms -> 53.212ms`
+        - `1024`: `126.125ms -> 122.227ms`
+        - `1984`: `215.026ms -> 210.284ms`
+    - decode `64 -> 32`:
+        - TTFT `75.940ms -> 80.214ms`
+        - latency `1030.894ms -> 1071.333ms`
+        - TPOT `30.805ms -> 31.972ms`
+    - decode `64 -> 64`:
+        - TTFT `69.444ms -> 75.649ms`
+        - latency `1941.821ms -> 2068.324ms`
+        - TPOT `29.720ms -> 31.630ms`
+- [x] Decision:
+    - reject this fuller local FFN fused path too
+    - direct layer win did not translate to end-to-end serving win
+    - this strongly suggests the remaining decode bottleneck is no longer
+      “just fuse a bit more FFN math”
+- [ ] Next:
+    - move to `2. small token decode optimization`
+    - treat `CMix / FFN` as low priority unless a substantially different idea appears
+
 ## 2026-04-27 RWKV7 official fused-kernel perf track
 
 - [x] `P0` perf hook scaffolding:

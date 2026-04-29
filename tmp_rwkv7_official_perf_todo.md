@@ -763,6 +763,51 @@
     - If `CMix / FFN` is revisited, it should be a more complete region fuse,
       or we should move to a different hotspot instead.
 
+## 2026-04-29 Evaluation Note: Full Local CMix / FFN Fusion
+
+- Evaluated but rejected a fuller FFN probe:
+    - custom local `_C.rwkv7_cmix_layer`
+    - fused region:
+        - `mix + key projection + relu^2 + value projection`
+    - retained TP all-reduce outside the custom op
+- Why it is rejected:
+    - hook-level correctness passed
+    - direct FFN layer microbench was consistently positive
+    - but real `0.4B` eager serving still regressed on decode
+- Direct FFN layer microbench:
+    - decode-like small token counts:
+        - `1`: `1.01x`
+        - `4`: `1.01x`
+        - `8`: `1.03x`
+        - `64`: `1.11x`
+    - larger token counts:
+        - `1024`: `1.10x`
+        - `1984`: `1.09x`
+- Real `0.4B` isolated eager benchmark, with:
+    - `RWKV7_USE_FUSED_MIX6=1`
+    - `RWKV7_USE_FUSED_KK_PRE=1`
+    - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+    - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - and only toggling `RWKV7_USE_FUSED_CMIX`
+- A/B summary:
+    - prefill proxy:
+        - `64`: `45.393ms -> 53.212ms`
+        - `1024`: `126.125ms -> 122.227ms`
+        - `1984`: `215.026ms -> 210.284ms`
+    - decode `64 -> 32`:
+        - TTFT `75.940ms -> 80.214ms`
+        - latency `1030.894ms -> 1071.333ms`
+        - TPOT `30.805ms -> 31.972ms`
+    - decode `64 -> 64`:
+        - TTFT `69.444ms -> 75.649ms`
+        - latency `1941.821ms -> 2068.324ms`
+        - TPOT `29.720ms -> 31.630ms`
+- Conclusion:
+    - Do not land this fuller local FFN fused path either.
+    - The remaining decode bottleneck is unlikely to be solved by only fusing
+      a bit more FFN math.
+    - Move to `small token decode optimization`.
+
 ## Recommended Execution Order
 
 1. `P0` 基线与 feature flag

@@ -233,6 +233,73 @@
     - if FFN is revisited again, do it as a more complete region fuse
       rather than this intermediate shape
 
+## Latest Update (2026-04-29, Full Local CMix / FFN Probe Rejected)
+
+- Evaluated but **did not land** a fuller RWKV7 FFN fused path behind
+  `RWKV7_USE_FUSED_CMIX=1`:
+    - proposed `_C` op:
+        - `rwkv7_cmix_layer`
+    - fused region:
+        - `mix + key projection + relu^2 + value projection`
+    - TP handling:
+        - the custom op produced local row-parallel output
+        - TP all-reduce remained in the Python wrapper
+- Why it was rejected:
+    - correctness was fine
+    - direct FFN layer microbench was consistently positive
+    - but real serving still regressed on decode-heavy workloads
+- Validation completed during the probe:
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_feed_forward_fused_cmix_layer_matches_reference`
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_feed_forward_fused_cmix_layer_kernel_matches_reference`
+    - `tests/model_executor/test_rwkv7.py::test_rwkv7_feed_forward_fused_cmix_layer_falls_back_for_fp32`
+    - result:
+        - `3 passed`
+- Direct FFN microbench with the real `0.4B` config:
+    - decode-like small token counts:
+        - `1`: `1.01x`
+        - `4`: `1.01x`
+        - `8`: `1.03x`
+        - `64`: `1.11x`
+    - larger token counts:
+        - `1024`: `1.10x`
+        - `1984`: `1.09x`
+    - interpretation:
+        - the local FFN kernel itself is better
+        - but model/server-level decode bottlenecks still dominate
+- Real `0.4B` isolated eager benchmark:
+    - model:
+        - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - fixed-on flags in both runs:
+        - `RWKV7_USE_FUSED_MIX6=1`
+        - `RWKV7_USE_FUSED_KK_PRE=1`
+        - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+        - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - only toggled:
+        - `RWKV7_USE_FUSED_CMIX`
+    - benchmark artifacts:
+        - off:
+            - `/tmp/vllm_rwkv7_cmix_full_off.json`
+        - on:
+            - `/tmp/vllm_rwkv7_cmix_full_on.json`
+    - A/B summary:
+        - prefill proxy:
+            - `64`: `45.393ms -> 53.212ms`
+            - `1024`: `126.125ms -> 122.227ms`
+            - `1984`: `215.026ms -> 210.284ms`
+        - decode `64 -> 32`:
+            - TTFT `75.940ms -> 80.214ms`
+            - latency `1030.894ms -> 1071.333ms`
+            - TPOT `30.805ms -> 31.972ms`
+        - decode `64 -> 64`:
+            - TTFT `69.444ms -> 75.649ms`
+            - latency `1941.821ms -> 2068.324ms`
+            - TPOT `29.720ms -> 31.630ms`
+- Decision:
+    - do not land this fuller local FFN fused path
+    - `CMix / FFN` is now low-priority unless a substantially different idea
+      appears
+    - the next worthwhile direction is `small token decode optimization`
+
 ## Latest Update (2026-04-28)
 
 - Added an experimental alternate RWKV7 recurrent CUDA path behind:
