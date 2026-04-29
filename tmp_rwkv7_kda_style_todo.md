@@ -1433,22 +1433,9 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - do not default-enable it yet
     - treat it as a decode-oriented experimental flag until more workload
       coverage is profiled
-- [x] Follow-up:
-    - narrow the direct-linear path to:
-        - decode always on
-        - prefill only when `num_tokens <= 128`
-    - new tests confirm:
-        - large prefill no longer calls `_rwkv7_direct_linear`
-        - decode still matches reference even when the prefill threshold is
-          exceeded
-- [x] Updated benchmark:
-    - fixed-shape `0.4B` benchmark still shows net decode wins
-    - latest mixed real-prompt rerun shows:
-        - short / medium / long prompts all improved in total latency
-        - TTFT can still regress slightly on some prompt shapes
 - [ ] Next follow-up:
-    - decide whether this should become decode-only instead of
-      decode-plus-small-prefill
+    - inspect whether the direct-linear path should become decode-only or
+      thresholded by prompt shape
     - if not, the next decode-track optimization should look beyond wrapper
       overhead and profile block-level launch structure
 

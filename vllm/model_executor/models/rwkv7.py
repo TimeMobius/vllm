@@ -65,7 +65,6 @@ from .utils import AutoWeightsLoader, PPMissingLayer, make_layers, maybe_prefix
 
 LOG_DECAY_SCALE = -0.6065306597126334
 RWKV7_STATE_DTYPE = torch.float32
-RWKV7_DIRECT_LINEAR_MAX_PREFILL_TOKENS = 128
 _NATIVE_RWKV7_BLOCK_RE = re.compile(r"blocks\.(\d+)\.(.+)")
 
 _NATIVE_RWKV7_TOP_LEVEL_NAME_MAP = {
@@ -148,10 +147,6 @@ def _rwkv7_direct_linear(linear, x: torch.Tensor) -> torch.Tensor:
     if getattr(linear, "bias", None) is not None and not linear.skip_bias_add:
         bias = linear.bias
     return F.linear(x, linear.weight, bias)
-
-
-def _rwkv7_direct_linear_allowed_for_shape(num_tokens: int, *, is_decode: bool) -> bool:
-    return is_decode or num_tokens <= RWKV7_DIRECT_LINEAR_MAX_PREFILL_TOKENS
 
 
 def sqrelu(x: torch.Tensor) -> torch.Tensor:
@@ -597,6 +592,7 @@ class RWKV7LoRA(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        self.use_direct_linear = _load_rwkv7_perf_flags().use_direct_linear
         if activation is None:
             act = nn.Identity()
         elif activation == "sigmoid":
@@ -627,8 +623,10 @@ class RWKV7LoRA(nn.Module):
         )
 
     def _can_use_direct_cuda_fast_path(self, x: torch.Tensor) -> bool:
-        return _can_use_rwkv7_direct_linear(self.lora[0], x) and (
-            _can_use_rwkv7_direct_linear(self.lora[2], x)
+        return (
+            self.use_direct_linear
+            and _can_use_rwkv7_direct_linear(self.lora[0], x)
+            and (_can_use_rwkv7_direct_linear(self.lora[2], x))
         )
 
     def _forward_direct(self, x: torch.Tensor) -> torch.Tensor:
@@ -637,6 +635,8 @@ class RWKV7LoRA(nn.Module):
         return _rwkv7_direct_linear(self.lora[2], x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self._can_use_direct_cuda_fast_path(x):
+            return self._forward_direct(x)
         x, _ = self.lora[0](x)
         x = self.lora[1](x)
         x, bias = self.lora[2](x)
@@ -721,14 +721,9 @@ class RWKV7FeedForward(nn.Module):
             prefix=f"{prefix}.value",
         )
 
-    def _can_use_direct_cuda_fast_path(
-        self, mixed: torch.Tensor, *, is_decode: bool
-    ) -> bool:
+    def _can_use_direct_cuda_fast_path(self, mixed: torch.Tensor) -> bool:
         return (
             self.perf_flags.use_direct_linear
-            and _rwkv7_direct_linear_allowed_for_shape(
-                mixed.shape[0], is_decode=is_decode
-            )
             and _can_use_rwkv7_direct_linear(self.key, mixed)
             and (_can_use_rwkv7_direct_linear(self.value, mixed))
         )
@@ -755,8 +750,8 @@ class RWKV7FeedForward(nn.Module):
             return self.fused_sqrelu(hidden)
         return self.act_fn(hidden)
 
-    def _apply_ffn(self, mixed: torch.Tensor, *, is_decode: bool) -> torch.Tensor:
-        if self._can_use_direct_cuda_fast_path(mixed, is_decode=is_decode):
+    def _apply_ffn(self, mixed: torch.Tensor) -> torch.Tensor:
+        if self._can_use_direct_cuda_fast_path(mixed):
             return self._apply_ffn_direct(mixed)
         hidden, _ = self.key(mixed)
         hidden = self._activate_ffn(hidden)
@@ -768,7 +763,7 @@ class RWKV7FeedForward(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         delta, final_state = token_shift_with_cache(hidden_states, cached_state)
         mixed = self._mix_ffn_inputs(hidden_states, delta)
-        hidden = self._apply_ffn(mixed, is_decode=False)
+        hidden = self._apply_ffn(mixed)
         return hidden, final_state
 
     def forward_decode_batch(
@@ -778,7 +773,7 @@ class RWKV7FeedForward(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         delta = cached_state.to(hidden_states.dtype) - hidden_states
         mixed = self._mix_ffn_inputs(hidden_states, delta)
-        hidden = self._apply_ffn(mixed, is_decode=True)
+        hidden = self._apply_ffn(mixed)
         return hidden, hidden_states
 
     def forward_prefill_batch(
@@ -793,7 +788,7 @@ class RWKV7FeedForward(nn.Module):
             cached_state,
         )
         mixed = self._mix_ffn_inputs(hidden_states, delta)
-        hidden = self._apply_ffn(mixed, is_decode=False)
+        hidden = self._apply_ffn(mixed)
         return hidden, final_state
 
 
@@ -913,14 +908,9 @@ class RWKV7Attention(nn.Module):
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
 
-    def _can_use_direct_cuda_fast_path(
-        self, hidden_states: torch.Tensor, *, is_decode: bool
-    ) -> bool:
+    def _can_use_direct_cuda_fast_path(self, hidden_states: torch.Tensor) -> bool:
         return self.perf_flags.use_direct_linear and (
-            _rwkv7_direct_linear_allowed_for_shape(
-                hidden_states.shape[0], is_decode=is_decode
-            )
-            and _can_use_rwkv7_direct_linear(self.r_proj, hidden_states)
+            _can_use_rwkv7_direct_linear(self.r_proj, hidden_states)
             and _can_use_rwkv7_direct_linear(self.k_proj, hidden_states)
             and _can_use_rwkv7_direct_linear(self.v_proj, hidden_states)
             and _can_use_rwkv7_direct_linear(self.o_proj, hidden_states)
@@ -1007,8 +997,6 @@ class RWKV7Attention(nn.Module):
         hidden_states: torch.Tensor,
         delta: torch.Tensor,
         v_first: torch.Tensor | None,
-        *,
-        is_decode: bool,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -1020,7 +1008,7 @@ class RWKV7Attention(nn.Module):
         torch.Tensor,
     ]:
         xr, xw, xk, xv, xa, xg = self._mix_recurrent_inputs(hidden_states, delta)
-        if self._can_use_direct_cuda_fast_path(hidden_states, is_decode=is_decode):
+        if self._can_use_direct_cuda_fast_path(hidden_states):
             r = _rwkv7_direct_linear(self.r_proj, xr)
             w = LOG_DECAY_SCALE * self.w_lora._forward_direct(xw).sigmoid()
             k = _rwkv7_direct_linear(self.k_proj, xk)
@@ -1186,8 +1174,6 @@ class RWKV7Attention(nn.Module):
         v: torch.Tensor,
         g: torch.Tensor,
         hidden_dtype: torch.dtype,
-        *,
-        is_decode: bool,
     ) -> torch.Tensor:
         output = recurrent_output.reshape(-1, self.local_value_dim)
         if self.perf_flags.use_fused_lnx_rkvres_xg and recurrent_output.is_cuda:
@@ -1220,12 +1206,8 @@ class RWKV7Attention(nn.Module):
             ).reshape(-1, self.local_value_dim)
             output = (output + correction) * g.to(torch.float32)
             output = output.to(hidden_dtype)
-        if (
-            self.perf_flags.use_direct_linear
-            and _rwkv7_direct_linear_allowed_for_shape(
-                output.shape[0], is_decode=is_decode
-            )
-            and _can_use_rwkv7_direct_linear(self.o_proj, output)
+        if self.perf_flags.use_direct_linear and _can_use_rwkv7_direct_linear(
+            self.o_proj, output
         ):
             return _rwkv7_direct_linear(self.o_proj, output)
         output, _ = self.o_proj(output)
@@ -1245,7 +1227,6 @@ class RWKV7Attention(nn.Module):
             hidden_states,
             delta,
             v_first,
-            is_decode=False,
         )
 
         if recurrent_state is None:
@@ -1277,7 +1258,6 @@ class RWKV7Attention(nn.Module):
             v,
             g,
             hidden_states.dtype,
-            is_decode=False,
         )
         return output, final_shift_state, final_recurrent_state, v_first_out
 
@@ -1344,7 +1324,6 @@ class RWKV7Attention(nn.Module):
             hidden_states,
             delta,
             v_first,
-            is_decode=True,
         )
         recurrent_state = recurrent_state.to(torch.float32)
 
@@ -1366,7 +1345,6 @@ class RWKV7Attention(nn.Module):
             v,
             g,
             hidden_states.dtype,
-            is_decode=True,
         )
         return output, final_shift_state, final_recurrent_state, v_first_out
 
@@ -1387,7 +1365,6 @@ class RWKV7Attention(nn.Module):
             hidden_states,
             delta,
             v_first,
-            is_decode=False,
         )
 
         recurrent_output, final_recurrent_state = fused_mul_recurrent_rwkv7(
@@ -1410,7 +1387,6 @@ class RWKV7Attention(nn.Module):
             v,
             g,
             hidden_states.dtype,
-            is_decode=False,
         )
         return output, final_shift_state, final_recurrent_state, v_first_out
 
@@ -1429,7 +1405,6 @@ class RWKV7Attention(nn.Module):
             hidden_states,
             delta,
             v_first,
-            is_decode=False,
         )
 
         initial_recurrent_state = (
@@ -1466,7 +1441,6 @@ class RWKV7Attention(nn.Module):
             v,
             g,
             hidden_states.dtype,
-            is_decode=False,
         )
         assert final_recurrent_state is not None
         return (
@@ -1496,7 +1470,6 @@ class RWKV7Attention(nn.Module):
             hidden_states,
             delta,
             v_first,
-            is_decode=False,
         )
 
         (
@@ -1525,7 +1498,6 @@ class RWKV7Attention(nn.Module):
             v,
             g,
             hidden_states.dtype,
-            is_decode=False,
         )
         assert final_recurrent_state is not None
         return (

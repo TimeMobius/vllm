@@ -713,11 +713,7 @@ def test_rwkv7_perf_hooks_match_reference_formulas():
             distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
             backend="gloo",
         )
-        ensure_model_parallel_initialized(
-            1,
-            1,
-            backend="gloo",
-        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
         try:
             attn = RWKV7Attention(
                 config=config,
@@ -738,8 +734,7 @@ def test_rwkv7_perf_hooks_match_reference_formulas():
             mixed = ffn._mix_ffn_inputs(hidden_states, delta)
             torch.testing.assert_close(mixed, hidden_states.addcmul(delta, ffn.x_k))
             torch.testing.assert_close(
-                ffn._apply_ffn_direct(mixed),
-                ffn._apply_ffn(mixed, is_decode=False),
+                ffn._apply_ffn_direct(mixed), ffn._apply_ffn(mixed)
             )
             torch.testing.assert_close(
                 attn.w_lora._forward_direct(hidden_states),
@@ -811,7 +806,6 @@ def test_rwkv7_perf_hooks_match_reference_formulas():
                 v,
                 g,
                 torch.float32,
-                is_decode=False,
             )
             manual = attn.g_norm(recurrent_output.reshape(-1, attn.local_value_dim))
             local_r_k = attn.r_k[
@@ -843,11 +837,7 @@ def test_rwkv7_attention_direct_linear_flag_matches_reference(monkeypatch):
             distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
             backend="gloo",
         )
-        ensure_model_parallel_initialized(
-            1,
-            1,
-            backend="gloo",
-        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
         try:
             monkeypatch.delenv("RWKV7_USE_DIRECT_LINEAR", raising=False)
             attn_ref = RWKV7Attention(
@@ -894,169 +884,6 @@ def test_rwkv7_attention_direct_linear_flag_matches_reference(monkeypatch):
                 v_first,
             )
             actual = attn_fast.forward(
-                hidden_states,
-                cached_shift_state,
-                recurrent_state,
-                v_first,
-            )
-
-            for got, ref in zip(actual, expected):
-                torch.testing.assert_close(got, ref, atol=2e-2, rtol=2e-2)
-        finally:
-            cleanup_dist_env_and_memory()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_rwkv7_direct_linear_prefill_threshold_skips_fast_path(monkeypatch):
-    if not torch.cuda.is_bf16_supported():
-        pytest.skip("bfloat16 is not supported on this CUDA device.")
-
-    monkeypatch.setenv("RWKV7_USE_DIRECT_LINEAR", "1")
-    monkeypatch.setattr(rwkv7_model, "RWKV7_DIRECT_LINEAR_MAX_PREFILL_TOKENS", 4)
-
-    config = _make_config()
-    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
-    with set_current_vllm_config(vllm_config):
-        init_distributed_environment(
-            world_size=1,
-            rank=0,
-            local_rank=0,
-            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
-            backend="gloo",
-        )
-        ensure_model_parallel_initialized(1, 1, backend="gloo")
-        try:
-            attn = RWKV7Attention(
-                config=config,
-                layer_idx=1,
-                prefix="model.layers.1.attn.prefill_threshold",
-            )
-            ffn = RWKV7FeedForward(
-                config=config,
-                layer_idx=1,
-                prefix="model.layers.1.ffn.prefill_threshold",
-            )
-            _initialize_module_parameters(attn)
-            _initialize_module_parameters(ffn)
-            attn = attn.cuda().bfloat16()
-            ffn = ffn.cuda().bfloat16()
-
-            original_direct_linear = rwkv7_model._rwkv7_direct_linear
-            call_count = {"value": 0}
-
-            def _wrapped_direct_linear(linear, x):
-                call_count["value"] += 1
-                return original_direct_linear(linear, x)
-
-            monkeypatch.setattr(
-                rwkv7_model, "_rwkv7_direct_linear", _wrapped_direct_linear
-            )
-
-            hidden_states = torch.randn(
-                7, config.hidden_size, device="cuda", dtype=torch.bfloat16
-            )
-            query_start_loc = torch.tensor([0, 7], device="cuda", dtype=torch.int32)
-            cached_shift_state = torch.randn_like(hidden_states[0:1])
-            recurrent_state = torch.randn(
-                1,
-                attn.local_num_heads,
-                attn.head_dim,
-                attn.head_v_dim,
-                device="cuda",
-                dtype=torch.float32,
-            ).mul_(0.1)
-            v_first = torch.randn(
-                hidden_states.shape[0],
-                attn.local_value_dim,
-                device="cuda",
-                dtype=torch.bfloat16,
-            )
-
-            attn.forward_prefill_batch(
-                hidden_states,
-                query_start_loc,
-                cached_shift_state,
-                recurrent_state,
-                v_first,
-            )
-            ffn.forward_prefill_batch(
-                hidden_states, query_start_loc, cached_shift_state
-            )
-
-            assert call_count["value"] == 0
-        finally:
-            cleanup_dist_env_and_memory()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_rwkv7_attention_direct_linear_decode_ignores_prefill_threshold(
-    monkeypatch,
-):
-    if not torch.cuda.is_bf16_supported():
-        pytest.skip("bfloat16 is not supported on this CUDA device.")
-
-    config = _make_config()
-    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
-    with set_current_vllm_config(vllm_config):
-        init_distributed_environment(
-            world_size=1,
-            rank=0,
-            local_rank=0,
-            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
-            backend="gloo",
-        )
-        ensure_model_parallel_initialized(1, 1, backend="gloo")
-        try:
-            monkeypatch.setattr(
-                rwkv7_model, "RWKV7_DIRECT_LINEAR_MAX_PREFILL_TOKENS", 4
-            )
-
-            monkeypatch.delenv("RWKV7_USE_DIRECT_LINEAR", raising=False)
-            attn_ref = RWKV7Attention(
-                config=config,
-                layer_idx=1,
-                prefix="model.layers.1.attn.decode_threshold.ref",
-            )
-            _initialize_module_parameters(attn_ref)
-            state_dict = attn_ref.state_dict()
-
-            monkeypatch.setenv("RWKV7_USE_DIRECT_LINEAR", "1")
-            attn_fast = RWKV7Attention(
-                config=config,
-                layer_idx=1,
-                prefix="model.layers.1.attn.decode_threshold.fast",
-            )
-            attn_fast.load_state_dict(state_dict)
-
-            attn_ref = attn_ref.cuda().bfloat16()
-            attn_fast = attn_fast.cuda().bfloat16()
-
-            hidden_states = torch.randn(
-                7, config.hidden_size, device="cuda", dtype=torch.bfloat16
-            )
-            cached_shift_state = torch.randn_like(hidden_states)
-            recurrent_state = torch.randn(
-                hidden_states.shape[0],
-                attn_ref.local_num_heads,
-                attn_ref.head_dim,
-                attn_ref.head_v_dim,
-                device="cuda",
-                dtype=torch.float32,
-            ).mul_(0.1)
-            v_first = torch.randn(
-                hidden_states.shape[0],
-                attn_ref.local_value_dim,
-                device="cuda",
-                dtype=torch.bfloat16,
-            )
-
-            expected = attn_ref.forward_decode_batch(
-                hidden_states,
-                cached_shift_state,
-                recurrent_state,
-                v_first,
-            )
-            actual = attn_fast.forward_decode_batch(
                 hidden_states,
                 cached_shift_state,
                 recurrent_state,
@@ -1134,63 +961,6 @@ def test_rwkv7_feed_forward_direct_linear_flag_matches_reference(monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_rwkv7_feed_forward_direct_linear_decode_ignores_prefill_threshold(
-    monkeypatch,
-):
-    if not torch.cuda.is_bf16_supported():
-        pytest.skip("bfloat16 is not supported on this CUDA device.")
-
-    config = _make_config()
-    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
-    with set_current_vllm_config(vllm_config):
-        init_distributed_environment(
-            world_size=1,
-            rank=0,
-            local_rank=0,
-            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
-            backend="gloo",
-        )
-        ensure_model_parallel_initialized(1, 1, backend="gloo")
-        try:
-            monkeypatch.setattr(
-                rwkv7_model, "RWKV7_DIRECT_LINEAR_MAX_PREFILL_TOKENS", 4
-            )
-
-            monkeypatch.delenv("RWKV7_USE_DIRECT_LINEAR", raising=False)
-            ffn_ref = RWKV7FeedForward(
-                config=config,
-                layer_idx=1,
-                prefix="model.layers.1.ffn.decode_threshold.ref",
-            )
-            _initialize_module_parameters(ffn_ref)
-            state_dict = ffn_ref.state_dict()
-
-            monkeypatch.setenv("RWKV7_USE_DIRECT_LINEAR", "1")
-            ffn_fast = RWKV7FeedForward(
-                config=config,
-                layer_idx=1,
-                prefix="model.layers.1.ffn.decode_threshold.fast",
-            )
-            ffn_fast.load_state_dict(state_dict)
-
-            ffn_ref = ffn_ref.cuda().bfloat16()
-            ffn_fast = ffn_fast.cuda().bfloat16()
-
-            hidden_states = torch.randn(
-                7, config.hidden_size, device="cuda", dtype=torch.bfloat16
-            )
-            cached_state = torch.randn_like(hidden_states)
-
-            expected = ffn_ref.forward_decode_batch(hidden_states, cached_state)
-            actual = ffn_fast.forward_decode_batch(hidden_states, cached_state)
-
-            for got, ref in zip(actual, expected):
-                torch.testing.assert_close(got, ref, atol=2e-2, rtol=2e-2)
-        finally:
-            cleanup_dist_env_and_memory()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_rwkv7_feed_forward_fused_cmix_activation_matches_reference(monkeypatch):
     monkeypatch.setenv("RWKV7_USE_FUSED_CMIX", "1")
 
@@ -1234,7 +1004,7 @@ def test_rwkv7_feed_forward_fused_cmix_activation_matches_reference(monkeypatch)
             expected_hidden, _ = ffn.key(mixed)
             expected_hidden = torch.square(torch.relu(expected_hidden))
             expected_out, _ = ffn.value(expected_hidden)
-            actual_out = ffn._apply_ffn(mixed, is_decode=False)
+            actual_out = ffn._apply_ffn(mixed)
 
             assert called["value"]
             torch.testing.assert_close(actual_out, expected_out, rtol=1e-5, atol=2e-2)
@@ -1284,7 +1054,7 @@ def test_rwkv7_feed_forward_fused_cmix_activation_falls_back_without_flag(
             expected_hidden, _ = ffn.key(mixed)
             expected_hidden = torch.square(torch.relu(expected_hidden))
             expected_out, _ = ffn.value(expected_hidden)
-            actual_out = ffn._apply_ffn(mixed, is_decode=False)
+            actual_out = ffn._apply_ffn(mixed)
 
             torch.testing.assert_close(actual_out, expected_out, rtol=1e-5, atol=2e-2)
         finally:
@@ -1448,7 +1218,6 @@ def test_rwkv7_attention_lnx_rkvres_xg_flag_matches_reference(monkeypatch):
                 v,
                 g,
                 torch.float32,
-                is_decode=False,
             )
 
             local_r_k = attn.r_k[
