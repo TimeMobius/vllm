@@ -1386,6 +1386,33 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - move to `2. small token decode optimization`
     - treat `CMix / FFN` as low priority unless a substantially different idea appears
 
+## 2026-04-29 small-token decode follow-up
+
+- [x] Probe:
+    - test whether storing RWKV7 shift states in cache/model dtype instead of
+      fixed `fp32` reduces decode-path copy overhead
+- [x] Correctness:
+    - focused dtype-selection test passed
+    - full `tests/model_executor/test_rwkv7.py -v` passed
+- [x] Benchmark:
+    - compare old behavior via `--mamba-cache-dtype float32`
+    - against default `--mamba-cache-dtype auto`
+    - keep all existing RWKV7 perf flags enabled
+- [x] Result:
+    - mixed prefill result
+    - no stable decode win
+    - `64 -> 64` decode latency / TPOT regressed
+    - `64 -> 32` had slightly better steady-state TPOT on `auto`, but also a
+      large first-round TTFT outlier and worse overall latency
+- [x] Decision:
+    - reject the shift-state cache-dtype change
+    - keep all three RWKV7 states on the existing stable dtype path
+- [ ] Next decode-track candidate:
+    - inspect whether `T=1` decode can reuse a tighter attention/block path or
+      reduce the number of small GEMM launches without material memory growth
+    - likely hotspots remain in the stacked projection / LoRA wrapper path,
+      not in the recurrent kernel itself
+
 ## 2026-04-27 RWKV7 official fused-kernel perf track
 
 - [x] `P0` perf hook scaffolding:

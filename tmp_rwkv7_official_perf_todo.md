@@ -808,6 +808,44 @@
       a bit more FFN math.
     - Move to `small token decode optimization`.
 
+## 2026-04-29 Evaluation Note: shift-state cache dtype for small-token decode
+
+- Evaluated but rejected a runtime-side decode probe:
+    - store only the two shift states in `mamba_cache_dtype` / model dtype
+    - keep the recurrent state in `fp32`
+    - motivation was to reduce decode-path cached-state cast / copy traffic
+- Why it is rejected:
+    - correctness passed
+    - prefill result was mixed
+    - decode did not show a robust end-to-end win
+- Real `0.4B` serving benchmark:
+    - compared:
+        - baseline via `--mamba-cache-dtype float32`
+        - probe via default `--mamba-cache-dtype auto`
+    - all existing RWKV7 perf flags enabled on both sides
+- A/B summary:
+    - prefill proxy:
+        - `64`: `47.862ms -> 49.424ms`
+        - `1024`: `133.934ms -> 122.305ms`
+        - `1984`: `214.983ms -> 215.300ms`
+    - decode `64 -> 32`:
+        - TTFT `75.177ms -> 151.431ms`
+        - latency `1046.909ms -> 1105.981ms`
+        - TPOT `31.346ms -> 30.792ms`
+    - decode `64 -> 64`:
+        - TTFT `73.992ms -> 75.694ms`
+        - latency `1986.962ms -> 2034.393ms`
+        - TPOT `30.365ms -> 31.090ms`
+- Interpretation:
+    - `64 -> 32` included one obvious first-round `auto` outlier, so TTFT is
+      noisier than the steady-state TPOT there
+    - even so, the probe does not produce a clean decode win
+    - it should not be landed as the next small-token decode optimization
+- Next decode-track focus:
+    - target reduction of small GEMM launch count / wrapper overhead
+    - do not spend more time on cache-dtype tweaks unless a different
+      state-layout design appears
+
 ## Recommended Execution Order
 
 1. `P0` 基线与 feature flag

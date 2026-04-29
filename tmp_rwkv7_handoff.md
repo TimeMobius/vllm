@@ -3065,6 +3065,78 @@ Operational note:
 - Do not run `.venv/bin/python` directly from PowerShell on the WSL path; that
   can trigger the Windows "choose how to open Python" dialog.
 
+## 2026-04-29 Rejected RWKV7 shift-state cache-dtype probe
+
+Evaluated a decode-path probe that changed only the two shift-state caches
+(`attn_shift_state`, `ffn_shift_state`) from fixed `fp32` to
+`mamba_cache_dtype` / model dtype, while keeping the recurrent state in
+`fp32`.
+
+Rationale:
+
+- the decode profile showed repeated `aten::copy_` / dtype traffic around
+  cached shift states
+- RWKV7 currently stores all three states as `fp32`, even though the shift
+  states are just previous hidden vectors
+
+Validation:
+
+- added a focused dtype-selection unit test
+- full `tests/model_executor/test_rwkv7.py -v` stayed green
+- then reverted the code after the benchmark below did not show a robust win
+
+Real `0.4B` A/B serving benchmark:
+
+- model: `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+- all existing RWKV7 perf flags enabled:
+    - `RWKV7_USE_FUSED_MIX6=1`
+    - `RWKV7_USE_FUSED_KK_PRE=1`
+    - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+    - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - `RWKV7_USE_FUSED_CMIX=1`
+- baseline:
+    - old behavior approximated with `--mamba-cache-dtype float32`
+- probe:
+    - default `--mamba-cache-dtype auto`
+
+Summary:
+
+- prefill proxy:
+    - `64`: `47.862ms -> 49.424ms`
+    - `1024`: `133.934ms -> 122.305ms`
+    - `1984`: `214.983ms -> 215.300ms`
+- decode `64 -> 32`:
+    - TTFT `75.177ms -> 151.431ms`
+    - latency `1046.909ms -> 1105.981ms`
+    - TPOT `31.346ms -> 30.792ms`
+- decode `64 -> 64`:
+    - TTFT `73.992ms -> 75.694ms`
+    - latency `1986.962ms -> 2034.393ms`
+    - TPOT `30.365ms -> 31.090ms`
+
+Interpretation:
+
+- `64 -> 32` had one obvious first-round outlier on the `auto` side
+  (`TTFT ~366ms`), so the average TTFT is noisier than the steady-state TPOT
+- even after accounting for that, there is no clean decode win:
+    - `64 -> 32` steady-state TPOT improved a bit
+    - `64 -> 64` latency / TPOT regressed
+    - long prefill was flat-to-mixed
+- decision: do not land this state-dtype change
+
+Operational notes from this run:
+
+- when exporting a WSL `PATH` from PowerShell-launched bash, always quote it:
+    - `export PATH="/tmp/mybin:$PATH"`
+    - unquoted Windows path fragments like `Program Files (x86)` will break
+      bash parsing
+- when PowerShell writes helper scripts into WSL paths, normalize line endings
+  to LF and avoid BOM
+    - otherwise CLI args can become `float32\\r`
+    - and redirected output filenames can silently gain a trailing `\\r`
+- when generating wrapper scripts, make sure `$@` is preserved literally
+  instead of being expanded during script creation
+
 ## 2026-04-27 RWKV7 recurrent core evaluation
 
 Compared official CUDA `rwkv7_clampw` against vLLM's current Triton
