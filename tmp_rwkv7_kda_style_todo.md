@@ -1286,6 +1286,56 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
     - reinstall binding in the target conda env from `bindings/python`
     - rerun the 30B native `.pth` serve command
 
+## 2026-04-29 larger CMix / FFN probe
+
+- [x] Evaluated a larger `CMix / FFN` half-fusion:
+    - custom `_C.rwkv7_cmix_key_relu2`
+    - fused region:
+        - `mix + key GEMM + relu^2`
+    - kept `value` on existing `RowParallelLinear`
+- [x] Correctness:
+    - direct kernel parity passed
+    - hook/fallback CUDA tests passed during the probe
+- [x] Direct FFN microbench:
+    - actual `0.4B` layer, larger token blocks:
+        - `64`: `1.05x`
+        - `1024`: `1.10x`
+        - `1984`: `1.10x`
+    - small-token decode-like blocks:
+        - `1`: `0.99x`
+        - `4`: `1.07x`
+        - `8`: `0.91x`
+        - `64`: `1.14x`
+- [x] Real `0.4B` isolated eager benchmark:
+    - fixed-on flags:
+        - `RWKV7_USE_FUSED_MIX6=1`
+        - `RWKV7_USE_FUSED_KK_PRE=1`
+        - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+        - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - only toggled:
+        - `RWKV7_USE_FUSED_CMIX`
+    - prefill proxy:
+        - `64`: `62.888ms -> 54.887ms`
+        - `1024`: `132.673ms -> 130.020ms`
+        - `1984`: `224.944ms -> 226.809ms`
+    - decode `64 -> 32`:
+        - TTFT `81.653ms -> 113.158ms`
+        - latency `1126.332ms -> 1359.976ms`
+        - TPOT `33.699ms -> 40.220ms`
+    - decode `64 -> 64`:
+        - TTFT `89.750ms -> 90.528ms`
+        - latency `2292.257ms -> 2406.679ms`
+        - TPOT `34.960ms -> 36.764ms`
+- [x] Decision:
+    - reject this half-fused FFN path
+    - do not keep the code landed
+    - likely issue:
+        - medium/large token FFN path can improve
+        - but small-token decode shape is not reliably better
+- [ ] Next:
+    - if `CMix / FFN` is revisited, try a more complete region fuse
+    - otherwise move to a different runtime/kernel hotspot
+
 ## 2026-04-27 RWKV7 official fused-kernel perf track
 
 - [x] `P0` perf hook scaffolding:

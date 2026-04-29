@@ -718,6 +718,51 @@
       so the next `P3` work should keep targeting other Python-side metadata
       hotspots if they exist.
 
+## 2026-04-29 Evaluation Note: Larger CMix / FFN Half-Fusion
+
+- Evaluated but rejected a larger FFN probe:
+    - custom `_C.rwkv7_cmix_key_relu2`
+    - fused region:
+        - `mix + key projection + relu^2`
+    - left `value` on existing `RowParallelLinear`
+- Why it is rejected:
+    - hook-level correctness passed
+    - direct FFN layer microbench looked mildly positive for larger token blocks
+    - but real `0.4B` eager serving decode regressed
+- Direct FFN layer microbench:
+    - larger token counts:
+        - `64`: `1.05x`
+        - `1024`: `1.10x`
+        - `1984`: `1.10x`
+    - decode-like small token counts:
+        - `1`: `0.99x`
+        - `4`: `1.07x`
+        - `8`: `0.91x`
+        - `64`: `1.14x`
+- Real `0.4B` isolated eager benchmark, with:
+    - `RWKV7_USE_FUSED_MIX6=1`
+    - `RWKV7_USE_FUSED_KK_PRE=1`
+    - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+    - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - and only toggling `RWKV7_USE_FUSED_CMIX`
+- A/B summary:
+    - prefill proxy:
+        - `64`: `62.888ms -> 54.887ms`
+        - `1024`: `132.673ms -> 130.020ms`
+        - `1984`: `224.944ms -> 226.809ms`
+    - decode `64 -> 32`:
+        - TTFT `81.653ms -> 113.158ms`
+        - latency `1126.332ms -> 1359.976ms`
+        - TPOT `33.699ms -> 40.220ms`
+    - decode `64 -> 64`:
+        - TTFT `89.750ms -> 90.528ms`
+        - latency `2292.257ms -> 2406.679ms`
+        - TPOT `34.960ms -> 36.764ms`
+- Conclusion:
+    - Do not land the current half-fused FFN path.
+    - If `CMix / FFN` is revisited, it should be a more complete region fuse,
+      or we should move to a different hotspot instead.
+
 ## Recommended Execution Order
 
 1. `P0` 基线与 feature flag

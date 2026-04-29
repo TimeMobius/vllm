@@ -167,6 +167,72 @@
     - but it only helps when RWKV7 is running the `cache_all` prefix-caching path
     - it is not expected to move plain non-prefix decode TPS by itself
 
+## Latest Update (2026-04-29, Larger CMix / FFN Probe Rejected)
+
+- Evaluated but **did not land** a larger RWKV7 FFN probe behind
+  `RWKV7_USE_FUSED_CMIX=1`:
+    - proposed `_C` op:
+        - `rwkv7_cmix_key_relu2`
+    - fused region:
+        - `mix + key projection + relu^2`
+    - `value` stayed on the existing `RowParallelLinear`
+- Why it was rejected:
+    - correctness was fine
+    - real serving benchmark regressed on decode-heavy workloads
+- Validation completed during the probe:
+    - `tests/model_executor/test_rwkv7.py -k 'fused_cmix_activation or fused_cmix_key_relu2' -v`
+        - result:
+            - `5 passed`
+    - `tests/kernels/core/test_activation.py -v`
+        - result:
+            - `198 passed`
+- Direct FFN microbench with the real `0.4B` config:
+    - larger token counts:
+        - `64`: `1.05x`
+        - `1024`: `1.10x`
+        - `1984`: `1.10x`
+    - decode-like small token counts:
+        - `1`: `0.99x`
+        - `4`: `1.07x`
+        - `8`: `0.91x`
+        - `64`: `1.14x`
+    - interpretation:
+        - this half-fused path is not consistently better in the tiny-token
+          regime that dominates decode
+- Real `0.4B` isolated eager benchmark:
+    - model:
+        - `/mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF`
+    - fixed-on flags in both runs:
+        - `RWKV7_USE_FUSED_MIX6=1`
+        - `RWKV7_USE_FUSED_KK_PRE=1`
+        - `RWKV7_USE_FUSED_LNX_RKVRES_XG=1`
+        - `RWKV7_USE_ALT_RECURRENT_KERNEL=1`
+    - only toggled:
+        - `RWKV7_USE_FUSED_CMIX`
+    - benchmark artifacts:
+        - off:
+            - `/tmp/vllm_rwkv7_cmix_key_relu2_off.json`
+        - on:
+            - `/tmp/vllm_rwkv7_cmix_key_relu2_on.json`
+    - A/B summary:
+        - prefill proxy:
+            - `64`: `62.888ms -> 54.887ms`
+            - `1024`: `132.673ms -> 130.020ms`
+            - `1984`: `224.944ms -> 226.809ms`
+        - decode `64 -> 32`:
+            - TTFT `81.653ms -> 113.158ms`
+            - latency `1126.332ms -> 1359.976ms`
+            - TPOT `33.699ms -> 40.220ms`
+        - decode `64 -> 64`:
+            - TTFT `89.750ms -> 90.528ms`
+            - latency `2292.257ms -> 2406.679ms`
+            - TPOT `34.960ms -> 36.764ms`
+- Decision:
+    - do not land this `key + relu2` half-fusion
+    - keep the already-landed activation-only `relu2` path
+    - if FFN is revisited again, do it as a more complete region fuse
+      rather than this intermediate shape
+
 ## Latest Update (2026-04-28)
 
 - Added an experimental alternate RWKV7 recurrent CUDA path behind:
