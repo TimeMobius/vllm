@@ -3259,6 +3259,65 @@ Real prompt validation:
     - this matches the intended target of the optimization, so it is still
       worth keeping as an experimental decode-oriented flag
 
+## 2026-04-29 Narrowed direct-linear to decode and small prefill shapes
+
+Follow-up change:
+
+- keep `RWKV7_USE_DIRECT_LINEAR=1`
+- but only enable the direct path for:
+    - decode paths
+    - or non-decode paths with `num_tokens <= 128`
+- implementation constant:
+    - `RWKV7_DIRECT_LINEAR_MAX_PREFILL_TOKENS = 128`
+
+Correctness validation:
+
+- full `tests/model_executor/test_rwkv7.py -v`
+    - `46 passed, 2 skipped`
+- new coverage:
+    - prefill path above the threshold does not call `_rwkv7_direct_linear`
+    - decode path still matches reference even when the prefill threshold would
+      otherwise disable the fast path
+
+Updated `0.4B` fixed-shape A/B benchmark
+(`RWKV7_USE_DIRECT_LINEAR` unset vs set with the new decode/small-shape policy):
+
+- prefill proxy:
+    - `64`: `52.179ms -> 57.666ms`
+    - `1024`: `139.596ms -> 122.205ms`
+    - `1984`: `218.213ms -> 210.133ms`
+- decode `64 -> 32`:
+    - TTFT `84.306ms -> 81.876ms`
+    - latency `1182.612ms -> 1144.256ms`
+    - TPOT `35.701ms -> 34.270ms`
+- decode `64 -> 64`:
+    - TTFT `83.658ms -> 80.843ms`
+    - latency `2390.321ms -> 2206.351ms`
+    - TPOT `36.614ms -> 33.738ms`
+
+Updated mixed real-prompt validation:
+
+- `zh_short`:
+    - TTFT `111.230ms -> 129.756ms`
+    - latency `2402.297ms -> 2332.033ms`
+    - TPOT `36.662ms -> 35.240ms`
+- `en_code`:
+    - TTFT `91.165ms -> 88.389ms`
+    - latency `2447.456ms -> 2305.973ms`
+    - TPOT `37.401ms -> 35.200ms`
+- `long_context`:
+    - TTFT `211.524ms -> 224.654ms`
+    - latency `2683.227ms -> 2550.950ms`
+    - TPOT `39.233ms -> 37.236ms`
+
+Interpretation:
+
+- this narrows the optimization closer to its intended regime
+- long-context requests are no longer slower overall in the latest rerun
+- TTFT can still move a little against us on some prompt shapes, but decode and
+  total latency stay net positive in the current A/B
+- keep it behind the feature flag for now
+
 ## 2026-04-27 RWKV7 recurrent core evaluation
 
 Compared official CUDA `rwkv7_clampw` against vLLM's current Triton

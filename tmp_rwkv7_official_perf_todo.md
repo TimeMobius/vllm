@@ -903,6 +903,60 @@
     - keep it behind a feature flag for now; do not default-enable until a
       broader workload sweep confirms the tradeoff
 
+## 2026-04-29 Evaluation Note: narrowed direct-linear policy
+
+- Follow-up policy change:
+    - keep `RWKV7_USE_DIRECT_LINEAR=1`
+    - but only route through the direct path for:
+        - decode
+        - or prefill-like paths with `num_tokens <= 128`
+    - implementation constant:
+        - `RWKV7_DIRECT_LINEAR_MAX_PREFILL_TOKENS = 128`
+- Motivation:
+    - the original always-on direct-linear path was too broad for a
+      decode-targeted optimization
+    - we wanted to keep the small-token decode gain while reducing the chance
+      of long-context regressions
+- Correctness:
+    - full `tests/model_executor/test_rwkv7.py -v`
+        - `46 passed, 2 skipped`
+    - added explicit tests that:
+        - larger prefill does not call `_rwkv7_direct_linear`
+        - decode still matches reference even when the prefill threshold is
+          exceeded
+- Updated `0.4B` fixed-shape benchmark:
+    - prefill proxy:
+        - `64`: `52.179ms -> 57.666ms`
+        - `1024`: `139.596ms -> 122.205ms`
+        - `1984`: `218.213ms -> 210.133ms`
+    - decode `64 -> 32`:
+        - TTFT `84.306ms -> 81.876ms`
+        - latency `1182.612ms -> 1144.256ms`
+        - TPOT `35.701ms -> 34.270ms`
+    - decode `64 -> 64`:
+        - TTFT `83.658ms -> 80.843ms`
+        - latency `2390.321ms -> 2206.351ms`
+        - TPOT `36.614ms -> 33.738ms`
+- Updated mixed real-prompt rerun:
+    - `zh_short`:
+        - TTFT `111.230ms -> 129.756ms`
+        - latency `2402.297ms -> 2332.033ms`
+        - TPOT `36.662ms -> 35.240ms`
+    - `en_code`:
+        - TTFT `91.165ms -> 88.389ms`
+        - latency `2447.456ms -> 2305.973ms`
+        - TPOT `37.401ms -> 35.200ms`
+    - `long_context`:
+        - TTFT `211.524ms -> 224.654ms`
+        - latency `2683.227ms -> 2550.950ms`
+        - TPOT `39.233ms -> 37.236ms`
+- Conclusion:
+    - this is a better-scoped version of the direct-linear optimization
+    - decode and total latency stay net positive in the latest A/B
+    - TTFT is still the most workload-sensitive metric
+    - the flag should remain experimental until we decide whether
+      decode-only routing is better than decode-plus-small-prefill routing
+
 ## Recommended Execution Order
 
 1. `P0` 基线与 feature flag
