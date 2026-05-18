@@ -1065,7 +1065,7 @@ def run_diagnostic_suite(
         try:
             if active_dtype != scenario.dtype:
                 if active_model is not None:
-                    del active_model
+                    active_model = None
                     clear_device_cache()
                 active_model = NativeRWKV7(
                     checkpoint,
@@ -1104,7 +1104,7 @@ def run_diagnostic_suite(
             )
 
     if active_model is not None:
-        del active_model
+        active_model = None
     clear_device_cache()
     return rows
 
