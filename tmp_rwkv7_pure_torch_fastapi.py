@@ -9,6 +9,7 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -401,17 +402,22 @@ class RWKVService:
 
 def create_app(args: argparse.Namespace) -> FastAPI:
     service = RWKVService(args)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> Any:
+        try:
+            yield
+        finally:
+            service.close()
+
     app = FastAPI(
         title="RWKV7 Pure Torch FastAPI Service",
         version="0.1.0",
         summary="Standalone native RWKV7 generation service without the vLLM engine.",
+        lifespan=lifespan,
     )
     app.state.service = service
     app.state.generate_lock = asyncio.Lock()
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        app.state.service.close()
 
     @app.get("/")
     async def root() -> dict[str, object]:
@@ -485,10 +491,10 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             except RuntimeError as exc:
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    @app.post("/v1/completions")
+    @app.post("/v1/completions", response_model=None)
     async def openai_completions(
         request: OpenAICompletionRequest,
-    ) -> dict[str, object] | StreamingResponse:
+    ) -> Any:
         service = app.state.service
         try:
             model_name = service.validate_requested_model(request.model)
@@ -589,10 +595,10 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             "usage": usage,
         }
 
-    @app.post("/v1/chat/completions")
+    @app.post("/v1/chat/completions", response_model=None)
     async def openai_chat_completions(
         request: OpenAIChatCompletionRequest,
-    ) -> dict[str, object] | StreamingResponse:
+    ) -> Any:
         service = app.state.service
         try:
             model_name = service.validate_requested_model(request.model)
