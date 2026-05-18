@@ -64,6 +64,13 @@ def dtype_label(dtype: torch.dtype) -> str:
     return str(dtype).removeprefix("torch.")
 
 
+def convert_single_id_to_token(tokenizer: Any, token_id: int) -> str:
+    converted = tokenizer.convert_ids_to_tokens([token_id])
+    if isinstance(converted, list):
+        return converted[0] if converted else ""
+    return str(converted)
+
+
 def should_prefer_vllm_tokenizer(tokenizer_path: str) -> bool:
     if is_remote_url(tokenizer_path):
         return False
@@ -656,7 +663,7 @@ def topk_tokens(
         rows.append(
             {
                 "token_id": int(token_id),
-                "token": tokenizer.convert_ids_to_tokens(int(token_id)),
+                "token": convert_single_id_to_token(tokenizer, int(token_id)),
                 "decoded": tokenizer.decode([int(token_id)], skip_special_tokens=False),
                 "logit": float(score),
             }
