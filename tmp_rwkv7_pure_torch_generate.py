@@ -14,6 +14,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
+from transformers.utils import is_remote_url
 
 from vllm import LLM, SamplingParams
 from vllm.tokenizers import get_tokenizer
@@ -61,6 +62,20 @@ def clear_device_cache() -> None:
 
 def dtype_label(dtype: torch.dtype) -> str:
     return str(dtype).removeprefix("torch.")
+
+
+def should_prefer_vllm_tokenizer(tokenizer_path: str) -> bool:
+    if is_remote_url(tokenizer_path):
+        return False
+
+    path = Path(tokenizer_path)
+    if path.is_file():
+        return path.suffix.lower() == ".txt"
+
+    if path.is_dir():
+        return any(path.glob("rwkv_vocab*.txt"))
+
+    return False
 
 
 def parse_args() -> argparse.Namespace:
@@ -730,6 +745,31 @@ def render_manual_chat_shell(
     return "".join(parts)
 
 
+def load_tokenizer(
+    tokenizer_path: str,
+    *,
+    trust_remote_code: bool = True,
+) -> Any:
+    if should_prefer_vllm_tokenizer(tokenizer_path):
+        return get_tokenizer(
+            tokenizer_path,
+            tokenizer_mode="rwkv",
+            trust_remote_code=trust_remote_code,
+        )
+
+    try:
+        return AutoTokenizer.from_pretrained(
+            tokenizer_path,
+            trust_remote_code=trust_remote_code,
+        )
+    except Exception:
+        return get_tokenizer(
+            tokenizer_path,
+            tokenizer_mode="auto",
+            trust_remote_code=trust_remote_code,
+        )
+
+
 def compare_with_vllm_tokenizer(
     tokenizer_path: str,
     prompts: list[str],
@@ -740,7 +780,7 @@ def compare_with_vllm_tokenizer(
     system_prompt: str | None,
     add_generation_prompt: bool,
 ) -> dict[str, Any]:
-    hf_tokenizer = AutoTokenizer.from_pretrained(
+    hf_tokenizer = load_tokenizer(
         tokenizer_path,
         trust_remote_code=True,
     )
@@ -1276,7 +1316,7 @@ def main() -> None:
     if args.diagnose and args.compare_vllm_engine:
         raise ValueError("--diagnose and --compare-vllm-engine cannot be combined.")
 
-    tokenizer = AutoTokenizer.from_pretrained(
+    tokenizer = load_tokenizer(
         args.tokenizer,
         trust_remote_code=True,
     )
