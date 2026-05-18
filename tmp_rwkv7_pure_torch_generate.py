@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,10 +25,42 @@ DEFAULT_PROMPTS = [
     "User: hello\n\nAssistant:",
     "1 + 1 =",
 ]
+CONTROL_TEXT_MARKERS = (
+    "system",
+    "user",
+    "assistant",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<think>",
+    "</think>",
+)
+SUSPICIOUS_FIRST_TOKENS = {
+    ",",
+    ".",
+    ":",
+    "|",
+    "1",
+    "2",
+    "3",
+    "4",
+    "system",
+    "user",
+    "assistant",
+}
 
 
 def accelerator_available() -> bool:
     return hasattr(torch, "accelerator") and torch.accelerator.is_available()
+
+
+def clear_device_cache() -> None:
+    gc.collect()
+    if accelerator_available():
+        torch.accelerator.empty_cache()
+
+
+def dtype_label(dtype: torch.dtype) -> str:
+    return str(dtype).removeprefix("torch.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +86,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--hf-config-path")
     parser.add_argument("--hf-overrides", default="{}")
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help=(
+            "Run a fixed diagnostic suite for each prompt: raw continuation, "
+            "tokenizer chat template, a manual chat shell, and a float32 raw "
+            "reference when possible."
+        ),
+    )
     parser.add_argument(
         "--apply-chat-template",
         action="store_true",
@@ -131,6 +173,55 @@ def print_text_report(result: dict[str, Any], *, index: int) -> None:
         )
     print_section("GENERATED_TEXT", str(result["generated_text"]))
     print("generated_ids=" + format_id_preview(result["generated_ids"]))
+
+
+def print_diagnostic_case_report(case: dict[str, Any], *, index: int) -> None:
+    print(
+        f"=== Scenario {index}: {case['scenario_name']} ({case['scenario_dtype']}) ==="
+    )
+    print(f"description={case['scenario_description']}")
+    if "error" in case:
+        print("status=error")
+        print(f"error_type={case['error_type']}")
+        print(f"error={case['error']}")
+        return
+
+    print_text_report(case, index=index)
+    analysis = case["analysis"]
+    print(
+        "analysis="
+        f"status={analysis['status']} "
+        f"unique_ratio={analysis['unique_ratio']:.3f} "
+        f"top3_mass={analysis['top3_token_mass']:.3f} "
+        f"control_hits={analysis['control_text_hits']}"
+    )
+    if analysis["reasons"]:
+        print("reasons=" + "; ".join(analysis["reasons"]))
+
+
+def print_diagnostic_summary(summary: dict[str, Any], *, index: int) -> None:
+    print(f"=== Diagnostic Summary {index} ===")
+    print(f"prompt={summary['prompt']!r}")
+    for scenario in summary["scenario_summaries"]:
+        if "error" in scenario:
+            print(
+                f"{scenario['scenario_name']} [{scenario['scenario_dtype']}] "
+                f"status=error error={scenario['error_type']}: {scenario['error']}"
+            )
+            continue
+        print(
+            f"{scenario['scenario_name']} [{scenario['scenario_dtype']}] "
+            f"status={scenario['status']} "
+            f"top1={scenario['top1_decoded']!r} "
+            f"unique_ratio={scenario['unique_ratio']:.3f} "
+            f"top3_mass={scenario['top3_token_mass']:.3f} "
+            f"control_hits={scenario['control_text_hits']}"
+        )
+        if scenario["reasons"]:
+            print("  reasons=" + "; ".join(scenario["reasons"]))
+        print("  preview=" + repr(scenario["generated_text_preview"]))
+    print("overall=" + summary["overall_assessment"])
+    print("next_step=" + summary["recommended_next_step"])
 
 
 def parse_json_dict(raw: str) -> dict[str, Any]:
@@ -269,6 +360,18 @@ class LayerConfig:
     value_dim: int
     head_v_dim: int
     norm_eps: float = 1e-5
+
+
+@dataclass(frozen=True)
+class DiagnosticScenario:
+    name: str
+    description: str
+    prompt: str
+    dtype: torch.dtype
+    apply_chat_template: bool
+    message_role: str
+    system_prompt: str | None
+    add_generation_prompt: bool
 
 
 class NativeRWKV7:
@@ -612,6 +715,21 @@ def prepare_prompt_inputs(
     }
 
 
+def render_manual_chat_shell(
+    prompt: str,
+    *,
+    message_role: str,
+    system_prompt: str | None,
+) -> str:
+    parts: list[str] = []
+    if system_prompt is not None:
+        parts.append(f"<|im_start|>system\n{system_prompt}<|im_end|>\n")
+    parts.append(f"<|im_start|>{message_role}\n{prompt}<|im_end|>\n")
+    if message_role != "assistant":
+        parts.append("<|im_start|>assistant\n")
+    return "".join(parts)
+
+
 def compare_with_vllm_tokenizer(
     tokenizer_path: str,
     prompts: list[str],
@@ -739,6 +857,323 @@ def run_prompt(
     }
 
 
+def analyze_generation_case(result: dict[str, Any]) -> dict[str, Any]:
+    generated_ids = result["generated_ids"]
+    total_tokens = max(len(generated_ids), 1)
+    counts = Counter(generated_ids)
+    unique_ratio = len(counts) / total_tokens
+    top3_mass = (
+        sum(freq for _, freq in counts.most_common(3)) / total_tokens if counts else 0.0
+    )
+    generated_text = result["generated_text"]
+    control_hits = sum(generated_text.count(marker) for marker in CONTROL_TEXT_MARKERS)
+    first_token = result["first_step_topk"][0] if result["first_step_topk"] else None
+    top1_decoded = first_token["decoded"] if first_token is not None else ""
+    top1_normalized = top1_decoded.strip() or top1_decoded
+
+    suspicion_score = 0
+    reasons: list[str] = []
+
+    if top3_mass >= 0.7:
+        suspicion_score += 2
+        reasons.append(f"top-3 generated token mass is very high ({top3_mass:.3f})")
+    elif top3_mass >= 0.55:
+        suspicion_score += 1
+        reasons.append(f"top-3 generated token mass is elevated ({top3_mass:.3f})")
+
+    if unique_ratio <= 0.25:
+        suspicion_score += 2
+        reasons.append(f"generated token diversity is very low ({unique_ratio:.3f})")
+    elif unique_ratio <= 0.4:
+        suspicion_score += 1
+        reasons.append(
+            f"generated token diversity is somewhat low ({unique_ratio:.3f})"
+        )
+
+    if control_hits >= 3:
+        suspicion_score += 2
+        reasons.append(f"generated text repeats control markers {control_hits} time(s)")
+    elif control_hits >= 1:
+        suspicion_score += 1
+        reasons.append(
+            f"generated text includes control markers {control_hits} time(s)"
+        )
+
+    if top1_normalized in SUSPICIOUS_FIRST_TOKENS:
+        suspicion_score += 1
+        reasons.append(f"first predicted token looks suspicious ({top1_decoded!r})")
+
+    if suspicion_score >= 4:
+        status = "degenerate"
+    elif suspicion_score >= 2:
+        status = "suspicious"
+    else:
+        status = "ok"
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "unique_ratio": unique_ratio,
+        "top3_token_mass": top3_mass,
+        "control_text_hits": control_hits,
+        "top1_token_id": (
+            int(first_token["token_id"]) if first_token is not None else None
+        ),
+        "top1_token": first_token["token"] if first_token is not None else None,
+        "top1_decoded": top1_decoded,
+        "top1_logit": float(first_token["logit"]) if first_token is not None else None,
+        "generated_text_preview": generated_text[:160],
+    }
+
+
+def build_diagnostic_scenarios(
+    prompt: str,
+    *,
+    dtype: torch.dtype,
+    message_role: str,
+    system_prompt: str | None,
+) -> list[DiagnosticScenario]:
+    scenarios = [
+        DiagnosticScenario(
+            name="raw_current_dtype",
+            description="Raw prompt continuation with the requested dtype.",
+            prompt=prompt,
+            dtype=dtype,
+            apply_chat_template=False,
+            message_role=message_role,
+            system_prompt=system_prompt,
+            add_generation_prompt=True,
+        ),
+        DiagnosticScenario(
+            name="qwen_chat_template",
+            description="Tokenizer-provided chat template with generation prompt.",
+            prompt=prompt,
+            dtype=dtype,
+            apply_chat_template=True,
+            message_role=message_role,
+            system_prompt=system_prompt,
+            add_generation_prompt=True,
+        ),
+        DiagnosticScenario(
+            name="manual_chat_shell",
+            description=(
+                "Manual <|im_start|>...<|im_end|> chat shell without tokenizer "
+                "template extras."
+            ),
+            prompt=render_manual_chat_shell(
+                prompt,
+                message_role=message_role,
+                system_prompt=system_prompt,
+            ),
+            dtype=dtype,
+            apply_chat_template=False,
+            message_role=message_role,
+            system_prompt=None,
+            add_generation_prompt=False,
+        ),
+    ]
+
+    if dtype != torch.float32:
+        scenarios.append(
+            DiagnosticScenario(
+                name="raw_float32_reference",
+                description=(
+                    "Raw prompt continuation in float32 as a numeric reference."
+                ),
+                prompt=prompt,
+                dtype=torch.float32,
+                apply_chat_template=False,
+                message_role=message_role,
+                system_prompt=system_prompt,
+                add_generation_prompt=True,
+            )
+        )
+
+    return scenarios
+
+
+def run_diagnostic_suite(
+    checkpoint: dict[str, torch.Tensor],
+    *,
+    tokenizer: Any,
+    prompt: str,
+    device: torch.device,
+    dtype: torch.dtype,
+    max_new_tokens: int,
+    topk: int,
+    message_role: str,
+    system_prompt: str | None,
+) -> list[dict[str, Any]]:
+    scenarios = build_diagnostic_scenarios(
+        prompt,
+        dtype=dtype,
+        message_role=message_role,
+        system_prompt=system_prompt,
+    )
+    rows: list[dict[str, Any]] = []
+    active_dtype: torch.dtype | None = None
+    active_model: NativeRWKV7 | None = None
+
+    for scenario in scenarios:
+        try:
+            if active_dtype != scenario.dtype:
+                if active_model is not None:
+                    del active_model
+                    clear_device_cache()
+                active_model = NativeRWKV7(
+                    checkpoint,
+                    device=device,
+                    dtype=scenario.dtype,
+                )
+                active_dtype = scenario.dtype
+
+            assert active_model is not None
+            result = run_prompt(
+                active_model,
+                tokenizer,
+                scenario.prompt,
+                max_new_tokens=max_new_tokens,
+                topk=topk,
+                apply_chat_template=scenario.apply_chat_template,
+                message_role=scenario.message_role,
+                system_prompt=scenario.system_prompt,
+                add_generation_prompt=scenario.add_generation_prompt,
+            )
+            result["scenario_name"] = scenario.name
+            result["scenario_description"] = scenario.description
+            result["scenario_dtype"] = dtype_label(scenario.dtype)
+            result["analysis"] = analyze_generation_case(result)
+            rows.append(result)
+        except Exception as exc:
+            rows.append(
+                {
+                    "prompt": prompt,
+                    "scenario_name": scenario.name,
+                    "scenario_description": scenario.description,
+                    "scenario_dtype": dtype_label(scenario.dtype),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+
+    if active_model is not None:
+        del active_model
+    clear_device_cache()
+    return rows
+
+
+def scenario_status_rank(status: str) -> int:
+    order = {
+        "ok": 0,
+        "suspicious": 1,
+        "degenerate": 2,
+        "error": 3,
+    }
+    return order[status]
+
+
+def summarize_diagnostic_suite(
+    prompt: str,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    by_name: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if "error" in row:
+            summary = {
+                "scenario_name": row["scenario_name"],
+                "scenario_dtype": row["scenario_dtype"],
+                "status": "error",
+                "error_type": row["error_type"],
+                "error": row["error"],
+            }
+        else:
+            analysis = row["analysis"]
+            summary = {
+                "scenario_name": row["scenario_name"],
+                "scenario_dtype": row["scenario_dtype"],
+                **analysis,
+            }
+        summaries.append(summary)
+        by_name[row["scenario_name"]] = summary
+
+    raw_current = by_name.get("raw_current_dtype")
+    qwen_template = by_name.get("qwen_chat_template")
+    manual_shell = by_name.get("manual_chat_shell")
+    raw_float32 = by_name.get("raw_float32_reference")
+
+    def status_of(item: dict[str, Any] | None) -> str | None:
+        return None if item is None else item["status"]
+
+    raw_status = status_of(raw_current)
+    qwen_status = status_of(qwen_template)
+    manual_status = status_of(manual_shell)
+    float32_status = status_of(raw_float32)
+
+    overall_assessment = (
+        "Mixed results. Inspect the per-scenario outputs and compare against the "
+        "reference QRWKV inference path."
+    )
+    recommended_next_step = (
+        "Compare this checkpoint with the source QRWKV inference implementation "
+        "using the same tokenizer and prompt."
+    )
+
+    if raw_status == "ok" and qwen_status != "ok" and manual_status != "ok":
+        overall_assessment = (
+            "Likely chat-format mismatch: raw continuation looks healthier than "
+            "both chat-style prompt variants."
+        )
+        recommended_next_step = (
+            "Recover the exact instruction/chat format used during training, or "
+            "stay with raw continuation prompts."
+        )
+    elif (
+        raw_status in {"suspicious", "degenerate"}
+        and qwen_status in {"suspicious", "degenerate"}
+        and manual_status in {"suspicious", "degenerate"}
+    ):
+        if (
+            raw_current is not None
+            and raw_float32 is not None
+            and float32_status in {"ok", "suspicious"}
+            and scenario_status_rank(float32_status) < scenario_status_rank(raw_status)
+        ):
+            overall_assessment = (
+                "Likely numeric or dtype sensitivity: the float32 raw scenario "
+                "looks healthier than the requested dtype."
+            )
+            recommended_next_step = (
+                "Retry more prompts in float32 and compare logits or token streams "
+                "against the requested dtype."
+            )
+        else:
+            overall_assessment = (
+                "Likely checkpoint or implementation mismatch: raw continuation "
+                "and both chat-style variants all look unhealthy."
+            )
+            recommended_next_step = (
+                "Compare this script against the source QRWKV forward path and "
+                "verify that the checkpoint format exactly matches this RWKV7 "
+                "implementation."
+            )
+    elif raw_status == "error" or float32_status == "error":
+        overall_assessment = (
+            "The diagnostic suite hit at least one runtime error, so the result "
+            "set is incomplete."
+        )
+        recommended_next_step = (
+            "Resolve the failing scenario first, then rerun the diagnostic suite."
+        )
+
+    return {
+        "prompt": prompt,
+        "scenario_summaries": summaries,
+        "overall_assessment": overall_assessment,
+        "recommended_next_step": recommended_next_step,
+    }
+
+
 def run_vllm_generation(
     *,
     model: str,
@@ -787,9 +1222,7 @@ def run_vllm_generation(
         )
 
     del llm
-    gc.collect()
-    if accelerator_available():
-        torch.accelerator.empty_cache()
+    clear_device_cache()
     return rows
 
 
@@ -840,6 +1273,9 @@ def main() -> None:
     hf_overrides = parse_json_dict(args.hf_overrides)
     add_generation_prompt = not args.no_add_generation_prompt
 
+    if args.diagnose and args.compare_vllm_engine:
+        raise ValueError("--diagnose and --compare-vllm-engine cannot be combined.")
+
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer,
         trust_remote_code=True,
@@ -880,8 +1316,33 @@ def main() -> None:
         "message_role": args.message_role,
         "system_prompt": args.system_prompt,
         "add_generation_prompt": add_generation_prompt,
+        "diagnose": args.diagnose,
     }
     print_json("STANDALONE_MODEL_SUMMARY_JSON", summary)
+
+    if args.diagnose:
+        for index, prompt in enumerate(prompts, start=1):
+            scenario_rows = run_diagnostic_suite(
+                checkpoint,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                device=device,
+                dtype=dtype,
+                max_new_tokens=args.max_new_tokens,
+                topk=args.topk,
+                message_role=args.message_role,
+                system_prompt=args.system_prompt,
+            )
+            for scenario_index, row in enumerate(scenario_rows, start=1):
+                print_json("DIAGNOSTIC_SCENARIO_JSON", row)
+                if args.text_report:
+                    print_diagnostic_case_report(row, index=scenario_index)
+
+            summary_row = summarize_diagnostic_suite(prompt, scenario_rows)
+            print_json("DIAGNOSTIC_SUMMARY_JSON", summary_row)
+            if args.text_report:
+                print_diagnostic_summary(summary_row, index=index)
+        return
 
     pure_results = []
     for index, prompt in enumerate(prompts, start=1):
@@ -906,9 +1367,7 @@ def main() -> None:
 
     del model
     del checkpoint
-    gc.collect()
-    if accelerator_available():
-        torch.accelerator.empty_cache()
+    clear_device_cache()
 
     vllm_results = run_vllm_generation(
         model=args.model,
