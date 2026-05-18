@@ -6,14 +6,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import time
+import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import StreamingResponse
 
 from tmp_rwkv7_pure_torch_generate import (
     NativeRWKV7,
@@ -29,6 +33,7 @@ from tmp_rwkv7_pure_torch_generate import (
 )
 
 Role = Literal["system", "user", "assistant", "tool"]
+OpenAIRole = Literal["system", "developer", "user", "assistant", "tool"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +51,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--served-model-name",
+        help=(
+            "Public model name exposed through the OpenAI-compatible /v1/* "
+            "endpoints. Defaults to the checkpoint filename."
+        ),
+    )
     parser.add_argument("--default-max-new-tokens", type=int, default=64)
     parser.add_argument("--default-topk", type=int, default=8)
     parser.add_argument(
@@ -103,10 +115,103 @@ class GenerateRequest(PrepareRequest):
     )
 
 
+class OpenAIContentPart(BaseModel):
+    type: str
+    text: str | None = None
+
+
+class OpenAIChatMessage(BaseModel):
+    role: OpenAIRole
+    content: str | list[OpenAIContentPart] | None = None
+
+
+class OpenAIChatCompletionRequest(BaseModel):
+    model: str | None = None
+    messages: list[OpenAIChatMessage]
+    max_tokens: int | None = Field(default=None, ge=0)
+    max_completion_tokens: int | None = Field(default=None, ge=0)
+    temperature: float | None = None
+    top_p: float | None = None
+    n: int = Field(default=1, ge=1)
+    stream: bool = False
+    stop: str | list[str] | None = None
+
+
+class OpenAICompletionRequest(BaseModel):
+    model: str | None = None
+    prompt: str
+    max_tokens: int | None = Field(default=None, ge=0)
+    temperature: float | None = None
+    top_p: float | None = None
+    n: int = Field(default=1, ge=1)
+    stream: bool = False
+    stop: str | list[str] | None = None
+
+
+def normalize_openai_role(role: OpenAIRole) -> Role:
+    if role == "developer":
+        return "system"
+    return role
+
+
+def flatten_message_content(
+    content: str | list[OpenAIContentPart] | None,
+) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+
+    parts: list[str] = []
+    for item in content:
+        if item.type == "text" and item.text is not None:
+            parts.append(item.text)
+    return "".join(parts)
+
+
+def normalize_openai_messages(
+    messages: list[OpenAIChatMessage],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": normalize_openai_role(message.role),
+            "content": flatten_message_content(message.content),
+        }
+        for message in messages
+    ]
+
+
+def render_fallback_chat_prompt(messages: list[dict[str, str]]) -> str:
+    chunks: list[str] = []
+    for message in messages:
+        label = message["role"].capitalize()
+        chunks.append(f"{label}: {message['content']}")
+
+    if not messages or messages[-1]["role"] != "assistant":
+        chunks.append("Assistant:")
+    return "\n\n".join(chunks)
+
+
+def trim_stop_sequences(text: str, stop: str | list[str] | None) -> str:
+    if stop is None:
+        return text
+
+    stop_values = [stop] if isinstance(stop, str) else stop
+    cut_positions = [
+        text.find(stop_value)
+        for stop_value in stop_values
+        if stop_value and text.find(stop_value) >= 0
+    ]
+    if not cut_positions:
+        return text
+    return text[: min(cut_positions)]
+
+
 class RWKVService:
     def __init__(self, args: argparse.Namespace) -> None:
         self.model_path = args.model
         self.tokenizer_path = args.tokenizer
+        self.served_model_name = args.served_model_name or Path(args.model).name
         self.device = torch.device(args.device)
         self.dtype = resolve_dtype(args.dtype)
         self.default_max_new_tokens = args.default_max_new_tokens
@@ -115,6 +220,12 @@ class RWKVService:
         self.default_message_role: Role = args.message_role
         self.default_system_prompt = args.system_prompt
         self.default_add_generation_prompt = not args.no_add_generation_prompt
+        self.accepted_model_names = {
+            self.served_model_name,
+            self.model_path,
+            Path(self.model_path).name,
+            Path(self.model_path).stem,
+        }
 
         self.tokenizer = load_tokenizer(
             args.tokenizer,
@@ -129,6 +240,7 @@ class RWKVService:
         )
         self.summary = {
             "model": self.model_path,
+            "served_model_name": self.served_model_name,
             "tokenizer": self.tokenizer_path,
             "device": str(self.device),
             "dtype": str(self.dtype),
@@ -156,6 +268,16 @@ class RWKVService:
     def close(self) -> None:
         self.model = None
         clear_device_cache()
+
+    def validate_requested_model(self, requested_model: str | None) -> str:
+        if requested_model is None:
+            return self.served_model_name
+        if requested_model not in self.accepted_model_names:
+            raise ValueError(
+                f"Requested model {requested_model!r} does not match the loaded "
+                f"model {self.served_model_name!r}."
+            )
+        return self.served_model_name
 
     def resolve_request_config(
         self,
@@ -201,6 +323,29 @@ class RWKVService:
         prepared["effective_request_config"] = config
         return prepared
 
+    def generate_from_rendered_prompt(
+        self,
+        rendered_prompt: str,
+        *,
+        max_new_tokens: int,
+        topk: int,
+        include_analysis: bool,
+    ) -> dict[str, object]:
+        result = run_prompt(
+            self.model,
+            self.tokenizer,
+            rendered_prompt,
+            max_new_tokens=max_new_tokens,
+            topk=topk,
+            apply_chat_template=False,
+            message_role="user",
+            system_prompt=None,
+            add_generation_prompt=False,
+        )
+        if include_analysis:
+            result["analysis"] = analyze_generation_case(result)
+        return result
+
     def generate(self, request: GenerateRequest) -> dict[str, object]:
         config = self.resolve_request_config(request)
         result = run_prompt(
@@ -235,6 +380,24 @@ class RWKVService:
             result["analysis"] = analyze_generation_case(result)
         return result
 
+    def render_chat_messages(
+        self,
+        messages: list[OpenAIChatMessage],
+    ) -> tuple[list[dict[str, str]], str]:
+        normalized_messages = normalize_openai_messages(messages)
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            try:
+                rendered_prompt = self.tokenizer.apply_chat_template(
+                    normalized_messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                return normalized_messages, str(rendered_prompt)
+            except Exception:
+                pass
+
+        return normalized_messages, render_fallback_chat_prompt(normalized_messages)
+
 
 def create_app(args: argparse.Namespace) -> FastAPI:
     service = RWKVService(args)
@@ -260,6 +423,9 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                 "summary": "/summary",
                 "prepare": "/prepare",
                 "generate": "/generate",
+                "models": "/v1/models",
+                "chat_completions": "/v1/chat/completions",
+                "completions": "/v1/completions",
                 "docs": "/docs",
             },
         }
@@ -271,6 +437,36 @@ def create_app(args: argparse.Namespace) -> FastAPI:
     @app.get("/summary")
     async def summary() -> dict[str, object]:
         return app.state.service.summary
+
+    @app.get("/v1/models")
+    async def list_models() -> dict[str, object]:
+        service = app.state.service
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": service.served_model_name,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "rwkv",
+                }
+            ],
+        }
+
+    @app.get("/v1/models/{model_name}")
+    async def retrieve_model(model_name: str) -> dict[str, object]:
+        service = app.state.service
+        try:
+            resolved_name = service.validate_requested_model(model_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        return {
+            "id": resolved_name,
+            "object": "model",
+            "created": 0,
+            "owned_by": "rwkv",
+        }
 
     @app.post("/prepare")
     async def prepare(request: PrepareRequest) -> dict[str, object]:
@@ -288,6 +484,237 @@ def create_app(args: argparse.Namespace) -> FastAPI:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except RuntimeError as exc:
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/v1/completions")
+    async def openai_completions(
+        request: OpenAICompletionRequest,
+    ) -> dict[str, object] | StreamingResponse:
+        service = app.state.service
+        try:
+            model_name = service.validate_requested_model(request.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if request.n != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Only n=1 is supported by this RWKV service.",
+            )
+
+        completion_id = f"cmpl-{uuid.uuid4().hex}"
+        created = int(time.time())
+        max_new_tokens = (
+            service.default_max_new_tokens
+            if request.max_tokens is None
+            else request.max_tokens
+        )
+        topk = service.default_topk
+
+        async with app.state.generate_lock:
+            try:
+                result = await run_in_threadpool(
+                    service.generate_from_rendered_prompt,
+                    request.prompt,
+                    max_new_tokens=max_new_tokens,
+                    topk=topk,
+                    include_analysis=False,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except RuntimeError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        output_text = trim_stop_sequences(result["generated_text"], request.stop)
+        finish_reason = (
+            "length" if len(result["generated_ids"]) >= max_new_tokens else "stop"
+        )
+        usage = {
+            "prompt_tokens": len(result["prompt_ids"]),
+            "completion_tokens": len(result["generated_ids"]),
+            "total_tokens": len(result["prompt_ids"]) + len(result["generated_ids"]),
+        }
+
+        if request.stream:
+
+            async def completion_stream() -> Any:
+                first_chunk = {
+                    "id": completion_id,
+                    "object": "text_completion",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "text": output_text,
+                            "logprobs": None,
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "text_completion",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "text": "",
+                            "logprobs": None,
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                completion_stream(),
+                media_type="text/event-stream",
+            )
+
+        return {
+            "id": completion_id,
+            "object": "text_completion",
+            "created": created,
+            "model": model_name,
+            "choices": [
+                {
+                    "text": output_text,
+                    "index": 0,
+                    "logprobs": None,
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": usage,
+        }
+
+    @app.post("/v1/chat/completions")
+    async def openai_chat_completions(
+        request: OpenAIChatCompletionRequest,
+    ) -> dict[str, object] | StreamingResponse:
+        service = app.state.service
+        try:
+            model_name = service.validate_requested_model(request.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if request.n != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Only n=1 is supported by this RWKV service.",
+            )
+
+        normalized_messages, rendered_prompt = service.render_chat_messages(
+            request.messages
+        )
+        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        created = int(time.time())
+        max_new_tokens = (
+            service.default_max_new_tokens
+            if request.max_completion_tokens is None and request.max_tokens is None
+            else (
+                request.max_completion_tokens
+                if request.max_completion_tokens is not None
+                else request.max_tokens
+            )
+        )
+        topk = service.default_topk
+
+        async with app.state.generate_lock:
+            try:
+                result = await run_in_threadpool(
+                    service.generate_from_rendered_prompt,
+                    rendered_prompt,
+                    max_new_tokens=max_new_tokens,
+                    topk=topk,
+                    include_analysis=False,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except RuntimeError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        output_text = trim_stop_sequences(result["generated_text"], request.stop)
+        finish_reason = (
+            "length" if len(result["generated_ids"]) >= max_new_tokens else "stop"
+        )
+        usage = {
+            "prompt_tokens": len(result["prompt_ids"]),
+            "completion_tokens": len(result["generated_ids"]),
+            "total_tokens": len(result["prompt_ids"]) + len(result["generated_ids"]),
+        }
+
+        if request.stream:
+
+            async def chat_stream() -> Any:
+                role_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                content_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": output_text},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(role_chunk, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(content_chunk, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                chat_stream(),
+                media_type="text/event-stream",
+            )
+
+        return {
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": output_text,
+                    },
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": usage,
+            "rendered_prompt": rendered_prompt,
+            "normalized_messages": normalized_messages,
+        }
 
     return app
 
