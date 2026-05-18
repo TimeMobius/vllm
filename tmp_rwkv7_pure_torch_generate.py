@@ -113,8 +113,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Run a fixed diagnostic suite for each prompt: raw continuation, "
-            "tokenizer chat template, a manual chat shell, and a float32 raw "
-            "reference when possible."
+            "tokenizer chat template, and a manual chat shell."
+        ),
+    )
+    parser.add_argument(
+        "--diagnose-include-float32",
+        action="store_true",
+        help=(
+            "Also run a float32 raw reference scenario in diagnostic mode. "
+            "Disabled by default because large checkpoints can OOM."
         ),
     )
     parser.add_argument(
@@ -394,6 +401,13 @@ class DiagnosticScenario:
     message_role: str
     system_prompt: str | None
     add_generation_prompt: bool
+
+
+@dataclass(frozen=True)
+class CheckpointSummary:
+    vocab_size: int
+    hidden_size: int
+    num_layers: int
 
 
 class NativeRWKV7:
@@ -979,6 +993,7 @@ def build_diagnostic_scenarios(
     dtype: torch.dtype,
     message_role: str,
     system_prompt: str | None,
+    include_float32_reference: bool,
 ) -> list[DiagnosticScenario]:
     scenarios = [
         DiagnosticScenario(
@@ -1020,7 +1035,7 @@ def build_diagnostic_scenarios(
         ),
     ]
 
-    if dtype != torch.float32:
+    if include_float32_reference and dtype != torch.float32:
         scenarios.append(
             DiagnosticScenario(
                 name="raw_float32_reference",
@@ -1050,12 +1065,14 @@ def run_diagnostic_suite(
     topk: int,
     message_role: str,
     system_prompt: str | None,
+    include_float32_reference: bool,
 ) -> list[dict[str, Any]]:
     scenarios = build_diagnostic_scenarios(
         prompt,
         dtype=dtype,
         message_role=message_role,
         system_prompt=system_prompt,
+        include_float32_reference=include_float32_reference,
     )
     rows: list[dict[str, Any]] = []
     active_dtype: torch.dtype | None = None
@@ -1221,6 +1238,21 @@ def summarize_diagnostic_suite(
     }
 
 
+def infer_checkpoint_summary(checkpoint: dict[str, torch.Tensor]) -> CheckpointSummary:
+    return CheckpointSummary(
+        vocab_size=int(checkpoint["emb.weight"].shape[0]),
+        hidden_size=int(checkpoint["emb.weight"].shape[1]),
+        num_layers=(
+            max(
+                int(key.split(".")[1])
+                for key in checkpoint
+                if key.startswith("blocks.")
+            )
+            + 1
+        ),
+    )
+
+
 def run_vllm_generation(
     *,
     model: str,
@@ -1339,20 +1371,16 @@ def main() -> None:
         )
         print_json("TOKENIZER_COMPARE_JSON", tokenizer_compare)
     checkpoint = load_checkpoint(Path(args.model))
-    model = NativeRWKV7(
-        checkpoint,
-        device=device,
-        dtype=dtype,
-    )
+    checkpoint_summary = infer_checkpoint_summary(checkpoint)
 
     summary = {
         "model": args.model,
         "tokenizer": args.tokenizer,
         "device": str(device),
         "dtype": str(dtype),
-        "vocab_size": model.vocab_size,
-        "hidden_size": model.hidden_size,
-        "num_layers": model.num_layers,
+        "vocab_size": checkpoint_summary.vocab_size,
+        "hidden_size": checkpoint_summary.hidden_size,
+        "num_layers": checkpoint_summary.num_layers,
         "tokenizer_full_vocab_size": len(tokenizer),
         "special_ids": {
             "bos_token_id": getattr(tokenizer, "bos_token_id", None),
@@ -1364,6 +1392,7 @@ def main() -> None:
         "system_prompt": args.system_prompt,
         "add_generation_prompt": add_generation_prompt,
         "diagnose": args.diagnose,
+        "diagnose_include_float32": args.diagnose_include_float32,
     }
     print_json("STANDALONE_MODEL_SUMMARY_JSON", summary)
 
@@ -1379,6 +1408,7 @@ def main() -> None:
                 topk=args.topk,
                 message_role=args.message_role,
                 system_prompt=args.system_prompt,
+                include_float32_reference=args.diagnose_include_float32,
             )
             for scenario_index, row in enumerate(scenario_rows, start=1):
                 print_json("DIAGNOSTIC_SCENARIO_JSON", row)
@@ -1390,6 +1420,12 @@ def main() -> None:
             if args.text_report:
                 print_diagnostic_summary(summary_row, index=index)
         return
+
+    model = NativeRWKV7(
+        checkpoint,
+        device=device,
+        dtype=dtype,
+    )
 
     pure_results = []
     for index, prompt in enumerate(prompts, start=1):
