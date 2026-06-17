@@ -11,8 +11,10 @@ from typing import Any, cast, overload
 
 import regex as re
 from transformers import BatchEncoding
+from transformers.utils import chat_template_utils as hf_chat_utils
 
 from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
+from vllm.logger import init_logger
 
 from .protocol import TokenizerLike
 
@@ -20,6 +22,14 @@ try:
     from pyrwkv_tokenizer import WorldTokenizer as FastWorldTokenizer
 except ImportError:
     FastWorldTokenizer = None
+
+
+logger = init_logger(__name__)
+
+# Tokens shaped like ``<|...|>`` that already exist in the vocab are treated
+# as special by default (so encode/decode keep them as a single token even
+# when the model directory's ``tokenizer_config.json`` doesn't list them).
+_AUTO_SPECIAL_TOKEN_RE = re.compile(rb"^<\|[^<>|\s]+\|>$")
 
 
 class _TrieNode:
@@ -89,16 +99,53 @@ class RWKVTokenizer(TokenizerLike):
         root_path = Path(path_or_repo_id)
         vocab_path = cls._resolve_vocab_path(root_path)
         truncation_side = kwargs.pop("truncation_side", "left")
-        metadata = (
-            cls._load_tokenizer_metadata(root_path)
-            if root_path.is_dir()
-            else cls._load_tokenizer_metadata(vocab_path.parent)
-        )
+
+        # Allow callers (or env-overrides) to point at a separate directory
+        # that holds tokenizer_config.json / chat_template.jinja when the
+        # vocab .txt lives outside a model snapshot dir.
+        metadata_dir_kw = kwargs.pop("metadata_dir", None)
+        chat_template_kw = kwargs.pop("chat_template", None)
+        extra_special_tokens = kwargs.pop("extra_special_tokens", None)
+
+        if metadata_dir_kw is not None:
+            metadata_root = Path(metadata_dir_kw)
+        elif root_path.is_dir():
+            metadata_root = root_path
+        else:
+            metadata_root = vocab_path.parent
+
+        metadata = cls._load_tokenizer_metadata(metadata_root)
+
+        # User-provided chat template wins over what the model dir ships.
+        if chat_template_kw is not None:
+            metadata["chat_template"] = cls._read_chat_template(chat_template_kw)
+
+        if extra_special_tokens:
+            ordered = list(metadata.get("ordered_special_tokens", []))
+            for tok in extra_special_tokens:
+                if isinstance(tok, str) and tok and tok not in ordered:
+                    ordered.append(tok)
+            metadata["ordered_special_tokens"] = ordered
+
         return cls(
             vocab_path=vocab_path,
             truncation_side=truncation_side,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _read_chat_template(value: str | Path) -> str | None:
+        """Accept either a jinja string or a path to a .jinja/.txt file."""
+        if isinstance(value, Path):
+            return value.read_text(encoding="utf-8")
+        if isinstance(value, str):
+            if "\n" in value or "{" in value or "{%" in value or "{{" in value:
+                return value
+            candidate = Path(value)
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+            return value
+        return None
 
     @staticmethod
     def _resolve_vocab_path(path_or_repo_id: str | Path) -> Path:
@@ -177,11 +224,23 @@ class RWKVTokenizer(TokenizerLike):
                     ordered_special_tokens.append(field_token)
                 special_token_fields.setdefault(key, field_token)
 
+        chat_template_value = tokenizer_config.get("chat_template")
+        if not isinstance(chat_template_value, str) or not chat_template_value:
+            for candidate in ("chat_template.jinja", "chat_template.txt"):
+                candidate_path = path / candidate
+                if candidate_path.is_file():
+                    try:
+                        chat_template_value = candidate_path.read_text(encoding="utf-8")
+                    except OSError:
+                        chat_template_value = None
+                    if chat_template_value:
+                        break
+
         return {
             "ordered_special_tokens": ordered_special_tokens,
             "explicit_special_token_ids": explicit_special_token_ids,
             "special_token_fields": special_token_fields,
-            "chat_template": tokenizer_config.get("chat_template"),
+            "chat_template": chat_template_value,
         }
 
     def __init__(
@@ -262,6 +321,9 @@ class RWKVTokenizer(TokenizerLike):
         )
         self._special_token_pattern = self._build_special_token_pattern()
         chat_template = metadata.get("chat_template") if metadata else None
+        self._chat_template: str | None = (
+            chat_template if isinstance(chat_template, str) else None
+        )
         bos_token = special_fields.get("bos_token")
         self._chat_prefix = (
             bos_token
@@ -332,8 +394,36 @@ class RWKVTokenizer(TokenizerLike):
                 ]
             )
         )
-        explicit_special_token_ids = metadata.get("explicit_special_token_ids", {})
+        explicit_special_token_ids = dict(
+            metadata.get("explicit_special_token_ids", {})
+        )
         special_fields = metadata.get("special_token_fields", {})
+
+        # Always also pick up vocab tokens that look like reserved markers
+        # (``<|im_start|>`` style). Newer RWKV vocabs ship these but their
+        # ``tokenizer_config.json`` may not list them. Preserve the historical
+        # ``im_start, im_end, endoftext, ...`` ordering so the fallback default
+        # set is unchanged.
+        auto_specials_priority = (b"<|im_start|>", b"<|im_end|>", b"<|endoftext|>")
+        prioritized: list[bytes] = [
+            tok for tok in auto_specials_priority if tok in self._token_to_id
+        ]
+        remaining: list[bytes] = sorted(
+            (
+                tok
+                for tok in self._token_to_id
+                if _AUTO_SPECIAL_TOKEN_RE.match(tok) and tok not in prioritized
+            ),
+            key=lambda tok: self._token_to_id[tok],
+        )
+        for token_bytes in (*prioritized, *remaining):
+            token_str = token_bytes.decode("utf-8")
+            if token_str in ordered_special_tokens:
+                continue
+            ordered_special_tokens.append(token_str)
+            explicit_special_token_ids.setdefault(
+                token_str, self._token_to_id[token_bytes]
+            )
 
         if ordered_special_tokens:
             next_token_id = (
@@ -352,16 +442,7 @@ class RWKVTokenizer(TokenizerLike):
                 special_tokens[token] = token_id
             return special_tokens, special_fields
 
-        default_special_tokens: dict[str, int] = {}
-        for token_bytes in (
-            b"<|im_start|>",
-            b"<|im_end|>",
-            b"<|endoftext|>",
-        ):
-            token_id = self._token_to_id.get(token_bytes)
-            if token_id is not None:
-                default_special_tokens[token_bytes.decode("utf-8")] = token_id
-        return default_special_tokens, {}
+        return {}, {}
 
     def _resolve_named_special_id(self, token: str | None) -> int:
         if token is None:
@@ -581,16 +662,100 @@ class RWKVTokenizer(TokenizerLike):
             max_length=max_length,
         )
 
+    def get_chat_template(
+        self,
+        chat_template: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> str | None:
+        del tools
+        if isinstance(chat_template, str) and chat_template:
+            return chat_template
+        return self._chat_template
+
+    @staticmethod
+    def _coerce_messages_to_text(
+        messages: list[ChatCompletionMessageParam],
+    ) -> list[dict[str, Any]]:
+        """``hf_chat_utils.render_jinja_template`` only accepts string content.
+
+        Flatten OpenAI-style multimodal content lists down to plain text so
+        the jinja template still gets the message body.
+        """
+        flat: list[dict[str, Any]] = []
+        for msg in messages:
+            new_msg = dict(msg)
+            content = new_msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            text_parts.append(str(item.get("text", "")))
+                        elif "text" in item:
+                            text_parts.append(str(item["text"]))
+                    elif isinstance(item, str):
+                        text_parts.append(item)
+                new_msg["content"] = "".join(text_parts)
+            elif content is None:
+                new_msg["content"] = ""
+            flat.append(new_msg)
+        return flat
+
     def apply_chat_template(
         self,
         messages: list[ChatCompletionMessageParam],
         tools: list[dict[str, Any]] | None = None,
+        chat_template: str | None = None,
         **kwargs,
     ) -> str | list[int]:
+        add_generation_prompt = kwargs.pop("add_generation_prompt", False)
+        continue_final_message = kwargs.pop("continue_final_message", False)
+        tokenize = kwargs.pop("tokenize", False)
+        # ``return_dict`` is irrelevant for non-HF tokenizers; we only ever
+        # return the rendered string or its token ids.
+        kwargs.pop("return_dict", None)
+        kwargs.pop("conversation", None)
+        documents = kwargs.pop("documents", None)
+
+        template = self.get_chat_template(chat_template, tools=tools)
+
+        if isinstance(template, str) and template:
+            try:
+                flat_messages = self._coerce_messages_to_text(list(messages))
+                rendered_batch = hf_chat_utils.render_jinja_template(
+                    conversations=[flat_messages],
+                    tools=tools,
+                    documents=documents,
+                    chat_template=template,
+                    add_generation_prompt=add_generation_prompt,
+                    continue_final_message=continue_final_message,
+                    **kwargs,
+                )
+                if isinstance(rendered_batch, tuple):
+                    rendered_batch = rendered_batch[0]
+                rendered = (
+                    rendered_batch[0]
+                    if isinstance(rendered_batch, list) and rendered_batch
+                    else rendered_batch
+                )
+            except Exception:
+                logger.warning(
+                    "RWKV jinja chat template rendering failed; falling back "
+                    "to the built-in role-prefix rendering. "
+                    "Template length: %d chars.",
+                    len(template),
+                    exc_info=True,
+                )
+            else:
+                if not isinstance(rendered, str):
+                    rendered = str(rendered)
+                return self.encode(rendered) if tokenize else rendered
+
         if tools:
-            raise ValueError("RWKV txt tokenizer does not support tool schemas.")
-        add_generation_prompt = kwargs.get("add_generation_prompt", False)
-        tokenize = kwargs.get("tokenize", False)
+            raise ValueError(
+                "RWKV txt tokenizer fallback rendering does not support tool "
+                "schemas. Provide a jinja chat template via `chat_template=...`."
+            )
 
         rendered_parts: list[str] = [self._chat_prefix] if self._chat_prefix else []
         for message in messages:

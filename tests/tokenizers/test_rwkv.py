@@ -186,3 +186,146 @@ def test_rwkv_tokenizer_uses_hf_chat_template_prefix(tmp_path):
         [{"role": "user", "content": "ab"}],
         tokenize=True,
     ) == [0, 4, 5, 6, 7, 8, 9, 1, 2, 10]
+
+
+def _write_im_vocab(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "1 'a' 1",
+                "2 'b' 1",
+                "3 'ab' 2",
+                "4 '\\n\\n' 2",
+                "5 ' ' 1",
+                "6 'A' 1",
+                "7 's' 1",
+                "8 'i' 1",
+                "9 't' 1",
+                "10 'n' 1",
+                "11 ':' 1",
+                "12 'U' 1",
+                "13 'e' 1",
+                "14 'r' 1",
+                "15 'S' 1",
+                "16 'y' 1",
+                "17 'm' 1",
+                "65530 '<|im_start|>' 12",
+                "65531 '<|im_end|>' 10",
+                "65532 '<|endoftext|>' 13",
+                "65533 '<|think|>' 9",
+                "65534 '<|tool_call|>' 13",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+_IM_TEMPLATE = (
+    "{%- for message in messages -%}"
+    "{%- if message['role'] == 'system' -%}"
+    "{{ '<|im_start|>System: ' + message['content'] + '<|im_end|>\\n' }}"
+    "{%- elif message['role'] == 'user' -%}"
+    "{{ '<|im_start|>User: ' + message['content'] + '<|im_end|>\\n' }}"
+    "{%- elif message['role'] == 'assistant' -%}"
+    "{{ '<|im_start|>Assistant: ' + message['content'] + '<|im_end|>\\n' }}"
+    "{%- endif -%}"
+    "{%- endfor -%}"
+    "{%- if add_generation_prompt -%}"
+    "{{ '<|im_start|>Assistant: <think>\\n\\n</think>\\n\\n' }}"
+    "{%- endif -%}"
+)
+
+
+def test_rwkv_tokenizer_auto_registers_pipe_specials_from_vocab(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_im_vocab(vocab_path)
+
+    tokenizer = get_tokenizer(str(vocab_path))
+
+    # All <|...|> tokens that exist in the vocab become single-token specials,
+    # regardless of whether tokenizer_config.json listed them.
+    expected = {
+        "<|im_start|>": 65530,
+        "<|im_end|>": 65531,
+        "<|endoftext|>": 65532,
+        "<|think|>": 65533,
+        "<|tool_call|>": 65534,
+    }
+    for token, token_id in expected.items():
+        assert tokenizer.convert_tokens_to_ids(token) == token_id
+
+    # Each special must encode as exactly one token, not a byte split.
+    encoded = tokenizer.encode("<|im_start|><|think|><|tool_call|><|im_end|>")
+    assert encoded == [65530, 65533, 65534, 65531]
+
+
+def test_rwkv_tokenizer_renders_external_jinja_chat_template(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_im_vocab(vocab_path)
+
+    tokenizer = get_tokenizer(str(vocab_path), chat_template=_IM_TEMPLATE)
+
+    messages = [
+        {"role": "system", "content": "ab"},
+        {"role": "user", "content": "ab"},
+    ]
+    rendered = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+
+    assert rendered == (
+        "<|im_start|>System: ab<|im_end|>\n"
+        "<|im_start|>User: ab<|im_end|>\n"
+        "<|im_start|>Assistant: <think>\n\n</think>\n\n"
+    )
+
+    # The explicit kwarg passed to apply_chat_template must win over the one
+    # baked into the tokenizer.
+    overridden = tokenizer.apply_chat_template(
+        messages,
+        chat_template="{% for m in messages %}{{ m['content'] }}|{% endfor %}",
+    )
+    assert overridden == "ab|ab|"
+
+
+def test_rwkv_tokenizer_auto_loads_chat_template_jinja_from_vocab_dir(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_im_vocab(vocab_path)
+    (tmp_path / "chat_template.jinja").write_text(_IM_TEMPLATE, encoding="utf-8")
+
+    tokenizer = get_tokenizer(str(vocab_path))
+
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "ab"}],
+        add_generation_prompt=True,
+    )
+    assert rendered == (
+        "<|im_start|>User: ab<|im_end|>\n<|im_start|>Assistant: <think>\n\n</think>\n\n"
+    )
+
+
+def test_rwkv_tokenizer_get_chat_template_returns_loaded_template(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_im_vocab(vocab_path)
+
+    tokenizer = get_tokenizer(str(vocab_path), chat_template=_IM_TEMPLATE)
+
+    assert tokenizer.get_chat_template() == _IM_TEMPLATE
+    assert tokenizer.get_chat_template("foo") == "foo"  # caller override wins
+
+
+def test_rwkv_tokenizer_jinja_failure_falls_back_to_role_prefix(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_im_vocab(vocab_path)
+
+    bad_template = "{% if not_a_var %}{{ raise_undefined }}"  # syntactically broken
+    tokenizer = get_tokenizer(str(vocab_path), chat_template=bad_template)
+
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "ab"}],
+        add_generation_prompt=True,
+    )
+
+    # Falls back to the legacy hardcoded ``System:/User:/Assistant:`` rendering
+    # so the engine still receives something usable instead of crashing.
+    assert "User: ab" in rendered
+    assert rendered.endswith("Assistant:")

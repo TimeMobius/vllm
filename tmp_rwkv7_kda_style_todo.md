@@ -1506,3 +1506,110 @@ compile 路径已经不是“能不能跑通”的问题了。现在最该区分
         - `(B=64,T=1)`: `0.4928ms -> 1.5707ms`
     - conclusion: recurrent-core speedup needs CUDA shared-memory style, not
       this Triton blocking
+
+## 2026-06-17 chat_template 行为审计 (新发现)
+
+诊断脚本：
+
+- `tmp_rwkv7_chat_template_check.py` — 离线 tokenizer 行为
+- `tmp_rwkv7_chat_template_e2e.py` — `LLM.chat(...)` 端到端
+
+结论：当前 `RWKVTokenizer.apply_chat_template` 完全忽略外部 jinja 模板。
+
+证据：
+
+- [vllm/tokenizers/rwkv.py:584](vllm/tokenizers/rwkv.py:584) 的 `apply_chat_template`
+  签名只接 `messages`、`tools`、`**kwargs`，并在内部用硬编码的
+  `_CHAT_ROLE_PREFIX = {system: "System: ", user: "User: ", ...}` 拼接。
+  没有读取 kwargs 里的 `chat_template`。
+- [vllm/renderers/rwkv.py:53](vllm/renderers/rwkv.py:53) 调用时已经把
+  `chat_template=<jinja string>` 传进来了（实测 kwargs 里看到
+  `'chat_template': '<7847 chars>'`），但被 ignore。
+- e2e 实测下渲染出来仍然是
+  `<|rwkv_tokenizer_end_of_text|>System: ...\n\nUser: ...\n\nAssistant:`
+  没有任何 `<|im_start|>` / `<|im_end|>`。
+
+side issues:
+
+- vocab `rwkv_vocab_v20260603.txt` 比模型自带的 `rwkv_vocab_v20230424.txt`
+  多 5 个特殊 token (`<|im_start|>` `<|im_end|>` `<|endoftext|>` `<|think|>`
+  `<|tool_call|>`)。模型目录的 `tokenizer_config.json` 没把它们注册成 special。
+  即使将来开 jinja 渲染，也要把这 5 个 token 注入 special_token_map (尤其是
+  `<|think|>` 与 `<|tool_call|>`，否则会被字节级拆解而非作为单 token)。
+- `<|endoftext|>` 已经在自动 fallback 的默认 special set 里 (`b"<|endoftext|>"`)，
+  但 `<|think|>` 和 `<|tool_call|>` 没有 fallback。
+
+环境侧需要先解决：
+
+- `vllm-dev` (conda env, torch 2.10+cu128) 加载 `vllm._C_stable_libtorch`
+  报 `libcudart.so.13` not found。
+- 原因：`vllm/_C_stable_libtorch.abi3.so` 是 4/17 在 `.venv` (torch
+  2.10+cu130) 下构建的，没跟着 `vllm-dev` 的 cu128 重建。
+- 临时 workaround：用 `.venv/bin/python` 跑 vllm。长期建议：
+  在 `vllm-dev` 重新跑 `cmake --build build_manual_c --target _C_stable_libtorch`，
+  或者把这两个 env 的 torch CUDA 版本对齐。
+
+下一步 TODO：
+
+- [ ] 修 `RWKVTokenizer.apply_chat_template`：当上层传入
+  `chat_template` 时走 `transformers.utils.chat_template_utils.apply_chat_template`
+  (类似 `vllm/tokenizers/grok2.py:430`)，渲染后再用 `self.encode(...)` tokenize；
+  不传 `chat_template` 才走当前的硬编码 fallback。
+- [ ] 同时实现 `RWKVTokenizer.get_chat_template(chat_template, tools=...)`，
+  让 `vllm/renderers/hf.py:resolve_chat_template` 的第 3 优先级
+  (`AutoTokenizer chat template`) 也能命中：返回 `chat_template or
+  self._chat_template`。`_chat_template` 从 `tokenizer_config.json` 读，
+  没有再 fallback `None`。
+- [ ] 把缺失的 5 个 special token (含 `<|think|>` `<|tool_call|>`)
+  作为默认 fallback 加入 `_build_special_token_map`，或在 `from_pretrained`
+  的 `metadata` 里支持外部 `additional_special_tokens` 输入。
+- [ ] 加 pytest 覆盖：
+    - 用户传入的 jinja `chat_template` 必须被使用
+    - 渲染结果必须与 `final_pattern.txt` 在标准 SFT 用例上一致
+    - vocab 中存在的 `<|im_start|>/<|im_end|>` 必须 encode 成单 token，
+      不被字节级拆开
+
+## 2026-06-17 chat_template 适配落地 ✅
+
+实现：
+
+- [vllm/tokenizers/rwkv.py](vllm/tokenizers/rwkv.py) 重写 `apply_chat_template`
+  支持外部 `chat_template` kwarg，调用
+  `transformers.utils.chat_template_utils.render_jinja_template` 走 jinja。
+  渲染失败时自动回退到原硬编码 `System:/User:/Assistant:` 拼接。
+- 新增 `RWKVTokenizer.get_chat_template(...)`，与 `grok2.py` 保持一致，
+  让 `vllm/renderers/hf.py:resolve_chat_template` 第 3 优先级也能命中。
+- `from_pretrained` 接受 3 个新 kwargs：
+    - `chat_template`：jinja 字符串或 `.jinja` 文件路径，覆盖模型目录默认。
+    - `metadata_dir`：tokenizer_config.json / chat_template.jinja 的查找根。
+    - `extra_special_tokens`：补充 special token 名字。
+- `_load_tokenizer_metadata` 现在也会自动找 `chat_template.jinja` /
+  `chat_template.txt` 文件作为后备模板源（当 tokenizer_config.json 没带
+  `chat_template` 时）。
+- `_build_special_token_map` 自动扫描 vocab 中所有匹配 `<\|...\|>` pattern
+  的 token 注册为 special，无论 `tokenizer_config.json` 有没有列出。
+  保留了原来 `(im_start, im_end, endoftext)` 的优先顺序，剩下按 token id 排序。
+
+新词表 `rwkv_vocab_v20260603.txt` 适配实测：
+
+- 5 个新增 special token (`<|im_start|>` `<|im_end|>` `<|endoftext|>`
+  `<|think|>` `<|tool_call|>`) 全部被识别为单 token。
+- jinja 渲染输出格式完全符合 SFT 模板：
+  `<|im_start|>System: ...<|im_end|>\n<|im_start|>User: ...<|im_end|>\n<|im_start|>Assistant: <think>\n\n</think>\n\n`
+
+测试：
+
+- `tests/tokenizers/test_rwkv.py` 11 项全部通过（5 项历史用例 + 6 项新加）。
+- `tmp_rwkv7_chat_template_check.py` 离线 tokenizer 行为全部正确。
+- `tmp_rwkv7_chat_template_e2e.py` 0.4B vLLM 引擎 e2e：
+    - `LLM(tokenizer=<vocab path>)` 能自动加载父目录 `chat_template.jinja`。
+    - `LLM.chat(messages, chat_template=...)` 显式传入也走 jinja。
+    - 模型实际输出仍是基座续写（`<think>\n\n<think>...`），因为
+      `RWKV7-Goose-World2.9-0.4B-HF` 没在这个 SFT 模板上微调过。
+      这是模型权重侧的事，与 chat template 适配无关。
+
+后续如果模型升级到带 SFT 的版本，输出语义就会跟 `final_pattern.txt` 对齐。
+
+环境注意：仓库里 `vllm/_C_stable_libtorch.abi3.so` 是 4/17 在 `.venv`
+(torch cu130) 下构建的，conda `vllm-dev` (cu128) 加载会报
+`libcudart.so.13`。当前所有 chat template 适配工作都用 `.venv/bin/python` 跑通。
