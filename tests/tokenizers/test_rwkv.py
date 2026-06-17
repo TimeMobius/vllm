@@ -313,6 +313,27 @@ def test_rwkv_tokenizer_get_chat_template_returns_loaded_template(tmp_path):
     assert tokenizer.get_chat_template("foo") == "foo"  # caller override wins
 
 
+def test_rwkv_tokenizer_accepts_conversation_alias(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_im_vocab(vocab_path)
+
+    tokenizer = get_tokenizer(str(vocab_path), chat_template=_IM_TEMPLATE)
+
+    rendered = tokenizer.apply_chat_template(
+        conversation=[
+            {"role": "system", "content": "ab"},
+            {"role": "user", "content": "ab"},
+        ],
+        add_generation_prompt=True,
+    )
+
+    assert rendered == (
+        "<|im_start|>System: ab<|im_end|>\n"
+        "<|im_start|>User: ab<|im_end|>\n"
+        "<|im_start|>Assistant: <think>\n\n</think>\n\n"
+    )
+
+
 def test_rwkv_tokenizer_jinja_failure_falls_back_to_role_prefix(tmp_path):
     vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
     _write_im_vocab(vocab_path)

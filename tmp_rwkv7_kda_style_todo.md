@@ -1613,3 +1613,21 @@ side issues:
 环境注意：仓库里 `vllm/_C_stable_libtorch.abi3.so` 是 4/17 在 `.venv`
 (torch cu130) 下构建的，conda `vllm-dev` (cu128) 加载会报
 `libcudart.so.13`。当前所有 chat template 适配工作都用 `.venv/bin/python` 跑通。
+
+## 2026-06-17 chat_template 兼容性 follow-up
+
+- [x] 对齐 Grok/HF 风格调用：`RWKVTokenizer.apply_chat_template(...)`
+  现在也接受 `conversation=` 别名，避免只支持 RWKV renderer 的
+  `messages` 位置参数。
+- [x] 增加 tokenizer pytest 覆盖：
+    - `test_rwkv_tokenizer_accepts_conversation_alias`
+- [x] 明确 `final_pattern.txt` 的定位：
+    - 它是多个 SFT sample 拼接后的参考格式；
+    - 单次正常 chat 推理只需要按 `chat_template.jinja` 渲染当前 messages，
+      通常停在 assistant generation prompt；
+    - 本轮不新增“多 sample + EOD padding”脚本，避免把 SFT 打包语义混进
+      vLLM 在线 chat template 适配。
+- 验证：
+    - `.venv/bin/python -m py_compile vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
+    - `.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
+      => `13 passed`

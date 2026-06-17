@@ -703,18 +703,26 @@ class RWKVTokenizer(TokenizerLike):
 
     def apply_chat_template(
         self,
-        messages: list[ChatCompletionMessageParam],
+        messages: list[ChatCompletionMessageParam] | None = None,
         tools: list[dict[str, Any]] | None = None,
         chat_template: str | None = None,
         **kwargs,
     ) -> str | list[int]:
+        conversation = kwargs.pop("conversation", None)
+        if messages is None:
+            if conversation is None:
+                raise TypeError(
+                    "apply_chat_template() missing required argument: "
+                    "'messages' or 'conversation'"
+                )
+            messages = conversation
+
         add_generation_prompt = kwargs.pop("add_generation_prompt", False)
         continue_final_message = kwargs.pop("continue_final_message", False)
         tokenize = kwargs.pop("tokenize", False)
         # ``return_dict`` is irrelevant for non-HF tokenizers; we only ever
         # return the rendered string or its token ids.
         kwargs.pop("return_dict", None)
-        kwargs.pop("conversation", None)
         documents = kwargs.pop("documents", None)
 
         template = self.get_chat_template(chat_template, tools=tools)

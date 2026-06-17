@@ -3308,3 +3308,22 @@ Rejected Triton alternative:
       official shared-memory block structure
     - do not spend more time on this Triton shape unless a fundamentally
       different blocking strategy is available
+
+## 2026-06-17 RWKV7 chat template note
+
+- Current RWKV tokenizer path supports `chat_template.jinja` via
+  `RWKVTokenizer.apply_chat_template(...)`.
+- Use `rwkv_vocab_v20260603.txt` for the newer special markers:
+  `<|im_start|>`, `<|im_end|>`, `<|endoftext|>`, `<|think|>`,
+  `<|tool_call|>`.
+- These markers are auto-registered from the vocab as special tokens, so they
+  encode as single ids even if `tokenizer_config.json` does not list them.
+- `apply_chat_template` accepts both RWKV renderer-style `messages` and
+  HF/Grok-style `conversation=` inputs.
+- `final_pattern.txt` is a packed SFT-format reference containing multiple
+  samples and EOD padding. It is useful for manual format comparison, but a
+  normal online chat request should only render the active messages through
+  the template and stop at the assistant prompt when generation is requested.
+- Quick regression commands:
+    - `.venv/bin/python -m py_compile vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
+    - `.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
