@@ -19,6 +19,8 @@ from .params import ChatParams
 
 
 class RWKVRenderer(BaseRenderer[RWKVTokenizer]):
+    _DEFAULT_STOP_TOKENS = ("<|im_end|>", "<|endoftext|>")
+
     @classmethod
     def from_config(  # type: ignore[override]
         cls,
@@ -35,6 +37,26 @@ class RWKVRenderer(BaseRenderer[RWKVTokenizer]):
             )
 
         return cls(config, tokenizer)
+
+    def get_generation_config_fields(
+        self, generation_config_fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        tokenizer = self.tokenizer
+        if tokenizer is None:
+            return generation_config_fields
+
+        stop_token_ids: list[int] = []
+        for token in self._DEFAULT_STOP_TOKENS:
+            token_id = tokenizer.convert_tokens_to_ids(token)
+            if token_id is not None and token_id not in stop_token_ids:
+                stop_token_ids.append(token_id)
+
+        if not stop_token_ids:
+            return generation_config_fields
+
+        updated_generation_config = dict(generation_config_fields)
+        updated_generation_config["eos_token_id"] = stop_token_ids
+        return updated_generation_config
 
     def render_messages(
         self,

@@ -3390,3 +3390,22 @@ Rejected Triton alternative:
     - `.venv/bin/python -m pytest tests/tool_parsers/test_minimax_m2_tool_parser.py -q`
     - `.venv/bin/python -m pytest tests/tool_parsers/test_rwkv_tool_parser.py tests/reasoning/test_rwkv_reasoning_parser.py -q`
     - `.venv/bin/pre-commit run ruff-check --files vllm/tool_parsers/rwkv_tool_parser.py tests/tool_parsers/test_rwkv_tool_parser.py vllm/tool_parsers/__init__.py`
+
+## 2026-06-18 RWKV default stop token note
+
+- RWKV renderer now overrides generation config `eos_token_id` with the
+  tokenizer ids for:
+    - `<|im_end|>`
+    - `<|endoftext|>`
+- This intentionally replaces stale model-dir `generation_config.json` values
+  such as `eos_token_id: 2`; the engine stop set should no longer include `2`
+  for normal RWKV tokenizer-backed serving.
+- With the current `rwkv_vocab_v20260603.txt`, the resolved ids are:
+    - `<|im_end|>` -> `65531`
+    - `<|endoftext|>` -> `65532`
+- Scope note:
+    - this fixes token-id stopping for generated special tokens
+    - if the model spells strings like `<|endoftext|>` using ordinary tokens,
+      request/server stop strings are still needed to suppress that text path
+- Regression command:
+    - `.venv/bin/python -m pytest tests/renderers/test_rwkv.py -q`

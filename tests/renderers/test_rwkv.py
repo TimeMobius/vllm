@@ -7,6 +7,7 @@ from typing import Any
 
 from vllm.renderers import ChatParams
 from vllm.renderers.rwkv import RWKVRenderer
+from vllm.sampling_params import SamplingParams
 from vllm.tokenizers.rwkv import RWKVTokenizer
 
 
@@ -96,3 +97,29 @@ def test_rwkv_renderer_renders_chat_messages(tmp_path):
     assert [message["role"] for message in conversation] == ["system", "user"]
     assert "prompt" in prompt
     assert prompt["prompt"].startswith("System: hi\n\nUser: hi\n\nAssistant:")
+
+
+def test_rwkv_renderer_overrides_generation_eos_tokens(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20250609.txt"
+    _write_vocab(vocab_path)
+    tokenizer = RWKVTokenizer.from_pretrained(vocab_path)
+    renderer = RWKVRenderer(
+        MockVllmConfig(
+            MockModelConfig(tokenizer=str(vocab_path)),
+            parallel_config=MockParallelConfig(),
+        ),
+        tokenizer=tokenizer,
+    )
+
+    generation_config = renderer.get_generation_config_fields({"eos_token_id": 2})
+
+    assert generation_config["eos_token_id"] == [16, 14]
+
+    sampling_params = SamplingParams()
+    sampling_params.update_from_generation_config(
+        generation_config,
+        renderer.get_eos_token_id(),
+    )
+
+    assert sampling_params.stop_token_ids == [16]
+    assert sampling_params.all_stop_token_ids == {14, 16}

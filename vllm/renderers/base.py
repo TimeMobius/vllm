@@ -243,6 +243,11 @@ class BaseRenderer(ABC, Generic[_T]):
 
         return self.tokenizer.eos_token_id
 
+    def get_generation_config_fields(
+        self, generation_config_fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        return generation_config_fields
+
     def get_dec_start_token_id(self) -> int:
         """
         Obtain the decoder start token id employed by an encoder/decoder model,

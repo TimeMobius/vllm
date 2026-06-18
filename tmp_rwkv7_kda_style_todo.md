@@ -1781,3 +1781,30 @@ side issues:
   e2e 用例，断言 `finish_reason == "tool_calls"` 和 `message.tool_calls`。
 - [ ] 如需更细粒度 streaming 参数增量，可把当前“一次发完整 invoke”的策略
   扩展为 name/arguments token-level delta；当前实现先追求稳定和不泄漏 XML。
+
+## 2026-06-18 RWKV 默认停止 token ✅
+
+目标：
+
+- RWKV vLLM 路径默认只使用当前聊天模板需要的结束 token：
+    - `<|im_end|>`
+    - `<|endoftext|>`
+- 不再继承模型目录旧 `generation_config.json` 里的 `eos_token_id: 2`。
+
+实现：
+
+- `RWKVRenderer.get_generation_config_fields(...)` 会用 tokenizer 实际 vocab
+  解析上述两个 token，并覆盖 generation config 的 `eos_token_id`。
+- `InputProcessor` 初始化时先构建 renderer，再让 renderer 调整 generation
+  config。
+- `BaseRenderer` 新增默认 no-op hook，其他模型行为不变。
+
+本地验证：
+
+- `.venv/bin/python -m pytest tests/renderers/test_rwkv.py -q`
+  => `2 passed`
+
+后续 TODO：
+
+- [ ] 如果要默认拦截模型“用普通 token 拼出来”的 `<|endoftext|>` /
+  `<|im_end|>` 文本，还需要在 OpenAI Chat 默认请求参数层合并 stop strings。

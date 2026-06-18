@@ -50,9 +50,10 @@ class InputProcessor:
         self.structured_outputs_config = vllm_config.structured_outputs_config
         self.observability_config = vllm_config.observability_config
 
-        self.generation_config_fields = model_config.try_get_generation_config()
-
         self.renderer = renderer or renderer_from_config(vllm_config)
+        self.generation_config_fields = self.renderer.get_generation_config_fields(
+            model_config.try_get_generation_config()
+        )
 
         self.supports_mm_inputs = mm_registry.supports_multimodal_inputs(model_config)
         self.mm_encoder_cache_size = 0
