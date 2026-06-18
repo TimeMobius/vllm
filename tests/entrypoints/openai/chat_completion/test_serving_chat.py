@@ -22,7 +22,10 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
-from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm.entrypoints.openai.chat_completion.serving import (
+    RWKV_NO_THINKING_BAD_WORDS,
+    OpenAIServingChat,
+)
 from vllm.entrypoints.openai.engine.protocol import (
     ErrorResponse,
     RequestResponseMetadata,
@@ -626,13 +629,16 @@ def test_async_serving_chat_init():
     assert serving_completion.chat_template == CHAT_TEMPLATE
 
 
-def test_serving_chat_sets_rwkv_default_stop_strings():
+def _build_rwkv_serving_chat(
+    *,
+    default_chat_template_kwargs: dict[str, Any] | None = None,
+) -> OpenAIServingChat:
     engine = MockEngine()
-    engine.model_config.hf_config.model_type = "rwkv7"
+    engine.model_config.hf_config = MockHFConfig(model_type="rwkv7")
     models = OpenAIServingModels(engine, BASE_MODEL_PATHS)
     openai_serving_render = _build_serving_render(engine, models.registry)
 
-    serving_chat = OpenAIServingChat(
+    return OpenAIServingChat(
         engine,
         models,
         response_role="assistant",
@@ -640,12 +646,105 @@ def test_serving_chat_sets_rwkv_default_stop_strings():
         chat_template=CHAT_TEMPLATE,
         chat_template_content_format="auto",
         request_logger=None,
+        default_chat_template_kwargs=default_chat_template_kwargs,
     )
+
+
+def test_serving_chat_sets_rwkv_default_stop_strings():
+    serving_chat = _build_rwkv_serving_chat()
 
     assert serving_chat.default_sampling_params["stop"] == [
         "<|im_end|>",
         "<|endoftext|>",
     ]
+
+
+@pytest.mark.parametrize(
+    ("default_kwargs", "request_kwargs", "expects_bad_words"),
+    [
+        (None, {"enable_thinking": False}, True),
+        (None, {"no_add_thinking": True}, True),
+        (None, {"enable_thinking": True}, False),
+        ({"enable_thinking": False}, None, True),
+        ({"enable_thinking": False}, {"enable_thinking": True}, False),
+    ],
+)
+def test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests(
+    default_kwargs: dict[str, Any] | None,
+    request_kwargs: dict[str, Any] | None,
+    expects_bad_words: bool,
+):
+    serving_chat = _build_rwkv_serving_chat(
+        default_chat_template_kwargs=default_kwargs,
+    )
+    request = ChatCompletionRequest(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": "hi"}],
+        chat_template_kwargs=request_kwargs,
+    )
+
+    request_defaults = serving_chat._get_request_default_sampling_params(request)
+
+    bad_words = request_defaults.get("bad_words", [])
+    if expects_bad_words:
+        assert list(RWKV_NO_THINKING_BAD_WORDS) == bad_words
+        assert "bad_words" not in serving_chat.default_sampling_params
+    else:
+        assert bad_words == []
+
+
+@pytest.mark.parametrize("default_bad_words", ["existing", ["existing"]])
+def test_serving_chat_preserves_rwkv_default_bad_words(default_bad_words):
+    serving_chat = _build_rwkv_serving_chat()
+    serving_chat.default_sampling_params["bad_words"] = default_bad_words
+    request = ChatCompletionRequest(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": "hi"}],
+        chat_template_kwargs={"enable_thinking": False},
+    )
+
+    request_defaults = serving_chat._get_request_default_sampling_params(request)
+
+    assert request_defaults["bad_words"] == [
+        "existing",
+        *RWKV_NO_THINKING_BAD_WORDS,
+    ]
+    assert serving_chat.default_sampling_params["bad_words"] == default_bad_words
+
+
+@pytest.mark.asyncio
+async def test_serving_chat_uses_rwkv_request_defaults_for_generation():
+    serving_chat = _build_rwkv_serving_chat()
+
+    async def fake_render_chat_request(request):
+        return (
+            [{"role": "user", "content": "hi"}],
+            [TokensPrompt(prompt="hi", prompt_token_ids=[1, 2])],
+        )
+
+    async def empty_generator():
+        if False:
+            yield None
+
+    async def fake_full_generator(*args, **kwargs):
+        return "ok"
+
+    serving_chat.render_chat_request = fake_render_chat_request
+    serving_chat.chat_completion_full_generator = fake_full_generator
+    serving_chat.engine_client.generate = MagicMock(return_value=empty_generator())
+
+    request = ChatCompletionRequest(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": "hi"}],
+        chat_template_kwargs={"enable_thinking": False},
+        max_tokens=2,
+    )
+
+    result = await serving_chat.create_chat_completion(request)
+
+    sampling_params = serving_chat.engine_client.generate.call_args.args[1]
+    assert result == "ok"
+    assert sampling_params.bad_words == list(RWKV_NO_THINKING_BAD_WORDS)
 
 
 @pytest.mark.asyncio

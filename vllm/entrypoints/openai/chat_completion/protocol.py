@@ -511,6 +511,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
             default_sampling_params.get("stop_token_ids"),
             self.stop_token_ids,
         )
+        bad_words = self._merge_default_list_param(
+            default_sampling_params.get("bad_words"),
+            self.bad_words,
+        )
         return SamplingParams.from_optional(
             n=self.n,
             presence_penalty=self.presence_penalty,
@@ -536,7 +540,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             else RequestOutputKind.FINAL_ONLY,
             structured_outputs=self.structured_outputs,
             logit_bias=self.logit_bias,
-            bad_words=self.bad_words,
+            bad_words=bad_words,
             thinking_token_budget=self.thinking_token_budget,
             allowed_token_ids=self.allowed_token_ids,
             extra_args=extra_args or None,

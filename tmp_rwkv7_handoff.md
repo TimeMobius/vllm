@@ -3419,3 +3419,24 @@ Rejected Triton alternative:
     - normal bird's nest prompt without request stop now stops at
       `stop_reason=<|endoftext|>` and does not include the literal stop
       string in content
+
+## 2026-06-18 RWKV no-thinking generation guard note
+
+- Added an RWKV-only OpenAI Chat request default path for no-thinking requests:
+    - effective `chat_template_kwargs.enable_thinking == false`
+    - or `chat_template_kwargs.no_add_thinking == true`
+- In those requests, serving adds `bad_words` for the complete thinking-start
+  boundary before building `SamplingParams`.
+- Enabled-thinking requests keep the normal generation space and do not receive
+  this guard.
+- Request-level `bad_words` now merge with default sampling `bad_words`, so
+  user-provided blocked phrases remain active alongside RWKV defaults.
+- The guard uses the complete text boundary and is intended for multi-token
+  tokenization too; it does not block narrow fragments.
+- Coverage:
+    - coverage under the normal tracer still hits the local torch docstring
+      import issue; rerun with `coverage run --timid`
+    - changed executable code-line coverage: `22/23 = 95.7%`
+- Regression commands:
+    - `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py tests/renderers/test_rwkv.py -q`
+    - `.venv/bin/python -m coverage erase && .venv/bin/python -m coverage run --timid -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation -q`

@@ -1823,3 +1823,37 @@ side issues:
 
 - [ ] 如需进一步减少“Assistant:”类角色串续写，可评估是否额外默认加入
   role-prefix stop strings；当前按要求只默认 `<|im_end|>` / `<|endoftext|>`。
+
+## 2026-06-18 RWKV 关思考请求生成约束 ✅
+
+目标：
+
+- 关思考请求不要让模型重新生成新的思考开始边界。
+- 开思考请求不加该生成约束，允许模型继续输出思考内容。
+- 约束只禁完整思考开始边界，不禁窄字符碎片，避免影响工具 XML 或普通文本。
+
+实现：
+
+- OpenAI Chat serving 在 RWKV7 模型下根据合并后的有效
+  `chat_template_kwargs` 判断当前请求是否为 no-thinking。
+- no-thinking 请求会把完整思考开始边界加入默认 `bad_words`，再构造
+  `SamplingParams`。
+- `enable_thinking=true` 的请求不追加该 `bad_words`。
+- `ChatCompletionRequest.to_sampling_params(...)` 会合并默认 `bad_words`
+  与请求级 `bad_words`，保留用户自己的生成约束。
+
+本地验证：
+
+- `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words -q`
+  => `9 passed`
+- `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py tests/renderers/test_rwkv.py -q`
+  => `23 passed`
+- coverage:
+    - normal tracer 会触发本地 torch docstring 导入问题；已使用
+      `coverage run --timid`
+    - changed executable code-line coverage: `22/23 = 95.7%`
+
+后续 TODO：
+
+- [ ] 重启本地 RWKV OpenAI server 后，用真实模型分别 smoke：
+  `enable_thinking=false` 不再重新开思考；`enable_thinking=true` 不受影响。

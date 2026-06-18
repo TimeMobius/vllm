@@ -2502,3 +2502,26 @@ source ~/.cargo/env
 cd bindings/python
 python -m pip install -e .
 ```
+
+## 2026-06-18 no-thinking request bad_words guard
+
+OpenAI Chat serving now has an RWKV7-only request default sampling hook:
+
+- effective `chat_template_kwargs` are computed with server defaults first and
+  request kwargs overriding them
+- no-thinking requests append the complete thinking-start boundary to default
+  `bad_words`
+- enabled-thinking requests leave `bad_words` unchanged
+- request-level `bad_words` are merged with default sampling `bad_words` in
+  `ChatCompletionRequest.to_sampling_params(...)`
+
+This keeps the no-thinking behavior request scoped: the model is blocked from
+opening a new thinking block only for no-thinking requests, while normal
+thinking requests remain unconstrained.
+
+Validation:
+
+- targeted unit tests: `9 passed`
+- RWKV/OpenAI Chat regression subset: `23 passed`
+- changed executable code-line coverage: `22/23 = 95.7%` using
+  `coverage run --timid`

@@ -1004,6 +1004,27 @@ def test_chat_completion_request_merges_default_stop_params():
     assert sampling_params.stop_token_ids == [65531, 65532, 42]
 
 
+def test_chat_completion_request_merges_default_bad_words():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_tokens=10,
+        bad_words=["request-blocked"],
+    )
+
+    sampling_params = request.to_sampling_params(
+        max_tokens=10,
+        default_sampling_params={
+            "bad_words": ["default-blocked", "request-blocked"],
+        },
+    )
+
+    assert sampling_params.bad_words == [
+        "default-blocked",
+        "request-blocked",
+    ]
+
+
 def test_chat_completion_request_n_parameter_default():
     """Test that n parameter defaults to 1."""
     request = ChatCompletionRequest(
