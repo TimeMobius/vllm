@@ -3353,3 +3353,40 @@ Rejected Triton alternative:
     - `.venv/bin/python -m pytest tests/reasoning/test_rwkv_reasoning_parser.py -q`
     - `.venv/bin/python -m pytest tests/reasoning/test_qwen3_reasoning_parser.py -q`
     - `.venv/bin/pre-commit run ruff-check --files vllm/reasoning/rwkv_reasoning_parser.py tests/reasoning/test_rwkv_reasoning_parser.py vllm/reasoning/__init__.py`
+
+## 2026-06-18 RWKV tool parser note
+
+- Added a dedicated `--tool-call-parser rwkv` for the current
+  `chat_template.jinja` XML tool format:
+    - `<tool_call>`
+    - `<invoke name="tool_name">`
+    - `<parameter name="arg_name">arg_value</parameter>`
+    - `</invoke>`
+    - `</tool_call>`
+- Intended server usage:
+    - `--enable-auto-tool-choice --tool-call-parser rwkv`
+    - can be combined with `--reasoning-parser rwkv`
+- Non-streaming behavior:
+    - extracts complete `<tool_call>...</tool_call>` blocks from generated
+      content
+    - returns OpenAI-style `message.tool_calls`
+    - leaves pre-tool-call text in `message.content`
+- Streaming behavior:
+    - buffers partial `<tool_call>` start tags so XML fragments are not emitted
+      as content
+    - emits a `DeltaToolCall` once a complete `<invoke>...</invoke>` block is
+      available
+- Parameter coercion uses the request tool schema when available:
+    - integer / number / boolean / object / array are converted before being
+      serialized to JSON arguments.
+- Local server smoke:
+    - server starts with
+      `--reasoning-parser rwkv --enable-auto-tool-choice --tool-call-parser rwkv`
+    - tool request render/generate path works without parser registration errors
+    - the 0.4B model did not reliably emit a tool call; XML extraction is
+      covered by parser unit tests instead
+- Regression commands:
+    - `.venv/bin/python -m pytest tests/tool_parsers/test_rwkv_tool_parser.py -q`
+    - `.venv/bin/python -m pytest tests/tool_parsers/test_minimax_m2_tool_parser.py -q`
+    - `.venv/bin/python -m pytest tests/tool_parsers/test_rwkv_tool_parser.py tests/reasoning/test_rwkv_reasoning_parser.py -q`
+    - `.venv/bin/pre-commit run ruff-check --files vllm/tool_parsers/rwkv_tool_parser.py tests/tool_parsers/test_rwkv_tool_parser.py vllm/tool_parsers/__init__.py`

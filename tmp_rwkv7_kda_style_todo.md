@@ -1707,3 +1707,77 @@ side issues:
 - [ ] 当前 0.4B 模型在强制 thinking 下会把全部未闭合输出归入
   `message.reasoning`；这是 parser 预期行为，模型是否按时输出
   `</think>` 取决于权重/SFT。
+
+## 2026-06-18 RWKV tool parser 适配 ✅
+
+目标：
+
+- 支持 vLLM OpenAI server 的
+  `--enable-auto-tool-choice --tool-call-parser rwkv`。
+- 解析当前 `chat_template.jinja` 约定的 XML 工具调用格式：
+
+```xml
+<tool_call>
+<invoke name="get_weather">
+<parameter name="city">杭州</parameter>
+</invoke>
+</tool_call>
+```
+
+实现：
+
+- 新增 `vllm/tool_parsers/rwkv_tool_parser.py` (`RWKVToolParser`)。
+- 在 `vllm/tool_parsers/__init__.py` 注册 parser 名称：`rwkv`。
+- 非流式：
+    - 从完整 `<tool_call>...</tool_call>` 中提取一个或多个
+      `<invoke name="...">...</invoke>`
+    - 输出 OpenAI-style `ToolCall(function.name, function.arguments)`
+    - `<tool_call>` 之前的文本保留为 content
+- 流式：
+    - 对 `<tool_call>` 起始标签做 partial buffer，避免把 `<tool` 这类
+      半截 XML 作为 content 发给客户端
+    - 一旦完整 `<invoke>...</invoke>` 出现，发出一个完整
+      `DeltaToolCall`
+    - 每个 invoke 只发一次
+- 参数类型转换：
+    - 根据 request tools schema 尝试转换 integer / number / boolean /
+      object / array，再序列化为 JSON arguments。
+
+启动示例：
+
+```bash
+.venv/bin/python -m vllm.entrypoints.openai.api_server \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --tokenizer /home/liu/vllm/rwkv_vocab_v20260603.txt \
+  --tokenizer-mode rwkv \
+  --chat-template /home/liu/vllm/chat_template.jinja \
+  --reasoning-parser rwkv \
+  --enable-auto-tool-choice \
+  --tool-call-parser rwkv \
+  --served-model-name rwkv7 \
+  --enforce-eager
+```
+
+本地验证：
+
+- server smoke:
+    - `--reasoning-parser rwkv --enable-auto-tool-choice --tool-call-parser rwkv`
+      可正常启动
+    - 带 `tools` + `tool_choice="auto"` 的 render/generate 请求不报错
+    - 当前 0.4B 模型没有稳定生成 tool XML，真实 tool extraction 由单测覆盖
+- 测试：
+    - `.venv/bin/python -m pytest tests/tool_parsers/test_rwkv_tool_parser.py -q`
+      => `7 passed`
+    - `.venv/bin/python -m pytest tests/tool_parsers/test_minimax_m2_tool_parser.py -q`
+      => `17 passed`
+    - `.venv/bin/python -m pytest tests/tool_parsers/test_rwkv_tool_parser.py tests/reasoning/test_rwkv_reasoning_parser.py -q`
+      => `17 passed`
+    - `.venv/bin/pre-commit run ruff-check --files vllm/tool_parsers/rwkv_tool_parser.py tests/tool_parsers/test_rwkv_tool_parser.py vllm/tool_parsers/__init__.py`
+      => passed
+
+后续 TODO：
+
+- [ ] 等 SFT 后模型能稳定输出工具 XML，再补一个本地 OpenAI server
+  e2e 用例，断言 `finish_reason == "tool_calls"` 和 `message.tool_calls`。
+- [ ] 如需更细粒度 streaming 参数增量，可把当前“一次发完整 invoke”的策略
+  扩展为 name/arguments token-level delta；当前实现先追求稳定和不泄漏 XML。
