@@ -1631,3 +1631,79 @@ side issues:
     - `.venv/bin/python -m py_compile vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
     - `.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
       => `13 passed`
+
+## 2026-06-18 RWKV reasoning parser 适配 ✅
+
+目标：
+
+- 支持 vLLM OpenAI server 的 `--reasoning-parser` 参数。
+- 不使用 vocab 里已有的 `<|think|>`，而是解析当前
+  `chat_template.jinja` 使用的普通 `<think>` / `</think>`。
+- 兼容 RWKV tokenizer 将 `<think>` / `</think>` 拆成多 token 的情况。
+
+实现：
+
+- 新增 `vllm/reasoning/rwkv_reasoning_parser.py`
+  (`RWKVReasoningParser`)。
+- 在 `vllm/reasoning/__init__.py` 注册 parser 名称：`rwkv`。
+- parser 通过 `tokenizer.encode("<think>", add_special_tokens=False)` 和
+  `tokenizer.encode("</think>", add_special_tokens=False)` 得到边界 token
+  子序列，不要求 `get_vocab()` 里存在单 token `<think>` / `</think>`。
+- 支持：
+    - 非流式输出拆分 `message.reasoning` / `message.content`
+    - 流式输出中跨 delta 的多 token marker
+    - `is_reasoning_end(...)`
+    - `extract_content_ids(...)`
+    - `count_reasoning_tokens(...)`
+
+启动示例：
+
+```bash
+.venv/bin/python -m vllm.entrypoints.openai.api_server \
+  --model /mnt/d/codes/RWKV7-Goose-World2.9-0.4B-HF \
+  --tokenizer /home/liu/vllm/rwkv_vocab_v20260603.txt \
+  --tokenizer-mode rwkv \
+  --chat-template /home/liu/vllm/chat_template.jinja \
+  --reasoning-parser rwkv \
+  --served-model-name rwkv7 \
+  --enforce-eager
+```
+
+请求级控制：
+
+- 强制 thinking：
+  `"chat_template_kwargs": {"enable_thinking": true}`
+- 强制不加 thinking：
+  `"chat_template_kwargs": {"no_add_thinking": true}`
+
+本地验证：
+
+- 实际 RWKV tokenizer:
+    - `<think>` -> `[61, 35762, 63]`
+    - `</think>` -> `[754, 35762, 63]`
+    - `RWKVReasoningParser` 可正常实例化并切分
+      `"思考过程</think>最终答案"` -> `("思考过程", "最终答案")`
+- server smoke (`--reasoning-parser rwkv`):
+    - `enable_thinking=true`:
+      `message.reasoning='9 + 3 - 4 = 12\n12 = 12\n所以答案'`,
+      `message.content=None`
+    - `no_add_thinking=true`:
+      `message.reasoning=None`,
+      `message.content='你好 xiaoke，你的问题是：9 + 3 -'`
+
+测试：
+
+- `.venv/bin/python -m pytest tests/reasoning/test_rwkv_reasoning_parser.py -q`
+  => `10 passed`
+- `.venv/bin/python -m pytest tests/reasoning/test_qwen3_reasoning_parser.py -q`
+  => `66 passed`
+- `.venv/bin/pre-commit run ruff-check --files vllm/reasoning/rwkv_reasoning_parser.py tests/reasoning/test_rwkv_reasoning_parser.py vllm/reasoning/__init__.py`
+  => passed
+
+后续 TODO：
+
+- [ ] 如需 Responses API 的 reasoning token 统计更精确，可再加一个
+  RWKV parser 的 response/streaming 集成测试。
+- [ ] 当前 0.4B 模型在强制 thinking 下会把全部未闭合输出归入
+  `message.reasoning`；这是 parser 预期行为，模型是否按时输出
+  `</think>` 取决于权重/SFT。

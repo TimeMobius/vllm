@@ -80,6 +80,10 @@ _REASONING_PARSERS_TO_REGISTER = {
         "qwen3_reasoning_parser",
         "Qwen3ReasoningParser",
     ),
+    "rwkv": (
+        "rwkv_reasoning_parser",
+        "RWKVReasoningParser",
+    ),
     "seed_oss": (
         "seedoss_reasoning_parser",
         "SeedOSSReasoningParser",

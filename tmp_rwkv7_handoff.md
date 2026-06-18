@@ -3327,3 +3327,29 @@ Rejected Triton alternative:
 - Quick regression commands:
     - `.venv/bin/python -m py_compile vllm/tokenizers/rwkv.py tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
     - `.venv/bin/python -m pytest -q tests/tokenizers/test_rwkv.py tests/renderers/test_rwkv.py`
+
+## 2026-06-18 RWKV reasoning parser note
+
+- Added a dedicated `--reasoning-parser rwkv`.
+- It deliberately uses plain `<think>` / `</think>` boundaries, not the vocab
+  special token `<|think|>`.
+- RWKV vocab currently tokenizes the markers as multi-token sequences:
+    - `<think>` -> `[61, 35762, 63]`
+    - `</think>` -> `[754, 35762, 63]`
+- The parser therefore tracks marker boundaries as token-id subsequences and
+  also suppresses partial marker fragments in streaming deltas.
+- Intended server usage:
+    - `--reasoning-parser rwkv`
+    - per request forced thinking:
+      `"chat_template_kwargs": {"enable_thinking": true}`
+    - per request force no thinking:
+      `"chat_template_kwargs": {"no_add_thinking": true}`
+- Local smoke on `RWKV7-Goose-World2.9-0.4B-HF`:
+    - `enable_thinking=true` returned generated tokens under
+      `message.reasoning` with `message.content == None`.
+    - `no_add_thinking=true` returned ordinary generated text under
+      `message.content` with `message.reasoning == None`.
+- Regression commands:
+    - `.venv/bin/python -m pytest tests/reasoning/test_rwkv_reasoning_parser.py -q`
+    - `.venv/bin/python -m pytest tests/reasoning/test_qwen3_reasoning_parser.py -q`
+    - `.venv/bin/pre-commit run ruff-check --files vllm/reasoning/rwkv_reasoning_parser.py tests/reasoning/test_rwkv_reasoning_parser.py vllm/reasoning/__init__.py`
