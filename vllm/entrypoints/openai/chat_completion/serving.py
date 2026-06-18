@@ -83,6 +83,8 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+RWKV_DEFAULT_STOP_STRINGS = ("<|im_end|>", "<|endoftext|>")
+
 
 class OpenAIServingChat(OpenAIServing):
     def __init__(
@@ -152,6 +154,14 @@ class OpenAIServingChat(OpenAIServing):
             self.default_sampling_params["stop_token_ids"].extend(
                 get_stop_tokens_for_assistant_actions()
             )
+        if self.model_config.hf_config.model_type == "rwkv7":
+            default_stop = self.default_sampling_params.setdefault("stop", [])
+            if isinstance(default_stop, str):
+                default_stop = [default_stop]
+                self.default_sampling_params["stop"] = default_stop
+            for stop in RWKV_DEFAULT_STOP_STRINGS:
+                if stop not in default_stop:
+                    default_stop.append(stop)
 
         self.tool_call_id_type = get_tool_call_id_type(self.model_config)
 

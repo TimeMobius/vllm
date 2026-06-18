@@ -1782,7 +1782,7 @@ side issues:
 - [ ] 如需更细粒度 streaming 参数增量，可把当前“一次发完整 invoke”的策略
   扩展为 name/arguments token-level delta；当前实现先追求稳定和不泄漏 XML。
 
-## 2026-06-18 RWKV 默认停止 token ✅
+## 2026-06-18 RWKV 默认停止 token/string ✅
 
 目标：
 
@@ -1790,6 +1790,8 @@ side issues:
     - `<|im_end|>`
     - `<|endoftext|>`
 - 不再继承模型目录旧 `generation_config.json` 里的 `eos_token_id: 2`。
+- 默认 stop strings 也只使用上述两个边界，拦截模型用普通 token 拼出的
+  `<|im_end|>` / `<|endoftext|>`。
 
 实现：
 
@@ -1798,13 +1800,26 @@ side issues:
 - `InputProcessor` 初始化时先构建 renderer，再让 renderer 调整 generation
   config。
 - `BaseRenderer` 新增默认 no-op hook，其他模型行为不变。
+- OpenAI Chat serving 在 RWKV7 模型下默认注入 `stop`：
+  `["<|im_end|>", "<|endoftext|>"]`。
+- Chat request 转 `SamplingParams` 时会合并 default stop / stop_token_ids 与
+  用户请求中的 stop / stop_token_ids。
 
 本地验证：
 
 - `.venv/bin/python -m pytest tests/renderers/test_rwkv.py -q`
   => `2 passed`
+- `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings -q`
+  => `2 passed`
+- 本地 OpenAI server 重启后真实请求：
+    - `allowed_token_ids=[65531]` => `finish_reason=stop`,
+      `stop_reason=65531`
+    - `allowed_token_ids=[65532]` => `finish_reason=stop`
+    - `allowed_token_ids=[2]` => `finish_reason=length`
+    - 普通鸟巢请求不传 stop => `finish_reason=stop`,
+      `stop_reason=<|endoftext|>`，返回 content 不含 literal stop string
 
 后续 TODO：
 
-- [ ] 如果要默认拦截模型“用普通 token 拼出来”的 `<|endoftext|>` /
-  `<|im_end|>` 文本，还需要在 OpenAI Chat 默认请求参数层合并 stop strings。
+- [ ] 如需进一步减少“Assistant:”类角色串续写，可评估是否额外默认加入
+  role-prefix stop strings；当前按要求只默认 `<|im_end|>` / `<|endoftext|>`。

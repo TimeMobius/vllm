@@ -404,6 +404,18 @@ class ChatCompletionRequest(OpenAIBaseModel):
         "min_p": 0.0,
     }
 
+    @staticmethod
+    def _merge_default_list_param(default_value: Any, request_value: Any) -> list[Any]:
+        merged: list[Any] = []
+        for value in (default_value, request_value):
+            if value is None:
+                continue
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if item not in merged:
+                    merged.append(item)
+        return merged
+
     def to_beam_search_params(
         self, max_tokens: int, default_sampling_params: dict
     ) -> BeamSearchParams:
@@ -490,6 +502,15 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if self.kv_transfer_params:
             # Pass in kv_transfer_params via extra_args
             extra_args["kv_transfer_params"] = self.kv_transfer_params
+
+        stop = self._merge_default_list_param(
+            default_sampling_params.get("stop"),
+            self.stop,
+        )
+        stop_token_ids = self._merge_default_list_param(
+            default_sampling_params.get("stop_token_ids"),
+            self.stop_token_ids,
+        )
         return SamplingParams.from_optional(
             n=self.n,
             presence_penalty=self.presence_penalty,
@@ -500,8 +521,8 @@ class ChatCompletionRequest(OpenAIBaseModel):
             top_k=top_k,
             min_p=min_p,
             seed=self.seed,
-            stop=self.stop,
-            stop_token_ids=self.stop_token_ids,
+            stop=stop,
+            stop_token_ids=stop_token_ids,
             logprobs=self.top_logprobs if self.logprobs else None,
             prompt_logprobs=prompt_logprobs,
             ignore_eos=self.ignore_eos,

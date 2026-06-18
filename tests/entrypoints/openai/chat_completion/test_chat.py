@@ -983,6 +983,27 @@ def test_chat_completion_request_n_parameter_to_sampling_params():
     assert sampling_params.n == 3, f"Expected n=3, got n={sampling_params.n}"
 
 
+def test_chat_completion_request_merges_default_stop_params():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_tokens=10,
+        stop=["User:"],
+        stop_token_ids=[42],
+    )
+
+    sampling_params = request.to_sampling_params(
+        max_tokens=10,
+        default_sampling_params={
+            "stop": ["<|im_end|>", "<|endoftext|>"],
+            "stop_token_ids": [65531, 65532],
+        },
+    )
+
+    assert sampling_params.stop == ["<|im_end|>", "<|endoftext|>", "User:"]
+    assert sampling_params.stop_token_ids == [65531, 65532, 42]
+
+
 def test_chat_completion_request_n_parameter_default():
     """Test that n parameter defaults to 1."""
     request = ChatCompletionRequest(

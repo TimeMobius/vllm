@@ -3391,7 +3391,7 @@ Rejected Triton alternative:
     - `.venv/bin/python -m pytest tests/tool_parsers/test_rwkv_tool_parser.py tests/reasoning/test_rwkv_reasoning_parser.py -q`
     - `.venv/bin/pre-commit run ruff-check --files vllm/tool_parsers/rwkv_tool_parser.py tests/tool_parsers/test_rwkv_tool_parser.py vllm/tool_parsers/__init__.py`
 
-## 2026-06-18 RWKV default stop token note
+## 2026-06-18 RWKV default stop token/string note
 
 - RWKV renderer now overrides generation config `eos_token_id` with the
   tokenizer ids for:
@@ -3405,7 +3405,17 @@ Rejected Triton alternative:
     - `<|endoftext|>` -> `65532`
 - Scope note:
     - this fixes token-id stopping for generated special tokens
-    - if the model spells strings like `<|endoftext|>` using ordinary tokens,
-      request/server stop strings are still needed to suppress that text path
+    - OpenAI Chat serving also defaults RWKV requests to the same two stop
+      strings, so ordinary-token spellings of `<|im_end|>` / `<|endoftext|>`
+      are stripped as stop strings too
 - Regression command:
     - `.venv/bin/python -m pytest tests/renderers/test_rwkv.py -q`
+    - `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings -q`
+- Local server smoke after restart:
+    - forced `allowed_token_ids=[65531]` stops with
+      `finish_reason=stop`, `stop_reason=65531`
+    - forced `allowed_token_ids=[65532]` stops with `finish_reason=stop`
+    - forced old `allowed_token_ids=[2]` reaches `finish_reason=length`
+    - normal bird's nest prompt without request stop now stops at
+      `stop_reason=<|endoftext|>` and does not include the literal stop
+      string in content

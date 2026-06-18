@@ -626,6 +626,28 @@ def test_async_serving_chat_init():
     assert serving_completion.chat_template == CHAT_TEMPLATE
 
 
+def test_serving_chat_sets_rwkv_default_stop_strings():
+    engine = MockEngine()
+    engine.model_config.hf_config.model_type = "rwkv7"
+    models = OpenAIServingModels(engine, BASE_MODEL_PATHS)
+    openai_serving_render = _build_serving_render(engine, models.registry)
+
+    serving_chat = OpenAIServingChat(
+        engine,
+        models,
+        response_role="assistant",
+        openai_serving_render=openai_serving_render,
+        chat_template=CHAT_TEMPLATE,
+        chat_template_content_format="auto",
+        request_logger=None,
+    )
+
+    assert serving_chat.default_sampling_params["stop"] == [
+        "<|im_end|>",
+        "<|endoftext|>",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_serving_chat_returns_correct_model_name():
     mock_engine = MagicMock(spec=AsyncLLM)
