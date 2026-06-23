@@ -3440,3 +3440,38 @@ Rejected Triton alternative:
 - Regression commands:
     - `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py tests/renderers/test_rwkv.py -q`
     - `.venv/bin/python -m coverage erase && .venv/bin/python -m coverage run --timid -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation -q`
+
+## 2026-06-23 RWKV no-thinking end-boundary guard note
+
+- Follow-up to the 2026-06-18 no-thinking guard.
+- Observed failure shape from a user request with `enable_thinking=false`:
+    - the returned answer text appeared under `message.reasoning`
+    - `message.content` was `null`
+    - `finish_reason` was `stop`
+- Code-path explanation:
+    - the chat template's empty thinking block is in the prompt, not the
+      generated completion, so it does not by itself populate `reasoning`
+    - RWKV reasoning parser treats a generated complete thinking-end boundary
+      as the split point even when forced thinking is not enabled
+    - if the model generates that boundary after an ordinary answer, the parser
+      classifies the answer before it as `reasoning` and leaves no content
+- Fix:
+    - RWKV no-thinking request defaults now add both complete thinking-start
+      and complete thinking-end boundaries to `bad_words`
+    - this remains request scoped to `enable_thinking=false` or
+      `no_add_thinking=true`
+    - `enable_thinking=true` requests still keep the normal generation space
+    - the constraints use complete boundary strings, so multi-token tokenization
+      is supported without blocking narrow fragments
+- Added tests:
+    - serving test explicitly locks the two-boundary no-thinking bad-word set
+    - parser regression documents the standalone end-boundary classification
+- Regression commands to rerun after touching this area:
+    - `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_rwkv_no_thinking_bad_words_cover_both_boundaries tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py -q`
+    - `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_rwkv_no_thinking_bad_words_cover_both_boundaries tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py tests/renderers/test_rwkv.py -q`
+- Validation:
+    - targeted pytest subset: `19 passed`
+    - RWKV/OpenAI Chat regression subset: `24 passed`
+    - coverage run with `--timid`: `24 passed`
+    - changed production executable line coverage: `1/1 = 100%`
+    - ruff check on changed Python files: passed

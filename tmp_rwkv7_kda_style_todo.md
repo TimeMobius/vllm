@@ -1857,3 +1857,41 @@ side issues:
 
 - [ ] 重启本地 RWKV OpenAI server 后，用真实模型分别 smoke：
   `enable_thinking=false` 不再重新开思考；`enable_thinking=true` 不受影响。
+
+## 2026-06-23 RWKV 关思考结束边界约束 ✅
+
+目标：
+
+- 解决 `enable_thinking=false` 下模型偶发生成思考结束边界后，普通答案被
+  parser 放进 `message.reasoning`，导致 `message.content=null` 的问题。
+- 保持约束只在 no-thinking 请求生效，不影响 `enable_thinking=true`。
+- 只禁完整思考边界，不禁窄字符碎片，避免影响 XML 工具调用或普通文本。
+
+实现：
+
+- RWKV no-thinking 默认 `bad_words` 从“完整开始边界”扩展为“完整开始边界
+  和完整结束边界”。
+- 仍然通过合并后的有效 `chat_template_kwargs` 判断：
+    - `enable_thinking=false`
+    - 或 `no_add_thinking=true`
+- 请求级 `bad_words` 继续与默认约束合并。
+
+测试计划：
+
+- [x] 服务层单测：明确断言 no-thinking 默认屏蔽两侧完整边界。
+- [x] 服务层单测：no-thinking 加约束，开思考不加约束。
+- [x] 服务层单测：保留已有 default/request `bad_words`。
+- [x] parser 单测：记录“单独结束边界会把前文识别为 reasoning”的现状。
+- [ ] 重启本地 RWKV OpenAI server 后，用真实模型 smoke 用户给出的数学样例：
+  `enable_thinking=false` 时正文应进入 `content`，不应进入 `reasoning`。
+
+验证命令：
+
+- `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_rwkv_no_thinking_bad_words_cover_both_boundaries tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py -q`
+  => `19 passed`
+- `.venv/bin/python -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_rwkv_no_thinking_bad_words_cover_both_boundaries tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py tests/renderers/test_rwkv.py -q`
+  => `24 passed`
+- `.venv/bin/python -m coverage erase && .venv/bin/python -m coverage run --timid -m pytest tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_stop_params tests/entrypoints/openai/chat_completion/test_chat.py::test_chat_completion_request_merges_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_sets_rwkv_default_stop_strings tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_rwkv_no_thinking_bad_words_cover_both_boundaries tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_adds_rwkv_bad_words_only_for_no_thinking_requests tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_preserves_rwkv_default_bad_words tests/entrypoints/openai/chat_completion/test_serving_chat.py::test_serving_chat_uses_rwkv_request_defaults_for_generation tests/reasoning/test_rwkv_reasoning_parser.py tests/renderers/test_rwkv.py -q`
+  => `24 passed`; changed production executable line coverage `1/1 = 100%`
+- `.venv/bin/pre-commit run ruff-check --files vllm/entrypoints/openai/chat_completion/serving.py tests/entrypoints/openai/chat_completion/test_serving_chat.py tests/reasoning/test_rwkv_reasoning_parser.py`
+  => passed

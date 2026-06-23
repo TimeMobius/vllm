@@ -130,6 +130,10 @@ def test_rwkv_extract_reasoning_without_forced_thinking(tokenizer):
         None,
         "plain answer",
     )
+    assert parser.extract_reasoning("answer</think>", request=None) == (
+        "answer",
+        None,
+    )
     assert parser.extract_reasoning("<think>reason</think>answer", request=None) == (
         "reason",
         "answer",

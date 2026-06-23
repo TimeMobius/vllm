@@ -84,7 +84,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 RWKV_DEFAULT_STOP_STRINGS = ("<|im_end|>", "<|endoftext|>")
-RWKV_NO_THINKING_BAD_WORDS = ("<think>",)
+RWKV_NO_THINKING_BAD_WORDS = ("<think>", "</think>")
 
 
 class OpenAIServingChat(OpenAIServing):

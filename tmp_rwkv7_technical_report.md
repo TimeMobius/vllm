@@ -2525,3 +2525,38 @@ Validation:
 - RWKV/OpenAI Chat regression subset: `23 passed`
 - changed executable code-line coverage: `22/23 = 95.7%` using
   `coverage run --timid`
+
+## 2026-06-23 no-thinking end-boundary bad_words guard
+
+The 2026-06-18 no-thinking guard blocked the complete thinking-start boundary
+for RWKV7 no-thinking chat requests. A remaining failure mode exists when the
+model emits the complete thinking-end boundary after otherwise ordinary answer
+text:
+
+- the RWKV reasoning parser treats that generated end boundary as the split
+  point even when `enable_thinking` is not true
+- text before the boundary is therefore returned as `message.reasoning`
+- text after the boundary can be empty, producing `message.content == null`
+
+Fix:
+
+- RWKV7 no-thinking request defaults now append both complete thinking
+  boundaries to default `bad_words`
+- the hook still only applies when effective chat template kwargs disable
+  thinking (`enable_thinking=false` or `no_add_thinking=true`)
+- enabled-thinking requests are unchanged
+- the blocked strings are complete boundaries, so multi-token tokenization is
+  handled by vLLM's existing `bad_words` sequence support without blocking
+  narrow fragments used by normal text or tool XML
+
+Validation:
+
+- serving tests cover the explicit two-boundary no-thinking set
+- serving tests cover request scoping and default/request `bad_words` merging
+- parser test documents the standalone end-boundary classification that this
+  sampling guard prevents in no-thinking requests
+- targeted pytest subset: `19 passed`
+- RWKV/OpenAI Chat regression subset: `24 passed`
+- coverage run with `--timid`: `24 passed`
+- changed production executable line coverage: `1/1 = 100%`
+- ruff check on changed Python files: passed

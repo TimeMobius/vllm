@@ -659,6 +659,10 @@ def test_serving_chat_sets_rwkv_default_stop_strings():
     ]
 
 
+def test_serving_chat_rwkv_no_thinking_bad_words_cover_both_boundaries():
+    assert RWKV_NO_THINKING_BAD_WORDS == ("<think>", "</think>")
+
+
 @pytest.mark.parametrize(
     ("default_kwargs", "request_kwargs", "expects_bad_words"),
     [
