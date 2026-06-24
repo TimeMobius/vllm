@@ -84,7 +84,6 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 RWKV_DEFAULT_STOP_STRINGS = ("<|im_end|>", "<|endoftext|>")
-RWKV_NO_THINKING_BAD_WORDS = ("<think>", "</think>")
 
 
 class OpenAIServingChat(OpenAIServing):
@@ -175,39 +174,6 @@ class OpenAIServingChat(OpenAIServing):
         # Please use the Responses API instead.
         self.supports_code_interpreter = False
         self.python_tool = None
-
-    def _get_request_default_sampling_params(
-        self,
-        request: ChatCompletionRequest,
-    ) -> dict[str, Any]:
-        default_sampling_params = self.default_sampling_params
-        if self.model_config.hf_config.model_type != "rwkv7":
-            return default_sampling_params
-
-        chat_kwargs = self._prepare_extra_chat_template_kwargs(
-            request.chat_template_kwargs,
-            self.default_chat_template_kwargs,
-        )
-        thinking_disabled = (
-            chat_kwargs.get("enable_thinking") is False
-            or chat_kwargs.get("no_add_thinking") is True
-        )
-        if not thinking_disabled:
-            return default_sampling_params
-
-        request_defaults = dict(default_sampling_params)
-        default_bad_words = request_defaults.get("bad_words")
-        if default_bad_words is None:
-            bad_words = []
-        elif isinstance(default_bad_words, str):
-            bad_words = [default_bad_words]
-        else:
-            bad_words = list(default_bad_words)
-        for bad_word in RWKV_NO_THINKING_BAD_WORDS:
-            if bad_word not in bad_words:
-                bad_words.append(bad_word)
-        request_defaults["bad_words"] = bad_words
-        return request_defaults
 
     def warmup(self) -> None:
         self.renderer.warmup(
@@ -303,29 +269,25 @@ class OpenAIServingChat(OpenAIServing):
             sub_request_id = (
                 request_id if len(engine_inputs) == 1 else f"{request_id}_{i}"
             )
-            request_default_sampling_params = self._get_request_default_sampling_params(
-                request
-            )
-
             max_tokens = get_max_tokens(
                 max_model_len,
                 request.max_completion_tokens
                 if request.max_completion_tokens is not None
                 else request.max_tokens,
                 self._extract_prompt_len(engine_input),
-                request_default_sampling_params,
+                self.default_sampling_params,
                 self.override_max_tokens,
             )
 
             sampling_params: SamplingParams | BeamSearchParams
             if request.use_beam_search:
                 sampling_params = request.to_beam_search_params(
-                    max_tokens, request_default_sampling_params
+                    max_tokens, self.default_sampling_params
                 )
             else:
                 sampling_params = request.to_sampling_params(
                     max_tokens,
-                    request_default_sampling_params,
+                    self.default_sampling_params,
                 )
 
             self._log_inputs(
