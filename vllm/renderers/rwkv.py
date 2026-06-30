@@ -21,6 +21,31 @@ from .params import ChatParams
 class RWKVRenderer(BaseRenderer[RWKVTokenizer]):
     _DEFAULT_STOP_TOKENS = ("<|im_end|>", "<|endoftext|>")
 
+    @staticmethod
+    def _fill_tool_message_names(conversation: list[ConversationMessage]) -> None:
+        tool_call_names: dict[str, str] = {}
+        for message in conversation:
+            if message["role"] == "assistant":
+                tool_calls = message.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    tool_call_id = tool_call.get("id")
+                    function = tool_call.get("function")
+                    if (
+                        isinstance(tool_call_id, str)
+                        and isinstance(function, dict)
+                        and isinstance(function.get("name"), str)
+                    ):
+                        tool_call_names[tool_call_id] = function["name"]
+            elif message["role"] == "tool" and not message.get("name"):
+                tool_call_id = message.get("tool_call_id")
+                if isinstance(tool_call_id, str) and tool_call_id in tool_call_names:
+                    message["name"] = tool_call_names[tool_call_id]
+
     @classmethod
     def from_config(  # type: ignore[override]
         cls,
@@ -71,9 +96,10 @@ class RWKVRenderer(BaseRenderer[RWKVTokenizer]):
             media_io_kwargs=params.media_io_kwargs,
             mm_processor_kwargs=params.mm_processor_kwargs,
         )
+        self._fill_tool_message_names(conversation)
 
         prompt_raw = tokenizer.apply_chat_template(
-            messages,
+            conversation,
             **params.get_apply_chat_template_kwargs(),
         )
 
@@ -98,9 +124,10 @@ class RWKVRenderer(BaseRenderer[RWKVTokenizer]):
             media_io_kwargs=params.media_io_kwargs,
             mm_processor_kwargs=params.mm_processor_kwargs,
         )
+        self._fill_tool_message_names(conversation)
 
         prompt_raw = tokenizer.apply_chat_template(
-            messages,
+            conversation,
             **params.get_apply_chat_template_kwargs(),
         )
 

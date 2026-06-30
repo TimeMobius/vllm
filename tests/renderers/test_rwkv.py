@@ -99,6 +99,67 @@ def test_rwkv_renderer_renders_chat_messages(tmp_path):
     assert prompt["prompt"].startswith("System: hi\n\nUser: hi\n\nAssistant:")
 
 
+def test_rwkv_renderer_normalizes_tool_history_before_template():
+    class CaptureTokenizer:
+        bos_token_id = None
+        eos_token_id = None
+        chat_template = "template"
+
+        def __init__(self) -> None:
+            self.messages = None
+
+        def apply_chat_template(self, messages, **kwargs):
+            del kwargs
+            self.messages = messages
+            return "prompt"
+
+        def encode(self, text: str, **kwargs):
+            del kwargs
+            return [ord(char) for char in text]
+
+    tokenizer = CaptureTokenizer()
+    renderer = RWKVRenderer(
+        MockVllmConfig(
+            MockModelConfig(),
+            parallel_config=MockParallelConfig(),
+        ),
+        tokenizer=tokenizer,
+    )
+
+    conversation, prompt = renderer.render_messages(
+        [
+            {"role": "user", "content": "北京天气怎么样"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_weather",
+                        "type": "function",
+                        "function": {
+                            "name": "search_web",
+                            "arguments": '{"query": "北京天气"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "今天白天有雷阵雨，夜晚有小雨。",
+            },
+        ],
+        ChatParams(chat_template_kwargs={"add_generation_prompt": True}),
+    )
+
+    assert prompt["prompt"] == "prompt"
+    assert tokenizer.messages == conversation
+    assert conversation[1]["tool_calls"][0]["function"]["arguments"] == {
+        "query": "北京天气"
+    }
+    assert conversation[2]["name"] == "search_web"
+
+
 def test_rwkv_renderer_overrides_generation_eos_tokens(tmp_path):
     vocab_path = tmp_path / "rwkv_vocab_v20250609.txt"
     _write_vocab(vocab_path)
