@@ -824,6 +824,100 @@ async def test_serving_chat_does_not_add_rwkv_bad_words_for_no_thinking():
 
 @pytest.mark.asyncio
 async def test_rwkv_streaming_tool_call_after_split_reasoning_end():
+    response = await _run_rwkv_streaming_tool_call(
+        chunks=[
+            ("Need to call it.</thi", None),
+            ("nk>\n\n", None),
+            ("<tool_c", None),
+            ("all>\n", None),
+            ('<invoke name="get_time_info">\n', None),
+            ("</invoke>\n", None),
+            ("</tool_call>", "stop"),
+        ]
+    )
+
+    choice = response.choices[0]
+    message = choice.message
+    assert choice.finish_reason == "tool_calls"
+    assert message.reasoning == "Need to call it."
+    assert message.content is None
+    assert message.tool_calls is not None
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0].function.name == "get_time_info"
+    assert json.loads(message.tool_calls[0].function.arguments) == {}
+
+
+@pytest.mark.asyncio
+async def test_rwkv_streaming_tool_call_after_generated_think_start():
+    response = await _run_rwkv_streaming_tool_call(
+        chunks=[
+            ("<think>Need to call it.</thi", None),
+            ("nk>\n\n", None),
+            ("<tool_c", None),
+            ("all>\n", None),
+            ('<invoke name="get_time_info">\n', None),
+            ("</invoke>\n", None),
+            ("</tool_call>", "stop"),
+        ]
+    )
+
+    message = response.choices[0].message
+    assert response.choices[0].finish_reason == "tool_calls"
+    assert message.reasoning == "Need to call it."
+    assert message.content is None
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].function.name == "get_time_info"
+
+
+@pytest.mark.asyncio
+async def test_rwkv_streaming_tool_call_ignores_historical_think_end():
+    response = await _run_rwkv_streaming_tool_call(
+        chunks=[
+            ("Need to call it.</thi", None),
+            ("nk>\n\n", None),
+            ("<tool_call>\n", None),
+            ('<invoke name="get_time_info">\n', None),
+            ("</invoke>\n", None),
+            ("</tool_call>", "stop"),
+        ],
+        prompt_text="<think>old reasoning</think>\nold visible content",
+    )
+
+    message = response.choices[0].message
+    assert response.choices[0].finish_reason == "tool_calls"
+    assert message.reasoning == "Need to call it."
+    assert message.content is None
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].function.name == "get_time_info"
+
+
+@pytest.mark.asyncio
+async def test_rwkv_streaming_tool_call_preserves_visible_content_before_call():
+    response = await _run_rwkv_streaming_tool_call(
+        chunks=[
+            ("Need to call it.</thi", None),
+            ("nk>\n\nI will check the time.\n", None),
+            ("<tool_c", None),
+            ("all>\n", None),
+            ('<invoke name="get_time_info">\n', None),
+            ("</invoke>\n", None),
+            ("</tool_call>", "stop"),
+        ]
+    )
+
+    message = response.choices[0].message
+    assert response.choices[0].finish_reason == "tool_calls"
+    assert message.reasoning == "Need to call it."
+    assert message.content == "\n\nI will check the time.\n"
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].function.name == "get_time_info"
+
+
+async def _run_rwkv_streaming_tool_call(
+    *,
+    chunks: list[tuple[str, str | None]],
+    prompt_text: str = "",
+) -> ChatCompletionResponse:
     serving_chat = _build_rwkv_serving_chat()
     serving_chat.enable_auto_tools = True
     serving_chat.tool_parser = ToolParserManager.get_tool_parser("rwkv")
@@ -852,23 +946,14 @@ async def test_rwkv_streaming_tool_call_after_split_reasoning_end():
         chat_template_kwargs=request.chat_template_kwargs,
     )
 
-    chunks = [
-        ("Need to call it.</thi", None),
-        ("nk>\n\n", None),
-        ("<tool_c", None),
-        ("all>\n", None),
-        ('<invoke name="get_time_info">\n', None),
-        ("</invoke>\n", None),
-        ("</tool_call>", "stop"),
-    ]
-
     async def result_generator():
+        prompt_token_ids = tokenizer.encode(prompt_text)
         for text, finish_reason in chunks:
             token_ids = tokenizer.encode(text)
             yield RequestOutput(
                 request_id=request.request_id,
                 prompt=[],
-                prompt_token_ids=[],
+                prompt_token_ids=prompt_token_ids,
                 prompt_logprobs=None,
                 outputs=[
                     CompletionOutput(
@@ -884,7 +969,7 @@ async def test_rwkv_streaming_tool_call_after_split_reasoning_end():
                 finished=finish_reason is not None,
             )
 
-    response = await accumulate_streaming_response(
+    return await accumulate_streaming_response(
         serving_chat.chat_completion_stream_generator(
             request=request,
             result_generator=result_generator(),
@@ -899,16 +984,6 @@ async def test_rwkv_streaming_tool_call_after_split_reasoning_end():
             reasoning_parser=reasoning_parser,
         )
     )
-
-    choice = response.choices[0]
-    message = choice.message
-    assert choice.finish_reason == "tool_calls"
-    assert message.reasoning == "Need to call it."
-    assert message.content is None
-    assert message.tool_calls is not None
-    assert len(message.tool_calls) == 1
-    assert message.tool_calls[0].function.name == "get_time_info"
-    assert json.loads(message.tool_calls[0].function.arguments) == {}
 
 
 @pytest.mark.asyncio

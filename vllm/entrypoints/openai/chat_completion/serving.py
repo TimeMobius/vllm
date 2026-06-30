@@ -695,9 +695,12 @@ class OpenAIServingChat(OpenAIServing):
                     ):
                         # only check once per choice, because prompt_token_ids
                         # are the same for all deltas in that choice
-                        prompt_is_reasoning_end_arr[i] = (
-                            reasoning_parser.is_reasoning_end(res.prompt_token_ids)
+                        prompt_reasoning_end = reasoning_parser.is_reasoning_end(
+                            res.prompt_token_ids
                         )
+                        if getattr(reasoning_parser, "thinking_enabled", False):
+                            prompt_reasoning_end = False
+                        prompt_is_reasoning_end_arr[i] = prompt_reasoning_end
                     if finish_reason_sent[i]:
                         continue
 
