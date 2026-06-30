@@ -2454,7 +2454,7 @@ class TestCreateRemainingArgsDelta:
         assert tc.function.arguments == '{"data": "value"}'
 
 
-class TestGeneratedReasoningStart:
+class TestGeneratedReasoningMarker:
     class MultiTokenThinkTokenizer:
         _piece_to_id = {
             "<": 1,
@@ -2496,10 +2496,13 @@ class TestGeneratedReasoningStart:
         current_text = "<think>hidden</think><tool_call>"
         current_token_ids = tokenizer.encode(current_text)
 
-        assert OpenAIServingChat._has_generated_reasoning_start(
+        assert OpenAIServingChat._has_generated_reasoning_marker(
             parser,
             current_token_ids,
             current_text,
+            marker_attr="start_token",
+            marker_ids_attr="start_token_ids",
+            marker_id_attr="start_token_id",
         )
 
     def test_returns_false_without_generated_reasoning_start(self):
@@ -2509,8 +2512,11 @@ class TestGeneratedReasoningStart:
         current_text = "<tool_call>"
         current_token_ids = tokenizer.encode(current_text)
 
-        assert not OpenAIServingChat._has_generated_reasoning_start(
+        assert not OpenAIServingChat._has_generated_reasoning_marker(
             parser,
             current_token_ids,
             current_text,
+            marker_attr="start_token",
+            marker_ids_attr="start_token_ids",
+            marker_id_attr="start_token_id",
         )

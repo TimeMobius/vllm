@@ -18,7 +18,7 @@ class RWKVReasoningParser(ReasoningParser):
 
     start_token = "<think>"
     end_token = "</think>"
-    stream_reasoning_end_requires_text = True
+    reasoning_markers_require_text = True
 
     def __init__(self, tokenizer: TokenizerLike, *args, **kwargs):
         super().__init__(tokenizer, *args, **kwargs)

@@ -408,59 +408,35 @@ class OpenAIServingChat(OpenAIServing):
         return updated_delta, passed_zero
 
     @staticmethod
-    def _has_generated_reasoning_start(
+    def _has_generated_reasoning_marker(
         reasoning_parser: ReasoningParser,
         current_token_ids: GenericSequence[int],
         current_text: str,
+        *,
+        marker_attr: str,
+        marker_ids_attr: str,
+        marker_id_attr: str,
     ) -> bool:
-        """Return whether generated output contains a reasoning start marker."""
+        marker = getattr(reasoning_parser, marker_attr, None)
+        if getattr(reasoning_parser, "reasoning_markers_require_text", False):
+            return isinstance(marker, str) and marker in current_text
 
-        start_token_ids = getattr(reasoning_parser, "start_token_ids", None)
-        if start_token_ids:
-            start_token_ids = list(start_token_ids)
-            if len(start_token_ids) <= len(current_token_ids):
-                for start in range(len(current_token_ids) - len(start_token_ids) + 1):
+        marker_ids = getattr(reasoning_parser, marker_ids_attr, None)
+        if marker_ids:
+            marker_ids = list(marker_ids)
+            if len(marker_ids) <= len(current_token_ids):
+                for start in range(len(current_token_ids) - len(marker_ids) + 1):
                     if (
-                        list(current_token_ids[start : start + len(start_token_ids)])
-                        == start_token_ids
+                        list(current_token_ids[start : start + len(marker_ids)])
+                        == marker_ids
                     ):
                         return True
 
-        start_token_id = getattr(reasoning_parser, "start_token_id", None)
-        if start_token_id is not None and start_token_id in current_token_ids:
+        marker_id = getattr(reasoning_parser, marker_id_attr, None)
+        if marker_id is not None and marker_id in current_token_ids:
             return True
 
-        start_token = getattr(reasoning_parser, "start_token", None)
-        if isinstance(start_token, str) and start_token in current_text:
-            return True
-
-        return False
-
-    @staticmethod
-    def _has_generated_reasoning_end(
-        reasoning_parser: ReasoningParser,
-        current_token_ids: GenericSequence[int],
-        current_text: str,
-    ) -> bool:
-        """Return whether generated output contains a reasoning end marker."""
-
-        end_token_ids = getattr(reasoning_parser, "end_token_ids", None)
-        if end_token_ids:
-            end_token_ids = list(end_token_ids)
-            if len(end_token_ids) <= len(current_token_ids):
-                for start in range(len(current_token_ids) - len(end_token_ids) + 1):
-                    if (
-                        list(current_token_ids[start : start + len(end_token_ids)])
-                        == end_token_ids
-                    ):
-                        return True
-
-        end_token_id = getattr(reasoning_parser, "end_token_id", None)
-        if end_token_id is not None and end_token_id in current_token_ids:
-            return True
-
-        end_token = getattr(reasoning_parser, "end_token", None)
-        if isinstance(end_token, str) and end_token in current_text:
+        if isinstance(marker, str) and marker in current_text:
             return True
 
         return False
@@ -472,15 +448,21 @@ class OpenAIServingChat(OpenAIServing):
         current_text: str,
     ) -> bool:
         return (
-            not OpenAIServingChat._has_generated_reasoning_start(
+            not OpenAIServingChat._has_generated_reasoning_marker(
                 reasoning_parser,
                 current_token_ids,
                 current_text,
+                marker_attr="start_token",
+                marker_ids_attr="start_token_ids",
+                marker_id_attr="start_token_id",
             )
-            and not OpenAIServingChat._has_generated_reasoning_end(
+            and not OpenAIServingChat._has_generated_reasoning_marker(
                 reasoning_parser,
                 current_token_ids,
                 current_text,
+                marker_attr="end_token",
+                marker_ids_attr="end_token_ids",
+                marker_id_attr="end_token_id",
             )
         )
 
@@ -491,7 +473,7 @@ class OpenAIServingChat(OpenAIServing):
         delta_token_ids: GenericSequence[int],
         current_text: str,
     ) -> bool:
-        if getattr(reasoning_parser, "stream_reasoning_end_requires_text", False):
+        if getattr(reasoning_parser, "reasoning_markers_require_text", False):
             end_token = getattr(reasoning_parser, "end_token", None)
             return isinstance(end_token, str) and end_token in current_text
 
@@ -989,9 +971,11 @@ class OpenAIServingChat(OpenAIServing):
                                     output_token_ids,
                                 )
                             )
-                            if reasoning_parser.is_reasoning_end_streaming(
+                            if self._is_reasoning_end_streaming(
+                                reasoning_parser,
                                 current_token_ids,
                                 output_token_ids,
+                                current_text,
                             ):
                                 reasoning_end_arr[i] = True
                                 if delta_message and delta_message.content:
