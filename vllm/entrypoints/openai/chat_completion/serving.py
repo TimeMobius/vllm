@@ -477,7 +477,7 @@ class OpenAIServingChat(OpenAIServing):
                 current_token_ids,
                 current_text,
             )
-            and OpenAIServingChat._has_generated_reasoning_end(
+            and not OpenAIServingChat._has_generated_reasoning_end(
                 reasoning_parser,
                 current_token_ids,
                 current_text,

@@ -936,6 +936,23 @@ async def test_rwkv_streaming_tool_call_hides_reasoning_when_excluded():
     assert message.tool_calls[0].function.name == "get_time_info"
 
 
+@pytest.mark.asyncio
+async def test_rwkv_streaming_answer_filters_split_reasoning_end_after_tool_result():
+    response = await _run_rwkv_streaming_answer(
+        chunks=[
+            ("I can answer based on the tool result.</thi", None),
+            ("nk>\n\n现在是2026年6月30日。", "stop"),
+        ],
+        prompt_text="<think>\n\n</think>\n\n",
+    )
+
+    message = response.choices[0].message
+    assert response.choices[0].finish_reason == "stop"
+    assert message.reasoning == "I can answer based on the tool result."
+    assert message.content == "\n\n现在是2026年6月30日。"
+    assert "</think>" not in message.content
+
+
 async def _run_rwkv_streaming_tool_call(
     *,
     chunks: list[tuple[str, str | None]],
@@ -963,6 +980,89 @@ async def _run_rwkv_streaming_tool_call(
             }
         ],
         tool_choice="auto",
+        include_reasoning=include_reasoning,
+        chat_template_kwargs={"enable_thinking": True},
+    )
+    reasoning_parser = reasoning_cls(
+        tokenizer,
+        chat_template_kwargs=request.chat_template_kwargs,
+    )
+
+    async def result_generator():
+        prompt_token_ids = tokenizer.encode(prompt_text)
+        for text, finish_reason in chunks:
+            token_ids = tokenizer.encode(text)
+            yield RequestOutput(
+                request_id=request.request_id,
+                prompt=[],
+                prompt_token_ids=prompt_token_ids,
+                prompt_logprobs=None,
+                outputs=[
+                    CompletionOutput(
+                        index=0,
+                        text=text,
+                        token_ids=token_ids,
+                        cumulative_logprob=0.0,
+                        logprobs=None,
+                        finish_reason=finish_reason,
+                        stop_reason="<|im_end|>" if finish_reason else None,
+                    )
+                ],
+                finished=finish_reason is not None,
+            )
+
+    return await accumulate_streaming_response(
+        serving_chat.chat_completion_stream_generator(
+            request=request,
+            result_generator=result_generator(),
+            request_id=request.request_id,
+            model_name=request.model,
+            conversation=[],
+            tokenizer=tokenizer,
+            request_metadata=RequestResponseMetadata(
+                request_id=request.request_id,
+                model_name=request.model,
+            ),
+            reasoning_parser=reasoning_parser,
+        )
+    )
+
+
+async def _run_rwkv_streaming_answer(
+    *,
+    chunks: list[tuple[str, str | None]],
+    prompt_text: str = "",
+    include_reasoning: bool = True,
+) -> ChatCompletionResponse:
+    serving_chat = _build_rwkv_serving_chat()
+
+    tokenizer = SimpleRWKVTokenizer()
+    reasoning_cls = ReasoningParserManager.get_reasoning_parser("rwkv")
+    request = ChatCompletionRequest(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "user", "content": "what time is it"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_time",
+                        "type": "function",
+                        "function": {
+                            "name": "get_time_info",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_time",
+                "name": "get_time_info",
+                "content": "2026年6月30日",
+            },
+        ],
+        stream=True,
         include_reasoning=include_reasoning,
         chat_template_kwargs={"enable_thinking": True},
     )
