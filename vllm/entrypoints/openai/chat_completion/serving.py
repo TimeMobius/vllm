@@ -484,6 +484,22 @@ class OpenAIServingChat(OpenAIServing):
             )
         )
 
+    @staticmethod
+    def _is_reasoning_end_streaming(
+        reasoning_parser: ReasoningParser,
+        current_token_ids: GenericSequence[int],
+        delta_token_ids: GenericSequence[int],
+        current_text: str,
+    ) -> bool:
+        if getattr(reasoning_parser, "stream_reasoning_end_requires_text", False):
+            end_token = getattr(reasoning_parser, "end_token", None)
+            return isinstance(end_token, str) and end_token in current_text
+
+        return reasoning_parser.is_reasoning_end_streaming(
+            current_token_ids,
+            delta_token_ids,
+        )
+
     def extract_tool_call_required_streaming(
         self,
         previous_text: str,
@@ -892,9 +908,11 @@ class OpenAIServingChat(OpenAIServing):
                             # When encountering think end id in delta_token_ids,
                             # set reasoning status to end.
                             # Only keep 'content', remove 'reasoning'.
-                            if reasoning_parser.is_reasoning_end_streaming(
+                            if self._is_reasoning_end_streaming(
+                                reasoning_parser,
                                 current_token_ids,
                                 as_list(output.token_ids),
+                                current_text,
                             ):
                                 reasoning_end_arr[i] = True
                                 if delta_message and delta_message.content:
@@ -1039,9 +1057,11 @@ class OpenAIServingChat(OpenAIServing):
                                 # set reasoning status to end.
                                 # Remove the text and token ids related
                                 # to 'reasoning'.
-                                if reasoning_parser.is_reasoning_end_streaming(
+                                if self._is_reasoning_end_streaming(
+                                    reasoning_parser,
                                     current_token_ids,
                                     output_token_ids,
+                                    current_text,
                                 ):
                                     reasoning_end_arr[i] = True
                                     current_token_ids = (

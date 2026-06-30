@@ -937,6 +937,38 @@ async def test_rwkv_streaming_tool_call_hides_reasoning_when_excluded():
 
 
 @pytest.mark.asyncio
+async def test_rwkv_streaming_tool_call_ignores_false_token_end_before_text_end():
+    response = await _run_rwkv_streaming_tool_call(
+        chunks=[
+            ("Need to know the time n", None),
+            ("ow.", None),
+            ("\n</think>\n\n", None),
+            ("<tool_call>\n", None),
+            ('<invoke name="get_time_info">\n', None),
+            ("</invoke>\n", None),
+            ("</tool_call>", "stop"),
+        ],
+        token_id_chunks=[
+            SimpleRWKVTokenizer().encode("Need to know the time ")
+            + SimpleRWKVTokenizer().encode("</think>"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+    )
+
+    message = response.choices[0].message
+    assert response.choices[0].finish_reason == "tool_calls"
+    assert message.reasoning == "Need to know the time now."
+    assert message.content is None
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].function.name == "get_time_info"
+
+
+@pytest.mark.asyncio
 async def test_rwkv_streaming_answer_filters_split_reasoning_end_after_tool_result():
     response = await _run_rwkv_streaming_answer(
         chunks=[
@@ -958,6 +990,7 @@ async def _run_rwkv_streaming_tool_call(
     chunks: list[tuple[str, str | None]],
     prompt_text: str = "",
     include_reasoning: bool = True,
+    token_id_chunks: list[list[int] | None] | None = None,
 ) -> ChatCompletionResponse:
     serving_chat = _build_rwkv_serving_chat()
     serving_chat.enable_auto_tools = True
@@ -990,8 +1023,12 @@ async def _run_rwkv_streaming_tool_call(
 
     async def result_generator():
         prompt_token_ids = tokenizer.encode(prompt_text)
-        for text, finish_reason in chunks:
-            token_ids = tokenizer.encode(text)
+        for idx, (text, finish_reason) in enumerate(chunks):
+            token_ids = (
+                token_id_chunks[idx]
+                if token_id_chunks is not None and token_id_chunks[idx] is not None
+                else tokenizer.encode(text)
+            )
             yield RequestOutput(
                 request_id=request.request_id,
                 prompt=[],
