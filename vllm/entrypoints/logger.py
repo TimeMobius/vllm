@@ -24,25 +24,26 @@ class RequestLogger:
         *,
         max_log_len: int | None,
         io_log_path: str | None = None,
+        enable_log_requests: bool = True,
+        enable_log_outputs: bool = True,
     ) -> None:
         self.max_log_len = max_log_len
         self.io_log_path = Path(io_log_path) if io_log_path else None
+        self.enable_log_requests = enable_log_requests
+        self.enable_log_outputs = enable_log_outputs
         self._io_log_lock = Lock()
 
         if self.io_log_path is not None:
             self.io_log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if not self.enable_log_requests and not self.enable_log_outputs:
+            return
+
         if not logger.isEnabledFor(logging.INFO):
-            log_level_message = (
-                "Request information will only be written to the IO log file."
-                if self.io_log_path is not None
-                else "No request information will be logged."
-            )
             logger.warning_once(
                 "Request logging is enabled but "
                 "the minimum log level is higher than INFO. "
-                "%s",
-                log_level_message,
+                "No request information will be logged."
             )
         elif not logger.isEnabledFor(logging.DEBUG):
             logger.info_once(
@@ -79,32 +80,35 @@ class RequestLogger:
         params: SamplingParams | PoolingParams | BeamSearchParams | None,
         lora_request: LoRARequest | None,
     ) -> None:
-        if (logger.isEnabledFor(logging.DEBUG) or self.io_log_path is not None) and (
+        prompt_for_log = prompt
+        prompt_token_ids_for_log = prompt_token_ids
+        if logger.isEnabledFor(logging.DEBUG) and (
             max_log_len := self.max_log_len
         ) is not None:
-            if prompt is not None:
-                prompt = prompt[:max_log_len]
+            if prompt_for_log is not None:
+                prompt_for_log = prompt_for_log[:max_log_len]
 
-            if prompt_token_ids is not None:
-                prompt_token_ids = prompt_token_ids[:max_log_len]
+            if prompt_token_ids_for_log is not None:
+                prompt_token_ids_for_log = prompt_token_ids_for_log[:max_log_len]
 
-        if logger.isEnabledFor(logging.DEBUG):
+        if self.enable_log_requests and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Request %s details: prompt: %r, "
                 "prompt_token_ids: %s, "
                 "prompt_embeds shape: %s.",
                 request_id,
-                prompt,
-                prompt_token_ids,
+                prompt_for_log,
+                prompt_token_ids_for_log,
                 prompt_embeds.shape if prompt_embeds is not None else None,
             )
 
-        logger.info(
-            "Received request %s: params: %s, lora_request: %s.",
-            request_id,
-            params,
-            lora_request,
-        )
+        if self.enable_log_requests:
+            logger.info(
+                "Received request %s: params: %s, lora_request: %s.",
+                request_id,
+                params,
+                lora_request,
+            )
         self._write_io_log(
             "input",
             {
@@ -128,36 +132,41 @@ class RequestLogger:
         is_streaming: bool = False,
         delta: bool = False,
     ) -> None:
+        outputs_for_log = outputs
+        output_token_ids_for_log = output_token_ids
         max_log_len = self.max_log_len
         if max_log_len is not None:
-            if outputs is not None:
-                outputs = outputs[:max_log_len]
+            if outputs_for_log is not None:
+                outputs_for_log = outputs_for_log[:max_log_len]
 
-            if output_token_ids is not None:
+            if output_token_ids_for_log is not None:
                 # Convert to list and apply truncation
-                output_token_ids = list(output_token_ids)[:max_log_len]
+                output_token_ids_for_log = list(output_token_ids_for_log)[:max_log_len]
 
         stream_info = ""
         if is_streaming:
             stream_info = " (streaming delta)" if delta else " (streaming complete)"
 
-        logger.info(
-            "Generated response %s%s: output: %r, "
-            "output_token_ids: %s, finish_reason: %s",
-            request_id,
-            stream_info,
-            outputs,
-            output_token_ids,
-            finish_reason,
-        )
-        self._write_io_log(
-            "output",
-            {
-                "request_id": request_id,
-                "outputs": outputs,
-                "output_token_ids": output_token_ids,
-                "finish_reason": finish_reason,
-                "is_streaming": is_streaming,
-                "delta": delta,
-            },
-        )
+        if self.enable_log_outputs:
+            logger.info(
+                "Generated response %s%s: output: %r, "
+                "output_token_ids: %s, finish_reason: %s",
+                request_id,
+                stream_info,
+                outputs_for_log,
+                output_token_ids_for_log,
+                finish_reason,
+            )
+
+        if not delta:
+            self._write_io_log(
+                "output",
+                {
+                    "request_id": request_id,
+                    "outputs": outputs,
+                    "output_token_ids": output_token_ids,
+                    "finish_reason": finish_reason,
+                    "is_streaming": is_streaming,
+                    "delta": delta,
+                },
+            )

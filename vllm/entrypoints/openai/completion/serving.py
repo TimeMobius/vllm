@@ -385,22 +385,6 @@ class OpenAIServingCompletion(OpenAIServing):
 
                     self._raise_if_error(finish_reason, request_id)
 
-                    if (
-                        self.enable_log_outputs
-                        and self.request_logger
-                        and delta_text
-                    ):
-                        self.request_logger.log_outputs(
-                            request_id=getattr(
-                                res, "request_id", f"{request_id}-{prompt_idx}"
-                            ),
-                            outputs=delta_text,
-                            output_token_ids=as_list(delta_token_ids),
-                            finish_reason=finish_reason,
-                            is_streaming=True,
-                            delta=True,
-                        )
-
                     chunk = CompletionStreamResponse(
                         id=request_id,
                         created=created_time,

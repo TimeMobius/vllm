@@ -479,24 +479,39 @@ def test_request_logger_log_outputs_integration():
 
 def test_request_logger_writes_io_jsonl(tmp_path):
     io_log_path = tmp_path / "logs" / "io.jsonl"
-    request_logger = RequestLogger(max_log_len=4, io_log_path=str(io_log_path))
+    mock_logger = MagicMock()
+    request_logger = RequestLogger(
+        max_log_len=4,
+        io_log_path=str(io_log_path),
+        enable_log_requests=False,
+        enable_log_outputs=False,
+    )
 
-    request_logger.log_inputs(
-        request_id="test-io-log",
-        prompt="abcdef",
-        prompt_token_ids=[1, 2, 3, 4, 5, 6],
-        prompt_embeds=None,
-        params=None,
-        lora_request=None,
-    )
-    request_logger.log_outputs(
-        request_id="test-io-log",
-        outputs="uvwxyz",
-        output_token_ids=[7, 8, 9, 10, 11, 12],
-        finish_reason="stop",
-        is_streaming=True,
-        delta=True,
-    )
+    with patch("vllm.entrypoints.logger.logger", mock_logger):
+        request_logger.log_inputs(
+            request_id="test-io-log",
+            prompt="abcdef",
+            prompt_token_ids=[1, 2, 3, 4, 5, 6],
+            prompt_embeds=None,
+            params=None,
+            lora_request=None,
+        )
+        request_logger.log_outputs(
+            request_id="test-io-log",
+            outputs="ignored-delta",
+            output_token_ids=[0],
+            finish_reason=None,
+            is_streaming=True,
+            delta=True,
+        )
+        request_logger.log_outputs(
+            request_id="test-io-log",
+            outputs="uvwxyz",
+            output_token_ids=[7, 8, 9, 10, 11, 12],
+            finish_reason="stop",
+            is_streaming=True,
+            delta=False,
+        )
 
     records = [
         json.loads(line)
@@ -505,16 +520,17 @@ def test_request_logger_writes_io_jsonl(tmp_path):
 
     assert [record["event"] for record in records] == ["input", "output"]
     assert records[0]["request_id"] == "test-io-log"
-    assert records[0]["prompt"] == "abcd"
-    assert records[0]["prompt_token_ids"] == [1, 2, 3, 4]
+    assert records[0]["prompt"] == "abcdef"
+    assert records[0]["prompt_token_ids"] == [1, 2, 3, 4, 5, 6]
     assert records[0]["prompt_embeds_shape"] is None
     assert records[1]["request_id"] == "test-io-log"
-    assert records[1]["outputs"] == "uvwx"
-    assert records[1]["output_token_ids"] == [7, 8, 9, 10]
+    assert records[1]["outputs"] == "uvwxyz"
+    assert records[1]["output_token_ids"] == [7, 8, 9, 10, 11, 12]
     assert records[1]["finish_reason"] == "stop"
     assert records[1]["is_streaming"] is True
-    assert records[1]["delta"] is True
+    assert records[1]["delta"] is False
     assert all("timestamp" in record for record in records)
+    mock_logger.info.assert_not_called()
 
 
 def test_streaming_complete_logs_full_text_content():

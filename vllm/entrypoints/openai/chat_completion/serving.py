@@ -1171,8 +1171,14 @@ class OpenAIServingChat(OpenAIServing):
                             continue
                         delta_message = DeltaMessage()
 
-                    # Log streaming delta if output logging is enabled
-                    if self.enable_log_outputs and self.request_logger:
+                    # Log streaming deltas to process logs only. IO file logs
+                    # are written once with the full response after streaming.
+                    if (
+                        self.enable_log_outputs
+                        and self.enable_log_deltas
+                        and self.request_logger
+                        and self.request_logger.enable_log_outputs
+                    ):
                         delta_content_parts = []
                         if delta_message.content:
                             delta_content_parts.append(delta_message.content)
@@ -1188,7 +1194,7 @@ class OpenAIServingChat(OpenAIServing):
                             if tool_args:
                                 delta_content_parts.append(f"[tool_calls: {tool_args}]")
 
-                        if delta_content_parts and self.enable_log_deltas:
+                        if delta_content_parts:
                             delta_content = " ".join(delta_content_parts)
                             self.request_logger.log_outputs(
                                 request_id=request_id,

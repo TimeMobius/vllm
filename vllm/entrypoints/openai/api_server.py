@@ -334,6 +334,8 @@ async def init_app_state(
         request_logger = RequestLogger(
             max_log_len=args.max_log_len,
             io_log_path=args.io_log_path,
+            enable_log_requests=args.enable_log_requests,
+            enable_log_outputs=args.enable_log_outputs,
         )
     else:
         request_logger = None
@@ -451,6 +453,8 @@ async def init_render_app_state(
         request_logger = RequestLogger(
             max_log_len=args.max_log_len,
             io_log_path=args.io_log_path,
+            enable_log_requests=args.enable_log_requests,
+            enable_log_outputs=args.enable_log_outputs,
         )
     else:
         request_logger = None
