@@ -407,6 +407,35 @@ class OpenAIServingChat(OpenAIServing):
                     break
         return updated_delta, passed_zero
 
+    @staticmethod
+    def _has_generated_reasoning_start(
+        reasoning_parser: ReasoningParser,
+        current_token_ids: GenericSequence[int],
+        current_text: str,
+    ) -> bool:
+        """Return whether generated output contains a reasoning start marker."""
+
+        start_token_ids = getattr(reasoning_parser, "start_token_ids", None)
+        if start_token_ids:
+            start_token_ids = list(start_token_ids)
+            if len(start_token_ids) <= len(current_token_ids):
+                for start in range(len(current_token_ids) - len(start_token_ids) + 1):
+                    if (
+                        list(current_token_ids[start : start + len(start_token_ids)])
+                        == start_token_ids
+                    ):
+                        return True
+
+        start_token_id = getattr(reasoning_parser, "start_token_id", None)
+        if start_token_id is not None and start_token_id in current_token_ids:
+            return True
+
+        start_token = getattr(reasoning_parser, "start_token", None)
+        if isinstance(start_token, str) and start_token in current_text:
+            return True
+
+        return False
+
     def extract_tool_call_required_streaming(
         self,
         previous_text: str,
@@ -788,6 +817,9 @@ class OpenAIServingChat(OpenAIServing):
                             reasoning_parser
                             and not reasoning_end_arr[i]
                             and prompt_is_reasoning_end_arr[i]
+                            and not self._has_generated_reasoning_start(
+                                reasoning_parser, current_token_ids, current_text
+                            )
                         ):
                             reasoning_end_arr[i] = True
 
@@ -874,6 +906,9 @@ class OpenAIServingChat(OpenAIServing):
                             reasoning_parser is not None
                             and not reasoning_end_arr[i]
                             and prompt_is_reasoning_end_arr[i]
+                            and not self._has_generated_reasoning_start(
+                                reasoning_parser, current_token_ids, current_text
+                            )
                         ):
                             reasoning_end_arr[i] = True
 
@@ -932,7 +967,11 @@ class OpenAIServingChat(OpenAIServing):
                             # When encountering think end id in prompt_token_ids
                             # i.e {"enable_thinking": False},
                             # set reasoning status to end.
-                            if prompt_is_reasoning_end_arr[i]:
+                            if prompt_is_reasoning_end_arr[
+                                i
+                            ] and not self._has_generated_reasoning_start(
+                                reasoning_parser, current_token_ids, current_text
+                            ):
                                 reasoning_end_arr[i] = True
                                 current_token_ids = output_token_ids
                                 # Don't update current_text, keep it as is from delta
@@ -1016,7 +1055,11 @@ class OpenAIServingChat(OpenAIServing):
                         # i.e {"enable_thinking": False},
                         # set reasoning status to end.
                         # Route all generated tokens as content directly.
-                        if prompt_is_reasoning_end_arr[i]:
+                        if prompt_is_reasoning_end_arr[
+                            i
+                        ] and not self._has_generated_reasoning_start(
+                            reasoning_parser, current_token_ids, current_text
+                        ):
                             delta_message = DeltaMessage(content=delta_text)
                         else:
                             delta_message = (

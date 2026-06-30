@@ -2290,3 +2290,65 @@ class TestCreateRemainingArgsDelta:
         assert tc.type == "function"
         assert tc.function.name is None
         assert tc.function.arguments == '{"data": "value"}'
+
+
+class TestGeneratedReasoningStart:
+    class MultiTokenThinkTokenizer:
+        _piece_to_id = {
+            "<": 1,
+            "</": 2,
+            "think": 3,
+            ">": 4,
+        }
+
+        def get_vocab(self) -> dict[str, int]:
+            return dict(self._piece_to_id)
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            del add_special_tokens
+            token_ids: list[int] = []
+            idx = 0
+            next_id = max(self._piece_to_id.values()) + 1
+            while idx < len(text):
+                if text.startswith("</", idx):
+                    piece = "</"
+                    idx += len(piece)
+                elif text.startswith("think", idx):
+                    piece = "think"
+                    idx += len(piece)
+                else:
+                    piece = text[idx]
+                    idx += 1
+
+                token_id = self._piece_to_id.get(piece)
+                if token_id is None:
+                    token_id = next_id + ord(piece)
+                    self._piece_to_id[piece] = token_id
+                token_ids.append(token_id)
+            return token_ids
+
+    def test_detects_rwkv_multi_token_reasoning_start(self):
+        parser_cls = ReasoningParserManager.get_reasoning_parser("rwkv")
+        tokenizer = self.MultiTokenThinkTokenizer()
+        parser = parser_cls(tokenizer)
+        current_text = "<think>hidden</think><tool_call>"
+        current_token_ids = tokenizer.encode(current_text)
+
+        assert OpenAIServingChat._has_generated_reasoning_start(
+            parser,
+            current_token_ids,
+            current_text,
+        )
+
+    def test_returns_false_without_generated_reasoning_start(self):
+        parser_cls = ReasoningParserManager.get_reasoning_parser("rwkv")
+        tokenizer = self.MultiTokenThinkTokenizer()
+        parser = parser_cls(tokenizer)
+        current_text = "<tool_call>"
+        current_token_ids = tokenizer.encode(current_text)
+
+        assert not OpenAIServingChat._has_generated_reasoning_start(
+            parser,
+            current_token_ids,
+            current_text,
+        )
