@@ -809,8 +809,9 @@ class OpenAIServingChat(OpenAIServing):
                             # When encountering think end id in delta_token_ids,
                             # set reasoning status to end.
                             # Only keep 'content', remove 'reasoning'.
-                            if reasoning_parser.is_reasoning_end(
-                                as_list(output.token_ids)
+                            if reasoning_parser.is_reasoning_end_streaming(
+                                current_token_ids,
+                                as_list(output.token_ids),
                             ):
                                 reasoning_end_arr[i] = True
                                 if delta_message and delta_message.content:
@@ -884,7 +885,10 @@ class OpenAIServingChat(OpenAIServing):
                                     output_token_ids,
                                 )
                             )
-                            if reasoning_parser.is_reasoning_end(output_token_ids):
+                            if reasoning_parser.is_reasoning_end_streaming(
+                                current_token_ids,
+                                output_token_ids,
+                            ):
                                 reasoning_end_arr[i] = True
                                 if delta_message and delta_message.content:
                                     current_text = delta_message.content
@@ -945,11 +949,14 @@ class OpenAIServingChat(OpenAIServing):
                                 # set reasoning status to end.
                                 # Remove the text and token ids related
                                 # to 'reasoning'.
-                                if reasoning_parser.is_reasoning_end(output_token_ids):
+                                if reasoning_parser.is_reasoning_end_streaming(
+                                    current_token_ids,
+                                    output_token_ids,
+                                ):
                                     reasoning_end_arr[i] = True
                                     current_token_ids = (
                                         reasoning_parser.extract_content_ids(
-                                            output_token_ids
+                                            current_token_ids
                                         )
                                     )
                                     if delta_message and delta_message.content:

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import asyncio
+import json
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,6 +41,7 @@ from vllm.inputs import TokensPrompt
 from vllm.outputs import CompletionOutput, RequestOutput
 from vllm.renderers.hf import HfRenderer
 from vllm.renderers.mistral import MistralRenderer
+from vllm.reasoning import ReasoningParserManager
 from vllm.tokenizers import get_tokenizer
 from vllm.tokenizers.mistral import MistralTokenizer
 from vllm.tokenizers.registry import tokenizer_args_from_config
@@ -776,6 +778,15 @@ def test_serving_chat_template_kwargs_empty_when_generation_config_disabled():
     assert serving_chat.default_chat_template_kwargs == {}
 
 
+class SimpleRWKVTokenizer:
+    def get_vocab(self) -> dict[str, int]:
+        return {}
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        del add_special_tokens
+        return [ord(ch) for ch in text]
+
+
 @pytest.mark.asyncio
 async def test_serving_chat_does_not_add_rwkv_bad_words_for_no_thinking():
     serving_chat = _build_rwkv_serving_chat()
@@ -809,6 +820,95 @@ async def test_serving_chat_does_not_add_rwkv_bad_words_for_no_thinking():
     sampling_params = serving_chat.engine_client.generate.call_args.args[1]
     assert result == "ok"
     assert sampling_params.bad_words == []
+
+
+@pytest.mark.asyncio
+async def test_rwkv_streaming_tool_call_after_split_reasoning_end():
+    serving_chat = _build_rwkv_serving_chat()
+    serving_chat.enable_auto_tools = True
+    serving_chat.tool_parser = ToolParserManager.get_tool_parser("rwkv")
+
+    tokenizer = SimpleRWKVTokenizer()
+    reasoning_cls = ReasoningParserManager.get_reasoning_parser("rwkv")
+    request = ChatCompletionRequest(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": "call time"}],
+        stream=True,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time_info",
+                    "description": "Get local time.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        tool_choice="auto",
+        chat_template_kwargs={"enable_thinking": True},
+    )
+    reasoning_parser = reasoning_cls(
+        tokenizer,
+        chat_template_kwargs=request.chat_template_kwargs,
+    )
+
+    chunks = [
+        ("<think>Need to call it.</thi", None),
+        ("nk>\n\n", None),
+        ("<tool_c", None),
+        ("all>\n", None),
+        ('<invoke name="get_time_info">\n', None),
+        ("</invoke>\n", None),
+        ("</tool_call>", "stop"),
+    ]
+
+    async def result_generator():
+        for text, finish_reason in chunks:
+            token_ids = tokenizer.encode(text)
+            yield RequestOutput(
+                request_id=request.request_id,
+                prompt=[],
+                prompt_token_ids=[],
+                prompt_logprobs=None,
+                outputs=[
+                    CompletionOutput(
+                        index=0,
+                        text=text,
+                        token_ids=token_ids,
+                        cumulative_logprob=0.0,
+                        logprobs=None,
+                        finish_reason=finish_reason,
+                        stop_reason="<|im_end|>" if finish_reason else None,
+                    )
+                ],
+                finished=finish_reason is not None,
+            )
+
+    response = await accumulate_streaming_response(
+        serving_chat.chat_completion_stream_generator(
+            request=request,
+            result_generator=result_generator(),
+            request_id=request.request_id,
+            model_name=request.model,
+            conversation=[],
+            tokenizer=tokenizer,
+            request_metadata=RequestResponseMetadata(
+                request_id=request.request_id,
+                model_name=request.model,
+            ),
+            reasoning_parser=reasoning_parser,
+        )
+    )
+
+    choice = response.choices[0]
+    message = choice.message
+    assert choice.finish_reason == "tool_calls"
+    assert message.reasoning == "Need to call it."
+    assert message.content is None or "<tool_call>" not in message.content
+    assert message.tool_calls is not None
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0].function.name == "get_time_info"
+    assert json.loads(message.tool_calls[0].function.arguments) == {}
 
 
 @pytest.mark.asyncio
