@@ -95,7 +95,8 @@ class OpenAIServingRender:
             model_name=model_config.model,
         )
         self.default_chat_template_kwargs: dict[str, Any] = (
-            default_chat_template_kwargs or {}
+            (default_chat_template_kwargs or {})
+            | model_config.get_generation_chat_template_kwargs()
         )
         self.log_error_stack = log_error_stack
         self.use_harmony = model_config.hf_config.model_type == "gpt_oss"

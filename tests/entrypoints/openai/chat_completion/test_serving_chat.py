@@ -34,6 +34,7 @@ from vllm.entrypoints.openai.models.serving import (
 )
 from vllm.entrypoints.openai.parser.harmony_utils import get_encoding
 from vllm.entrypoints.serve.render.serving import OpenAIServingRender
+from vllm.entrypoints.serve.tokenize.serving import OpenAIServingTokenization
 from vllm.exceptions import VLLMValidationError
 from vllm.inputs import TokensPrompt
 from vllm.outputs import CompletionOutput, RequestOutput
@@ -540,6 +541,14 @@ class MockModelConfig:
     def get_diff_sampling_param(self):
         return self.diff_sampling_param or {}
 
+    def get_generation_chat_template_kwargs(self):
+        if self.generation_config == "vllm":
+            return {}
+        chat_template_kwargs = self.override_generation_config.get(
+            "chat_template_kwargs"
+        )
+        return chat_template_kwargs if isinstance(chat_template_kwargs, dict) else {}
+
 
 @dataclass
 class MockParallelConfig:
@@ -654,6 +663,117 @@ def test_serving_chat_sets_rwkv_default_stop_strings():
         "<|im_end|>",
         "<|endoftext|>",
     ]
+
+
+def test_serving_chat_uses_generation_config_chat_template_kwargs():
+    engine = MockEngine()
+    engine.model_config.hf_config = MockHFConfig(model_type="rwkv7")
+    engine.model_config.override_generation_config = {
+        "chat_template_kwargs": {
+            "enable_thinking": True,
+            "model_default": "generation_config",
+        }
+    }
+    models = OpenAIServingModels(engine, BASE_MODEL_PATHS)
+    openai_serving_render = OpenAIServingRender(
+        model_config=engine.model_config,
+        renderer=engine.renderer,
+        io_processor=engine.io_processor,
+        model_registry=models.registry,
+        request_logger=None,
+        chat_template=CHAT_TEMPLATE,
+        chat_template_content_format="auto",
+        default_chat_template_kwargs={
+            "enable_thinking": False,
+            "cli_default": "server",
+        },
+    )
+
+    serving_chat = OpenAIServingChat(
+        engine,
+        models,
+        response_role="assistant",
+        openai_serving_render=openai_serving_render,
+        chat_template=CHAT_TEMPLATE,
+        chat_template_content_format="auto",
+        request_logger=None,
+        default_chat_template_kwargs={
+            "enable_thinking": False,
+            "cli_default": "server",
+        },
+    )
+
+    assert openai_serving_render.default_chat_template_kwargs == {
+        "enable_thinking": True,
+        "cli_default": "server",
+        "model_default": "generation_config",
+    }
+    assert serving_chat.default_chat_template_kwargs == {
+        "enable_thinking": True,
+        "cli_default": "server",
+        "model_default": "generation_config",
+    }
+
+    request_kwargs = serving_chat._prepare_extra_chat_template_kwargs(
+        {"enable_thinking": False},
+        serving_chat.default_chat_template_kwargs,
+    )
+
+    assert request_kwargs == {
+        "enable_thinking": False,
+        "cli_default": "server",
+        "model_default": "generation_config",
+    }
+
+
+def test_serving_tokenization_uses_generation_config_chat_template_kwargs():
+    engine = MockEngine()
+    engine.model_config.override_generation_config = {
+        "chat_template_kwargs": {
+            "enable_thinking": True,
+            "model_default": "generation_config",
+        }
+    }
+    models = OpenAIServingModels(engine, BASE_MODEL_PATHS)
+    openai_serving_render = _build_serving_render(engine, models.registry)
+
+    serving_tokenization = OpenAIServingTokenization(
+        engine,
+        models,
+        openai_serving_render,
+        request_logger=None,
+        chat_template=CHAT_TEMPLATE,
+        chat_template_content_format="auto",
+        default_chat_template_kwargs={
+            "enable_thinking": False,
+            "cli_default": "server",
+        },
+    )
+
+    assert serving_tokenization.default_chat_template_kwargs == {
+        "enable_thinking": True,
+        "cli_default": "server",
+        "model_default": "generation_config",
+    }
+
+
+def test_serving_chat_template_kwargs_empty_when_generation_config_disabled():
+    engine = MockEngine()
+    engine.model_config.generation_config = "vllm"
+    models = OpenAIServingModels(engine, BASE_MODEL_PATHS)
+    openai_serving_render = _build_serving_render(engine, models.registry)
+
+    serving_chat = OpenAIServingChat(
+        engine,
+        models,
+        response_role="assistant",
+        openai_serving_render=openai_serving_render,
+        chat_template=CHAT_TEMPLATE,
+        chat_template_content_format="auto",
+        request_logger=None,
+    )
+
+    assert serving_chat.default_chat_template_kwargs == {}
 
 
 @pytest.mark.asyncio

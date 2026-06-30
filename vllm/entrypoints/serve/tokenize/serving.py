@@ -49,7 +49,10 @@ class OpenAIServingTokenization(OpenAIServing):
         self.openai_serving_render = openai_serving_render
         self.chat_template = chat_template
         self.chat_template_content_format: Final = chat_template_content_format
-        self.default_chat_template_kwargs = default_chat_template_kwargs or {}
+        self.default_chat_template_kwargs = (
+            (default_chat_template_kwargs or {})
+            | self.model_config.get_generation_chat_template_kwargs()
+        )
         self.trust_request_chat_template = trust_request_chat_template
 
     async def create_tokenize(

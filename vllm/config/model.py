@@ -1420,6 +1420,22 @@ class ModelConfig:
 
         return diff_sampling_param
 
+    def get_generation_chat_template_kwargs(self) -> dict[str, Any]:
+        """
+        Return default chat template kwargs from generation config.
+
+        These are intentionally handled separately from sampling params because
+        they affect prompt rendering rather than decoding. Request-level
+        ``chat_template_kwargs`` may still override these defaults later in the
+        OpenAI serving path.
+        """
+        src = self.generation_config
+        config = {} if src == "vllm" else self.try_get_generation_config()
+        config.update(self.override_generation_config)
+
+        chat_template_kwargs = config.get("chat_template_kwargs")
+        return chat_template_kwargs if isinstance(chat_template_kwargs, dict) else {}
+
     def get_pooling_task(
         self, supported_tasks: tuple[SupportedTask, ...]
     ) -> PoolingTask | None:
