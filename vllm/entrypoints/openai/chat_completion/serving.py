@@ -436,6 +436,54 @@ class OpenAIServingChat(OpenAIServing):
 
         return False
 
+    @staticmethod
+    def _has_generated_reasoning_end(
+        reasoning_parser: ReasoningParser,
+        current_token_ids: GenericSequence[int],
+        current_text: str,
+    ) -> bool:
+        """Return whether generated output contains a reasoning end marker."""
+
+        end_token_ids = getattr(reasoning_parser, "end_token_ids", None)
+        if end_token_ids:
+            end_token_ids = list(end_token_ids)
+            if len(end_token_ids) <= len(current_token_ids):
+                for start in range(len(current_token_ids) - len(end_token_ids) + 1):
+                    if (
+                        list(current_token_ids[start : start + len(end_token_ids)])
+                        == end_token_ids
+                    ):
+                        return True
+
+        end_token_id = getattr(reasoning_parser, "end_token_id", None)
+        if end_token_id is not None and end_token_id in current_token_ids:
+            return True
+
+        end_token = getattr(reasoning_parser, "end_token", None)
+        if isinstance(end_token, str) and end_token in current_text:
+            return True
+
+        return False
+
+    @staticmethod
+    def _should_treat_prompt_reasoning_as_ended(
+        reasoning_parser: ReasoningParser,
+        current_token_ids: GenericSequence[int],
+        current_text: str,
+    ) -> bool:
+        return (
+            not OpenAIServingChat._has_generated_reasoning_start(
+                reasoning_parser,
+                current_token_ids,
+                current_text,
+            )
+            and OpenAIServingChat._has_generated_reasoning_end(
+                reasoning_parser,
+                current_token_ids,
+                current_text,
+            )
+        )
+
     def extract_tool_call_required_streaming(
         self,
         previous_text: str,
@@ -817,7 +865,7 @@ class OpenAIServingChat(OpenAIServing):
                             reasoning_parser
                             and not reasoning_end_arr[i]
                             and prompt_is_reasoning_end_arr[i]
-                            and not self._has_generated_reasoning_start(
+                            and self._should_treat_prompt_reasoning_as_ended(
                                 reasoning_parser, current_token_ids, current_text
                             )
                         ):
@@ -906,7 +954,7 @@ class OpenAIServingChat(OpenAIServing):
                             reasoning_parser is not None
                             and not reasoning_end_arr[i]
                             and prompt_is_reasoning_end_arr[i]
-                            and not self._has_generated_reasoning_start(
+                            and self._should_treat_prompt_reasoning_as_ended(
                                 reasoning_parser, current_token_ids, current_text
                             )
                         ):
@@ -969,7 +1017,7 @@ class OpenAIServingChat(OpenAIServing):
                             # set reasoning status to end.
                             if prompt_is_reasoning_end_arr[
                                 i
-                            ] and not self._has_generated_reasoning_start(
+                            ] and self._should_treat_prompt_reasoning_as_ended(
                                 reasoning_parser, current_token_ids, current_text
                             ):
                                 reasoning_end_arr[i] = True
@@ -1057,7 +1105,7 @@ class OpenAIServingChat(OpenAIServing):
                         # Route all generated tokens as content directly.
                         if prompt_is_reasoning_end_arr[
                             i
-                        ] and not self._has_generated_reasoning_start(
+                        ] and self._should_treat_prompt_reasoning_as_ended(
                             reasoning_parser, current_token_ids, current_text
                         ):
                             delta_message = DeltaMessage(content=delta_text)
@@ -1086,6 +1134,20 @@ class OpenAIServingChat(OpenAIServing):
                         # Update for comprehensive logging even in simple case
                         assert previous_texts is not None
                         previous_texts[i] += delta_text
+
+                    if (
+                        reasoning_parser is not None
+                        and not request.include_reasoning
+                        and delta_message is not None
+                        and delta_message.reasoning is not None
+                    ):
+                        delta_message.reasoning = None
+                        if (
+                            delta_message.content is None
+                            and not delta_message.tool_calls
+                            and delta_message.role is None
+                        ):
+                            delta_message = None
 
                     # set the previous values for the next iteration
                     previous_num_tokens[i] += len(output.token_ids)

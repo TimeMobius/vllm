@@ -913,10 +913,34 @@ async def test_rwkv_streaming_tool_call_preserves_visible_content_before_call():
     assert message.tool_calls[0].function.name == "get_time_info"
 
 
+@pytest.mark.asyncio
+async def test_rwkv_streaming_tool_call_hides_reasoning_when_excluded():
+    response = await _run_rwkv_streaming_tool_call(
+        chunks=[
+            ("Need to call it.</thi", None),
+            ("nk>\n\n", None),
+            ("<tool_call>\n", None),
+            ('<invoke name="get_time_info">\n', None),
+            ("</invoke>\n", None),
+            ("</tool_call>", "stop"),
+        ],
+        prompt_text="<think>\n\n</think>\n\n",
+        include_reasoning=False,
+    )
+
+    message = response.choices[0].message
+    assert response.choices[0].finish_reason == "tool_calls"
+    assert message.reasoning is None
+    assert message.content is None
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].function.name == "get_time_info"
+
+
 async def _run_rwkv_streaming_tool_call(
     *,
     chunks: list[tuple[str, str | None]],
     prompt_text: str = "",
+    include_reasoning: bool = True,
 ) -> ChatCompletionResponse:
     serving_chat = _build_rwkv_serving_chat()
     serving_chat.enable_auto_tools = True
@@ -939,6 +963,7 @@ async def _run_rwkv_streaming_tool_call(
             }
         ],
         tool_choice="auto",
+        include_reasoning=include_reasoning,
         chat_template_kwargs={"enable_thinking": True},
     )
     reasoning_parser = reasoning_cls(
