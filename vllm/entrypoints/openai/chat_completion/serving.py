@@ -962,6 +962,9 @@ class OpenAIServingChat(OpenAIServing):
                                     if delta_message and delta_message.content:
                                         current_text = delta_message.content
                                         delta_message.content = None
+                                        if not current_text.strip():
+                                            current_text = ""
+                                            current_token_ids = []
                                     else:
                                         current_text = ""
 

@@ -853,7 +853,7 @@ async def test_rwkv_streaming_tool_call_after_split_reasoning_end():
     )
 
     chunks = [
-        ("<think>Need to call it.</thi", None),
+        ("Need to call it.</thi", None),
         ("nk>\n\n", None),
         ("<tool_c", None),
         ("all>\n", None),
@@ -904,7 +904,7 @@ async def test_rwkv_streaming_tool_call_after_split_reasoning_end():
     message = choice.message
     assert choice.finish_reason == "tool_calls"
     assert message.reasoning == "Need to call it."
-    assert message.content is None or "<tool_call>" not in message.content
+    assert message.content is None
     assert message.tool_calls is not None
     assert len(message.tool_calls) == 1
     assert message.tool_calls[0].function.name == "get_time_info"
