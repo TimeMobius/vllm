@@ -1755,10 +1755,14 @@ class OpenAIServingChat(OpenAIServing):
         # Log complete response if output logging is enabled
         if self.enable_log_outputs and self.request_logger:
             for choice in choices:
-                output_text = ""
+                output_content_parts = []
+                if choice.message.reasoning:
+                    output_content_parts.append(
+                        f"[reasoning: {choice.message.reasoning}]"
+                    )
                 if choice.message.content:
-                    output_text = choice.message.content
-                elif choice.message.tool_calls:
+                    output_content_parts.append(choice.message.content)
+                if choice.message.tool_calls:
                     # For tool calls, log the function name and arguments
                     tool_call_descriptions = []
                     for tc in choice.message.tool_calls:  # type: ignore
@@ -1767,9 +1771,9 @@ class OpenAIServingChat(OpenAIServing):
                             f"{function_call.name}({function_call.arguments})"
                         )
                     tool_calls_str = ", ".join(tool_call_descriptions)
-                    output_text = f"[tool_calls: {tool_calls_str}]"
+                    output_content_parts.append(f"[tool_calls: {tool_calls_str}]")
 
-                if output_text:
+                if output_content_parts:
                     # Get the corresponding output token IDs
                     output_token_ids = None
                     if choice.index < len(final_res.outputs):
@@ -1777,7 +1781,7 @@ class OpenAIServingChat(OpenAIServing):
 
                     self.request_logger.log_outputs(
                         request_id=request_id,
-                        outputs=output_text,
+                        outputs=" ".join(output_content_parts),
                         output_token_ids=output_token_ids,
                         finish_reason=choice.finish_reason,
                         is_streaming=False,

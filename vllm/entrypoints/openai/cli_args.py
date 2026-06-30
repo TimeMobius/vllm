@@ -132,6 +132,9 @@ class BaseFrontendArgs:
     max_log_len: int | None = None
     """Max number of prompt characters or prompt ID numbers being printed in
     log. The default of None means unlimited."""
+    io_log_path: str | None = None
+    """Path to a JSONL file for request input and model output logs. When set,
+    request input logging and model output logging are enabled for the file."""
     enable_prompt_tokens_details: bool = False
     """If set to True, enable prompt_tokens_details in usage."""
     enable_server_load_tracking: bool = False
@@ -362,8 +365,11 @@ def validate_parsed_serve_args(args: argparse.Namespace):
     # Enable auto tool needs a tool call parser to be valid
     if args.enable_auto_tool_choice and not args.tool_call_parser:
         raise TypeError("Error: --enable-auto-tool-choice requires --tool-call-parser")
-    if args.enable_log_outputs and not args.enable_log_requests:
-        raise TypeError("Error: --enable-log-outputs requires --enable-log-requests")
+    if args.enable_log_outputs and not (args.enable_log_requests or args.io_log_path):
+        raise TypeError(
+            "Error: --enable-log-outputs requires --enable-log-requests "
+            "or --io-log-path"
+        )
 
 
 def create_parser_for_docs() -> FlexibleArgumentParser:

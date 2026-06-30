@@ -59,6 +59,7 @@ class OpenAIServingCompletion(OpenAIServing):
         return_tokens_as_token_ids: bool = False,
         enable_prompt_tokens_details: bool = False,
         enable_force_include_usage: bool = False,
+        enable_log_outputs: bool = False,
     ):
         super().__init__(
             engine_client=engine_client,
@@ -70,6 +71,7 @@ class OpenAIServingCompletion(OpenAIServing):
         self.openai_serving_render = openai_serving_render
         self.enable_prompt_tokens_details = enable_prompt_tokens_details
         self.enable_force_include_usage = enable_force_include_usage
+        self.enable_log_outputs = enable_log_outputs
 
         self.default_sampling_params = self.model_config.get_diff_sampling_param()
         mc = self.model_config
@@ -282,6 +284,7 @@ class OpenAIServingCompletion(OpenAIServing):
         num_prompt_tokens = [0] * num_prompts
         num_cached_tokens = None
         first_iteration = True
+        previous_texts = [""] * num_choices * num_prompts
 
         stream_options = request.stream_options
         include_usage, include_continuous_usage = should_include_usage(
@@ -376,10 +379,27 @@ class OpenAIServingCompletion(OpenAIServing):
 
                     previous_text_lens[i] += len(output.text)
                     previous_num_tokens[i] += len(output.token_ids)
+                    previous_texts[i] += delta_text
                     finish_reason = output.finish_reason
                     stop_reason = output.stop_reason
 
                     self._raise_if_error(finish_reason, request_id)
+
+                    if (
+                        self.enable_log_outputs
+                        and self.request_logger
+                        and delta_text
+                    ):
+                        self.request_logger.log_outputs(
+                            request_id=getattr(
+                                res, "request_id", f"{request_id}-{prompt_idx}"
+                            ),
+                            outputs=delta_text,
+                            output_token_ids=as_list(delta_token_ids),
+                            finish_reason=finish_reason,
+                            is_streaming=True,
+                            delta=True,
+                        )
 
                     chunk = CompletionStreamResponse(
                         id=request_id,
@@ -441,6 +461,19 @@ class OpenAIServingCompletion(OpenAIServing):
 
             # report to FastAPI middleware aggregate usage across all choices
             request_metadata.final_usage_info = final_usage_info
+
+            if self.enable_log_outputs and self.request_logger:
+                for i, text in enumerate(previous_texts):
+                    if text:
+                        prompt_idx = i // num_choices
+                        self.request_logger.log_outputs(
+                            request_id=f"{request_id}-{prompt_idx}",
+                            outputs=text,
+                            output_token_ids=None,
+                            finish_reason="streaming_complete",
+                            is_streaming=True,
+                            delta=False,
+                        )
 
         except GenerationError as e:
             yield f"data: {self._convert_generation_error_to_streaming_response(e)}\n\n"
@@ -533,6 +566,16 @@ class OpenAIServingCompletion(OpenAIServing):
                     ),
                 )
                 choices.append(choice_data)
+
+                if self.enable_log_outputs and self.request_logger and output_text:
+                    self.request_logger.log_outputs(
+                        request_id=getattr(final_res, "request_id", request_id),
+                        outputs=output_text,
+                        output_token_ids=token_ids,
+                        finish_reason=output.finish_reason,
+                        is_streaming=False,
+                        delta=False,
+                    )
 
                 num_generated_tokens += len(output.token_ids)
 

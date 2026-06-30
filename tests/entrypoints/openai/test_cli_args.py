@@ -166,6 +166,17 @@ def test_enable_auto_choice_passes_with_tool_call_parser(serve_parser):
     validate_parsed_serve_args(args)
 
 
+def test_enable_log_outputs_passes_with_io_log_path(serve_parser, tmp_path):
+    args = serve_parser.parse_args(
+        args=[
+            "--enable-log-outputs",
+            "--io-log-path",
+            str(tmp_path / "io.jsonl"),
+        ]
+    )
+    validate_parsed_serve_args(args)
+
+
 def test_enable_auto_choice_fails_with_enable_reasoning(serve_parser):
     """Ensure validation fails if reasoning is enabled with auto tool choice"""
     args = serve_parser.parse_args(

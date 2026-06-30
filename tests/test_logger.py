@@ -477,6 +477,46 @@ def test_request_logger_log_outputs_integration():
         assert output_call[1] == "test-integration"
 
 
+def test_request_logger_writes_io_jsonl(tmp_path):
+    io_log_path = tmp_path / "logs" / "io.jsonl"
+    request_logger = RequestLogger(max_log_len=4, io_log_path=str(io_log_path))
+
+    request_logger.log_inputs(
+        request_id="test-io-log",
+        prompt="abcdef",
+        prompt_token_ids=[1, 2, 3, 4, 5, 6],
+        prompt_embeds=None,
+        params=None,
+        lora_request=None,
+    )
+    request_logger.log_outputs(
+        request_id="test-io-log",
+        outputs="uvwxyz",
+        output_token_ids=[7, 8, 9, 10, 11, 12],
+        finish_reason="stop",
+        is_streaming=True,
+        delta=True,
+    )
+
+    records = [
+        json.loads(line)
+        for line in io_log_path.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert [record["event"] for record in records] == ["input", "output"]
+    assert records[0]["request_id"] == "test-io-log"
+    assert records[0]["prompt"] == "abcd"
+    assert records[0]["prompt_token_ids"] == [1, 2, 3, 4]
+    assert records[0]["prompt_embeds_shape"] is None
+    assert records[1]["request_id"] == "test-io-log"
+    assert records[1]["outputs"] == "uvwx"
+    assert records[1]["output_token_ids"] == [7, 8, 9, 10]
+    assert records[1]["finish_reason"] == "stop"
+    assert records[1]["is_streaming"] is True
+    assert records[1]["delta"] is True
+    assert all("timestamp" in record for record in records)
+
+
 def test_streaming_complete_logs_full_text_content():
     """Test that streaming complete logging includes
     full accumulated text, not just token count."""

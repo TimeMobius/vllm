@@ -330,8 +330,11 @@ async def init_app_state(
     else:
         served_model_names = [args.model]
 
-    if args.enable_log_requests:
-        request_logger = RequestLogger(max_log_len=args.max_log_len)
+    if args.enable_log_requests or args.io_log_path:
+        request_logger = RequestLogger(
+            max_log_len=args.max_log_len,
+            io_log_path=args.io_log_path,
+        )
     else:
         request_logger = None
 
@@ -444,8 +447,11 @@ async def init_render_app_state(
         ],
     )
 
-    if args.enable_log_requests:
-        request_logger = RequestLogger(max_log_len=args.max_log_len)
+    if args.enable_log_requests or args.io_log_path:
+        request_logger = RequestLogger(
+            max_log_len=args.max_log_len,
+            io_log_path=args.io_log_path,
+        )
     else:
         request_logger = None
 

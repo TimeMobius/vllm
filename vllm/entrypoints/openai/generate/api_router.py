@@ -71,6 +71,7 @@ async def init_generate_state(
     else:
         tool_server = None
     resolved_chat_template = load_chat_template(args.chat_template)
+    enable_log_outputs = args.enable_log_outputs or args.io_log_path is not None
 
     # Render endpoints are always backed by OpenAIServingRender so that
     # /v1/chat/completions/render and /v1/completions/render work on both
@@ -91,7 +92,7 @@ async def init_generate_state(
             reasoning_parser=args.structured_outputs_config.reasoning_parser,
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
-            enable_log_outputs=args.enable_log_outputs,
+            enable_log_outputs=enable_log_outputs,
         )
         if "generate" in supported_tasks
         else None
@@ -114,7 +115,7 @@ async def init_generate_state(
             reasoning_parser=args.structured_outputs_config.reasoning_parser,
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
-            enable_log_outputs=args.enable_log_outputs,
+            enable_log_outputs=enable_log_outputs,
             enable_log_deltas=args.enable_log_deltas,
         )
         if "generate" in supported_tasks
@@ -131,6 +132,7 @@ async def init_generate_state(
             return_tokens_as_token_ids=args.return_tokens_as_token_ids,
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
+            enable_log_outputs=enable_log_outputs,
         )
         if "generate" in supported_tasks
         else None
@@ -163,7 +165,7 @@ async def init_generate_state(
             request_logger=request_logger,
             return_tokens_as_token_ids=args.return_tokens_as_token_ids,
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
-            enable_log_outputs=args.enable_log_outputs,
+            enable_log_outputs=enable_log_outputs,
             force_no_detokenize=args.tokens_only,
         )
         if "generate" in supported_tasks
