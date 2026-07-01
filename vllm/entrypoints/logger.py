@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 import torch
 
@@ -70,6 +71,76 @@ class RequestLogger:
                     log_file.write("\n")
         except Exception:
             logger.exception("Failed to write request IO log.")
+
+    @staticmethod
+    def _to_jsonable(value: Any) -> Any:
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json", exclude_none=True)
+        if isinstance(value, list):
+            return [RequestLogger._to_jsonable(item) for item in value]
+        if isinstance(value, tuple):
+            return [RequestLogger._to_jsonable(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): RequestLogger._to_jsonable(item)
+                for key, item in value.items()
+            }
+        return value
+
+    def log_chat_inputs(
+        self,
+        request_id: str,
+        *,
+        model: str | None,
+        messages: Any,
+        tools: Any,
+        tool_choice: Any,
+        stream: bool | None,
+    ) -> None:
+        if self.enable_log_requests:
+            logger.info("Received chat request %s: model: %s.", request_id, model)
+
+        self._write_io_log(
+            "input",
+            {
+                "request_id": request_id,
+                "type": "chatml",
+                "model": model,
+                "stream": stream,
+                "messages": self._to_jsonable(messages),
+                "tools": self._to_jsonable(tools),
+                "tool_choice": self._to_jsonable(tool_choice),
+            },
+        )
+
+    def log_chat_output(
+        self,
+        request_id: str,
+        *,
+        message: Any,
+        finish_reason: str | None,
+        is_streaming: bool = False,
+    ) -> None:
+        message_for_log = self._to_jsonable(message)
+        if self.enable_log_outputs:
+            logger.info(
+                "Generated chat response %s%s: message: %s, finish_reason: %s",
+                request_id,
+                " (streaming)" if is_streaming else "",
+                message_for_log,
+                finish_reason,
+            )
+
+        self._write_io_log(
+            "output",
+            {
+                "request_id": request_id,
+                "type": "chatml",
+                "message": message_for_log,
+                "finish_reason": finish_reason,
+                "is_streaming": is_streaming,
+            },
+        )
 
     def log_inputs(
         self,

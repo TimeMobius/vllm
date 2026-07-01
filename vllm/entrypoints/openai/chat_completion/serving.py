@@ -44,7 +44,6 @@ from vllm.entrypoints.openai.engine.protocol import (
     DeltaMessage,
     DeltaToolCall,
     ErrorResponse,
-    FunctionCall,
     PromptTokenUsageInfo,
     RequestResponseMetadata,
     ToolCall,
@@ -293,12 +292,15 @@ class OpenAIServingChat(OpenAIServing):
                     self.default_sampling_params,
                 )
 
-            self._log_inputs(
-                sub_request_id,
-                engine_input,
-                params=sampling_params,
-                lora_request=lora_request,
-            )
+            if self.request_logger is not None:
+                self.request_logger.log_chat_inputs(
+                    sub_request_id,
+                    model=request.model,
+                    messages=request.messages,
+                    tools=request.tools,
+                    tool_choice=request.tool_choice,
+                    stream=request.stream,
+                )
 
             trace_headers = (
                 None
@@ -367,6 +369,72 @@ class OpenAIServingChat(OpenAIServing):
         if request.add_generation_prompt:
             return self.response_role
         return request.messages[-1]["role"]
+
+    @staticmethod
+    def _clean_chat_log_message(message: dict[str, Any]) -> dict[str, Any]:
+        cleaned = {
+            key: value
+            for key, value in message.items()
+            if value is not None and value != [] and value != {}
+        }
+        if "content" in cleaned and cleaned["content"] == "":
+            if cleaned.get("tool_calls"):
+                return cleaned
+            del cleaned["content"]
+        return cleaned
+
+    @staticmethod
+    def _append_stream_delta_to_chat_log_message(
+        message: dict[str, Any],
+        delta: DeltaMessage,
+    ) -> None:
+        if delta.role:
+            message["role"] = delta.role
+        if delta.content:
+            message["content"] = message.get("content", "") + delta.content
+        if delta.reasoning:
+            message["reasoning"] = message.get("reasoning", "") + delta.reasoning
+
+        if not delta.tool_calls:
+            return
+
+        tool_calls = message.setdefault("tool_calls", [])
+        for delta_tool_call in delta.tool_calls:
+            tool_index = delta_tool_call.index
+            while len(tool_calls) <= tool_index:
+                tool_calls.append(
+                    {
+                        "id": None,
+                        "type": "function",
+                        "function": {
+                            "name": "",
+                            "arguments": "",
+                        },
+                    }
+                )
+
+            tool_call = tool_calls[tool_index]
+            if delta_tool_call.id is not None:
+                tool_call["id"] = delta_tool_call.id
+            if delta_tool_call.type is not None:
+                tool_call["type"] = delta_tool_call.type
+            if delta_tool_call.function is None:
+                continue
+
+            function = tool_call.setdefault(
+                "function",
+                {
+                    "name": "",
+                    "arguments": "",
+                },
+            )
+            if delta_tool_call.function.name:
+                function["name"] = delta_tool_call.function.name
+            if delta_tool_call.function.arguments:
+                function["arguments"] = (
+                    function.get("arguments", "")
+                    + delta_tool_call.function.arguments
+                )
 
     @staticmethod
     def _bracket_level(s: str, opening="{", closing="}") -> int:
@@ -630,6 +698,15 @@ class OpenAIServingChat(OpenAIServing):
 
         # Always track previous_texts for comprehensive output logging
         previous_texts = [""] * num_choices
+        chat_log_messages: list[dict[str, Any]] = [
+            {
+                "role": self.response_role,
+                "content": "",
+                "tool_calls": [],
+            }
+            for _ in range(num_choices)
+        ]
+        chat_log_finish_reasons: list[str | None] = [None] * num_choices
 
         # Only one of these will be used, thus previous_texts and
         # all_previous_token_ids will not be used twice in the same iteration.
@@ -1322,6 +1399,12 @@ class OpenAIServingChat(OpenAIServing):
                         finish_reason_sent[i] = True
 
                     choice_data = maybe_filter_parallel_tool_calls(choice_data, request)
+                    self._append_stream_delta_to_chat_log_message(
+                        chat_log_messages[i],
+                        choice_data.delta,
+                    )
+                    if choice_data.finish_reason is not None:
+                        chat_log_finish_reasons[i] = choice_data.finish_reason
                     chunk = ChatCompletionStreamResponse(
                         id=request_id,
                         object=chunk_object_type,
@@ -1381,18 +1464,11 @@ class OpenAIServingChat(OpenAIServing):
             if self.enable_log_outputs and self.request_logger:
                 # Log the complete response for each choice
                 for i in range(num_choices):
-                    full_text = (
-                        previous_texts[i]
-                        if previous_texts and i < len(previous_texts)
-                        else f"<streaming_complete: {previous_num_tokens[i]} tokens>"
-                    )
-                    self.request_logger.log_outputs(
+                    self.request_logger.log_chat_output(
                         request_id=request_id,
-                        outputs=full_text,
-                        output_token_ids=None,  # Consider also logging all token IDs
-                        finish_reason="streaming_complete",
+                        message=self._clean_chat_log_message(chat_log_messages[i]),
+                        finish_reason=chat_log_finish_reasons[i],
                         is_streaming=True,
-                        delta=False,
                     )
 
         except GenerationError as e:
@@ -1761,38 +1837,12 @@ class OpenAIServingChat(OpenAIServing):
         # Log complete response if output logging is enabled
         if self.enable_log_outputs and self.request_logger:
             for choice in choices:
-                output_content_parts = []
-                if choice.message.reasoning:
-                    output_content_parts.append(
-                        f"[reasoning: {choice.message.reasoning}]"
-                    )
-                if choice.message.content:
-                    output_content_parts.append(choice.message.content)
-                if choice.message.tool_calls:
-                    # For tool calls, log the function name and arguments
-                    tool_call_descriptions = []
-                    for tc in choice.message.tool_calls:  # type: ignore
-                        function_call: FunctionCall = tc.function  # type: ignore
-                        tool_call_descriptions.append(
-                            f"{function_call.name}({function_call.arguments})"
-                        )
-                    tool_calls_str = ", ".join(tool_call_descriptions)
-                    output_content_parts.append(f"[tool_calls: {tool_calls_str}]")
-
-                if output_content_parts:
-                    # Get the corresponding output token IDs
-                    output_token_ids = None
-                    if choice.index < len(final_res.outputs):
-                        output_token_ids = final_res.outputs[choice.index].token_ids
-
-                    self.request_logger.log_outputs(
-                        request_id=request_id,
-                        outputs=" ".join(output_content_parts),
-                        output_token_ids=output_token_ids,
-                        finish_reason=choice.finish_reason,
-                        is_streaming=False,
-                        delta=False,
-                    )
+                self.request_logger.log_chat_output(
+                    request_id=request_id,
+                    message=choice.message,
+                    finish_reason=choice.finish_reason,
+                    is_streaming=False,
+                )
 
         return response
 
