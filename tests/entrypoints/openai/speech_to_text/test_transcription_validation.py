@@ -2,12 +2,15 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 # imports for structured outputs tests
+import io
 import json
 
 import pytest
+from starlette.datastructures import UploadFile
 
 from tests.entrypoints.openai.conftest import add_attention_backend
 from tests.utils import ROCM_ENV_OVERRIDES, ROCM_EXTRA_ARGS, RemoteOpenAIServer
+from vllm.entrypoints.openai.speech_to_text.protocol import TranscriptionRequest
 
 MISTRAL_FORMAT_ARGS = [
     "--tokenizer_mode",
@@ -17,6 +20,44 @@ MISTRAL_FORMAT_ARGS = [
     "--load_format",
     "mistral",
 ]
+
+
+def test_transcription_request_uses_default_generation_penalties():
+    request = TranscriptionRequest(
+        model="test-model",
+        file=UploadFile(io.BytesIO(b"audio"), filename="test.wav"),
+    )
+
+    sampling_params = request.to_sampling_params(
+        default_max_tokens=10,
+        default_sampling_params={
+            "presence_penalty": 0.4,
+            "frequency_penalty": 0.3,
+        },
+    )
+
+    assert sampling_params.presence_penalty == 0.4
+    assert sampling_params.frequency_penalty == 0.3
+
+
+def test_transcription_request_explicit_penalties_override_defaults():
+    request = TranscriptionRequest(
+        model="test-model",
+        file=UploadFile(io.BytesIO(b"audio"), filename="test.wav"),
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+    )
+
+    sampling_params = request.to_sampling_params(
+        default_max_tokens=10,
+        default_sampling_params={
+            "presence_penalty": 0.4,
+            "frequency_penalty": 0.3,
+        },
+    )
+
+    assert sampling_params.presence_penalty == 0.0
+    assert sampling_params.frequency_penalty == 0.0
 
 
 async def transcribe_and_check(

@@ -1388,6 +1388,8 @@ class ModelConfig:
         config.update(self.override_generation_config)
 
         available_params = [
+            "presence_penalty",
+            "frequency_penalty",
             "repetition_penalty",
             "temperature",
             "top_k",

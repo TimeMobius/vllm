@@ -9,6 +9,7 @@ import regex as re
 from openai import BadRequestError
 
 from tests.utils import RemoteOpenAIServer
+from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.tokenizers import get_tokenizer
 
 # any model with a chat template should work here
@@ -209,6 +210,46 @@ async def test_prompt_logprobs_completion(
 
         else:
             assert completion.choices[0].prompt_logprobs is None
+
+
+def test_completion_request_uses_default_generation_penalties():
+    request = CompletionRequest(
+        model="test-model",
+        prompt="Hello",
+        max_tokens=10,
+    )
+
+    sampling_params = request.to_sampling_params(
+        max_tokens=10,
+        default_sampling_params={
+            "presence_penalty": 0.4,
+            "frequency_penalty": 0.3,
+        },
+    )
+
+    assert sampling_params.presence_penalty == 0.4
+    assert sampling_params.frequency_penalty == 0.3
+
+
+def test_completion_request_explicit_penalties_override_defaults():
+    request = CompletionRequest(
+        model="test-model",
+        prompt="Hello",
+        max_tokens=10,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+    )
+
+    sampling_params = request.to_sampling_params(
+        max_tokens=10,
+        default_sampling_params={
+            "presence_penalty": 0.4,
+            "frequency_penalty": 0.3,
+        },
+    )
+
+    assert sampling_params.presence_penalty == 0.0
+    assert sampling_params.frequency_penalty == 0.0
 
 
 @pytest.mark.asyncio

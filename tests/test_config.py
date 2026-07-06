@@ -421,6 +421,22 @@ def test_generation_config_loading():
     assert model_config.get_diff_sampling_param() == override_generation_config
 
 
+def test_generation_config_loading_includes_openai_penalties():
+    generation_config = {
+        "presence_penalty": 0.4,
+        "frequency_penalty": 0.3,
+    }
+
+    class _ModelConfigStub:
+        generation_config = "auto"
+        override_generation_config = {}
+
+        def try_get_generation_config(self):
+            return generation_config
+
+    assert ModelConfig.get_diff_sampling_param(_ModelConfigStub()) == generation_config
+
+
 @pytest.mark.parametrize(
     "pt_load_map_location",
     [

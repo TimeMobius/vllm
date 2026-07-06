@@ -1025,6 +1025,46 @@ def test_chat_completion_request_merges_default_bad_words():
     ]
 
 
+def test_chat_completion_request_uses_default_generation_penalties():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_tokens=10,
+    )
+
+    sampling_params = request.to_sampling_params(
+        max_tokens=10,
+        default_sampling_params={
+            "presence_penalty": 0.4,
+            "frequency_penalty": 0.3,
+        },
+    )
+
+    assert sampling_params.presence_penalty == 0.4
+    assert sampling_params.frequency_penalty == 0.3
+
+
+def test_chat_completion_request_explicit_penalties_override_defaults():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_tokens=10,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+    )
+
+    sampling_params = request.to_sampling_params(
+        max_tokens=10,
+        default_sampling_params={
+            "presence_penalty": 0.4,
+            "frequency_penalty": 0.3,
+        },
+    )
+
+    assert sampling_params.presence_penalty == 0.0
+    assert sampling_params.frequency_penalty == 0.0
+
+
 def test_chat_completion_request_n_parameter_default():
     """Test that n parameter defaults to 1."""
     request = ChatCompletionRequest(
