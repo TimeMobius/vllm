@@ -845,13 +845,14 @@ class OpenAIServingChat(OpenAIServing):
                         and res.prompt_token_ids
                         and prompt_is_reasoning_end_arr[i] is None
                     ):
-                        # only check once per choice, because prompt_token_ids
-                        # are the same for all deltas in that choice
-                        prompt_reasoning_end = reasoning_parser.is_reasoning_end(
-                            res.prompt_token_ids
+                        # The prompt mode is selected by the template kwargs.
+                        # In particular, an explicit no-thinking request
+                        # starts generation in content mode. Do not infer
+                        # this from marker IDs: legacy RWKV's raw trie makes
+                        # marker IDs dependent on their left context.
+                        prompt_reasoning_end = not getattr(
+                            reasoning_parser, "thinking_enabled", False
                         )
-                        if getattr(reasoning_parser, "thinking_enabled", False):
-                            prompt_reasoning_end = False
                         prompt_is_reasoning_end_arr[i] = prompt_reasoning_end
                     if finish_reason_sent[i]:
                         continue

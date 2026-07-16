@@ -870,6 +870,29 @@ async def test_rwkv_streaming_tool_call_after_generated_think_start():
 
 
 @pytest.mark.asyncio
+async def test_rwkv_streaming_tool_call_with_thinking_disabled():
+    response = await _run_rwkv_streaming_tool_call(
+        chunks=[
+            ("I will check the time.\n", None),
+            ("<tool_c", None),
+            ("all>\n", None),
+            ('<invoke name="get_time_info">\n', None),
+            ("</invoke>\n", None),
+            ("</tool_call>", "stop"),
+        ],
+        prompt_text="Assistant: ",
+        thinking_enabled=False,
+    )
+
+    message = response.choices[0].message
+    assert response.choices[0].finish_reason == "tool_calls"
+    assert message.reasoning is None
+    assert message.content == "I will check the time.\n"
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].function.name == "get_time_info"
+
+
+@pytest.mark.asyncio
 async def test_rwkv_streaming_tool_call_ignores_historical_think_end():
     response = await _run_rwkv_streaming_tool_call(
         chunks=[
@@ -991,6 +1014,7 @@ async def _run_rwkv_streaming_tool_call(
     prompt_text: str = "",
     include_reasoning: bool = True,
     token_id_chunks: list[list[int] | None] | None = None,
+    thinking_enabled: bool = True,
 ) -> ChatCompletionResponse:
     serving_chat = _build_rwkv_serving_chat()
     serving_chat.enable_auto_tools = True
@@ -1014,7 +1038,7 @@ async def _run_rwkv_streaming_tool_call(
         ],
         tool_choice="auto",
         include_reasoning=include_reasoning,
-        chat_template_kwargs={"enable_thinking": True},
+        chat_template_kwargs={"enable_thinking": thinking_enabled},
     )
     reasoning_parser = reasoning_cls(
         tokenizer,

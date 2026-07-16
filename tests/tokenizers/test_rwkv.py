@@ -121,7 +121,9 @@ def test_rwkv_tokenizer_round_trips_and_prefers_longest_match(tmp_path):
     assert tokenizer.decode([3, 2]) == "abb"
     assert tokenizer.convert_ids_to_tokens([3, 2]) == ["ab", "b"]
     assert tokenizer.convert_ids_to_tokens([6, 3, 7], skip_special_tokens=True) == [
-        "ab"
+        "<|im_start|>",
+        "ab",
+        "<|im_end|>",
     ]
     assert tokenizer.convert_tokens_to_ids(["ab", "b"]) == [3, 2]
     assert tokenizer.convert_tokens_to_string(["ab", "b"]) == "abb"
@@ -130,32 +132,22 @@ def test_rwkv_tokenizer_round_trips_and_prefers_longest_match(tmp_path):
     assert tokenizer.eos_token_id == 5
     assert tokenizer.bos_token_id == 5
     assert tokenizer.pad_token_id == 5
-    assert tokenizer.all_special_ids == [6, 7, 5]
+    assert tokenizer.all_special_ids == []
     assert tokenizer.vocab_size == 64
 
 
-def test_rwkv_tokenizer_preserves_hf_added_token_semantics(tmp_path):
+def test_rwkv_tokenizer_keeps_native_vocab_tokens_out_of_hf_splitting(tmp_path):
     _write_hf_rwkv_tokenizer_dir(tmp_path)
 
     tokenizer = get_tokenizer(str(tmp_path))
 
-    assert tokenizer.encode("a\n\nb") == [1, 10, 2]
-    assert tokenizer.decode([0, 1, 10, 2]) == ("<|rwkv_tokenizer_end_of_text|>a\n\nb")
-    assert tokenizer.convert_tokens_to_ids("\n\n") == 10
-    assert tokenizer.convert_ids_to_tokens([0, 1, 10, 2]) == [
-        "<|rwkv_tokenizer_end_of_text|>",
-        "a",
-        "\n\n",
-        "b",
-    ]
-    assert tokenizer.get_added_vocab() == {
-        "<|rwkv_tokenizer_end_of_text|>": 0,
-        "\n\n": 10,
-    }
+    assert tokenizer.encode("a\n\nb") == [1, 3, 2]
+    assert tokenizer.convert_tokens_to_ids("\n\n") == 3
+    assert tokenizer.get_added_vocab() == {"<|rwkv_tokenizer_end_of_text|>": 0}
     assert tokenizer.bos_token_id == 0
-    assert tokenizer.eos_token_id == 10
+    assert tokenizer.eos_token_id == 3
     assert tokenizer.pad_token_id == 0
-    assert tokenizer.all_special_ids == [0, 10]
+    assert tokenizer.all_special_ids == [0]
     assert tokenizer.vocab_size == 64
 
 
@@ -167,9 +159,9 @@ def test_rwkv_tokenizer_prioritizes_hf_added_token_boundaries(tmp_path):
 
     tokenizer = get_tokenizer(str(tmp_path))
 
-    assert tokenizer.encode("a\n\nb") == [1, 12, 2]
-    assert tokenizer.convert_tokens_to_ids("\n\n") == 12
-    assert tokenizer.decode([1, 12, 2]) == "a\n\nb"
+    assert tokenizer.encode("a\n\nb") == [10, 11, 2]
+    assert tokenizer.convert_tokens_to_ids("\n\n") == 3
+    assert tokenizer.decode([10, 11, 2]) == "a\n\nb"
 
 
 def test_rwkv_tokenizer_uses_hf_chat_template_prefix(tmp_path):
@@ -185,7 +177,7 @@ def test_rwkv_tokenizer_uses_hf_chat_template_prefix(tmp_path):
     assert tokenizer.apply_chat_template(
         [{"role": "user", "content": "ab"}],
         tokenize=True,
-    ) == [0, 4, 5, 6, 7, 8, 9, 1, 2, 10]
+    ) == [0, 4, 5, 6, 7, 8, 9, 1, 2, 3]
 
 
 def _write_im_vocab(path: Path) -> None:
@@ -237,14 +229,14 @@ _IM_TEMPLATE = (
 )
 
 
-def test_rwkv_tokenizer_auto_registers_pipe_specials_from_vocab(tmp_path):
+def test_rwkv_tokenizer_keeps_native_pipe_markers_in_raw_trie(tmp_path):
     vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
     _write_im_vocab(vocab_path)
 
     tokenizer = get_tokenizer(str(vocab_path))
 
-    # All <|...|> tokens that exist in the vocab become single-token specials,
-    # regardless of whether tokenizer_config.json listed them.
+    # Native <|...|> entries stay in the raw trie. They are not automatically
+    # promoted to input-isolated HF special tokens.
     expected = {
         "<|im_start|>": 65530,
         "<|im_end|>": 65531,
@@ -255,10 +247,85 @@ def test_rwkv_tokenizer_auto_registers_pipe_specials_from_vocab(tmp_path):
     for token, token_id in expected.items():
         assert tokenizer.convert_tokens_to_ids(token) == token_id
 
-    # Each special must encode as exactly one token, not a byte split.
+    assert tokenizer.all_special_ids == []
+
+    # At a clean boundary the raw trie may still choose the complete vocab
+    # entry; that is not HF special-token isolation.
     encoded = tokenizer.encode("<|im_start|><|think|><|tool_call|><|im_end|>")
     assert encoded == [65530, 65533, 65534, 65531]
 
+
+
+def _write_legacy_control_token_model_dir(path: Path) -> None:
+    vocab_path = path / "rwkv_vocab_v20260603.txt"
+    vocab_path.write_text(
+        "\n".join(
+            [
+                "1 'a' 1",
+                "2 '<' 1",
+                "3 'think' 5",
+                "4 '>' 1",
+                "5 'a<' 2",
+                "6 '.' 1",
+                "7 '.<' 2",
+                "65530 '<|im_start|>' 12",
+                "65531 '<|im_end|>' 10",
+                "65532 '<|endoftext|>' 13",
+                "65533 '<think>' 7",
+                "65534 '<tool_call>' 11",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    controls = {
+        "<|im_start|>": 65530,
+        "<|im_end|>": 65531,
+        "<|endoftext|>": 65532,
+        "<think>": 65533,
+        "<tool_call>": 65534,
+    }
+    (path / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "tokenizer_class": "RwkvTokenizer",
+                "bos_token": "<|endoftext|>",
+                "eos_token": "<|endoftext|>",
+                "pad_token": "<|endoftext|>",
+                "additional_special_tokens": [
+                    "<|im_start|>",
+                    "<|im_end|>",
+                    "<think>",
+                    "<tool_call>",
+                ],
+                "added_tokens_decoder": {
+                    str(token_id): {"content": token, "special": True}
+                    for token, token_id in controls.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_rwkv_tokenizer_uses_whole_string_trie_for_native_control_tokens(tmp_path):
+    _write_legacy_control_token_model_dir(tmp_path)
+    tokenizer = get_tokenizer(str(tmp_path))
+
+    # Metadata may list the markers as specials, but native vocab entries must
+    # remain in the legacy whole-string trie path.
+    assert tokenizer.all_special_ids == []
+    assert tokenizer.get_added_vocab() == {}
+    assert tokenizer.bos_token_id == 65532
+    assert tokenizer.eos_token_id == 65532
+    assert tokenizer.pad_token_id == 65532
+    assert tokenizer.convert_tokens_to_ids("<think>") == 65533
+
+    expected = [5, 3, 4]
+    assert tokenizer.encode("a<think>") == expected
+    assert tokenizer(["a<think>", "a<think>"]).input_ids == [expected, expected]
+    assert tokenizer.encode(".<think>") == [7, 3, 4]
+    assert tokenizer.encode("a<think>") != [1, 65533]
 
 def test_rwkv_tokenizer_renders_external_jinja_chat_template(tmp_path):
     vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"

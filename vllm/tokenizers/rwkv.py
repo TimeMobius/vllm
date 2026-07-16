@@ -26,12 +26,6 @@ except ImportError:
 
 logger = init_logger(__name__)
 
-# Tokens shaped like ``<|...|>`` that already exist in the vocab are treated
-# as special by default (so encode/decode keep them as a single token even
-# when the model directory's ``tokenizer_config.json`` doesn't list them).
-_AUTO_SPECIAL_TOKEN_RE = re.compile(rb"^<\|[^<>|\s]+\|>$")
-
-
 class _TrieNode:
     __slots__ = ("children", "values")
 
@@ -276,7 +270,10 @@ class RWKVTokenizer(TokenizerLike):
         self._token_str_to_id = {
             token_str: token_id for token_id, token_str in self._id_to_token_str.items()
         }
-        self._special_token_map, special_fields = self._build_special_token_map(
+        # RWKV7 legacy SFT data encodes each entire rendered prompt with one
+        # greedy trie pass. Native vocab entries must therefore never become
+        # input-isolated HF special tokens, even when metadata lists them.
+        self._special_token_map, special_fields = self._build_legacy_added_token_map(
             metadata or {}
         )
         self._special_id_to_token = {
@@ -383,9 +380,18 @@ class RWKVTokenizer(TokenizerLike):
             buffer += f"{token_id} {token!r} {len(token_bytes)}\n".encode()
         return buffer
 
-    def _build_special_token_map(
+    def _build_legacy_added_token_map(
         self, metadata: dict[str, Any]
     ) -> tuple[dict[str, int], dict[str, str]]:
+        """Keep only metadata tokens that are absent from the RWKV vocabulary.
+
+        Legacy RWKV training tokenizes the full rendered prompt with the native
+        greedy trie. A native token such as ``<|im_end|>`` or ``<think>`` must
+        consequently remain available to that trie and cannot be isolated
+        before encoding. Metadata-only tokens are retained for compatibility
+        with older HF RWKV directories whose control token is not in the txt
+        vocabulary at all.
+        """
         ordered_special_tokens = list(
             dict.fromkeys(
                 [
@@ -398,56 +404,38 @@ class RWKVTokenizer(TokenizerLike):
             metadata.get("explicit_special_token_ids", {})
         )
         special_fields = metadata.get("special_token_fields", {})
-
-        # Always also pick up vocab tokens that look like reserved markers
-        # (``<|im_start|>`` style). Newer RWKV vocabs ship these but their
-        # ``tokenizer_config.json`` may not list them. Preserve the historical
-        # ``im_start, im_end, endoftext, ...`` ordering so the fallback default
-        # set is unchanged.
-        auto_specials_priority = (b"<|im_start|>", b"<|im_end|>", b"<|endoftext|>")
-        prioritized: list[bytes] = [
-            tok for tok in auto_specials_priority if tok in self._token_to_id
-        ]
-        remaining: list[bytes] = sorted(
-            (
-                tok
-                for tok in self._token_to_id
-                if _AUTO_SPECIAL_TOKEN_RE.match(tok) and tok not in prioritized
-            ),
-            key=lambda tok: self._token_to_id[tok],
+        special_tokens: dict[str, int] = {}
+        next_token_id = (
+            max(
+                [*self._id_to_token.keys(), *explicit_special_token_ids.values()],
+                default=-1,
+            )
+            + 1
         )
-        for token_bytes in (*prioritized, *remaining):
-            token_str = token_bytes.decode("utf-8")
-            if token_str in ordered_special_tokens:
+
+        for token in ordered_special_tokens:
+            try:
+                token_bytes = self._token_str_to_bytes(token)
+            except UnicodeEncodeError:
+                token_bytes = None
+            if token_bytes is not None and token_bytes in self._token_to_id:
                 continue
-            ordered_special_tokens.append(token_str)
-            explicit_special_token_ids.setdefault(
-                token_str, self._token_to_id[token_bytes]
-            )
 
-        if ordered_special_tokens:
-            next_token_id = (
-                max(
-                    [*self._id_to_token.keys(), *explicit_special_token_ids.values()],
-                    default=-1,
-                )
-                + 1
-            )
-            special_tokens: dict[str, int] = {}
-            for token in ordered_special_tokens:
-                token_id = explicit_special_token_ids.get(token)
-                if token_id is None:
-                    token_id = next_token_id
-                    next_token_id += 1
-                special_tokens[token] = token_id
-            return special_tokens, special_fields
+            token_id = explicit_special_token_ids.get(token)
+            if token_id is None:
+                token_id = next_token_id
+                next_token_id += 1
+            special_tokens[token] = token_id
 
-        return {}, {}
+        return special_tokens, special_fields
 
     def _resolve_named_special_id(self, token: str | None) -> int:
         if token is None:
             return self._default_special_id
-        return self._special_token_map.get(token, self._default_special_id)
+        special_token_id = self._special_token_map.get(token)
+        if special_token_id is not None:
+            return special_token_id
+        return self._token_str_to_id.get(token, self._default_special_id)
 
     def _resolve_default_special_id(self) -> int:
         for token in (

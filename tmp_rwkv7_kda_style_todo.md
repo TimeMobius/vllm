@@ -1895,3 +1895,32 @@ side issues:
   => `24 passed`; changed production executable line coverage `1/1 = 100%`
 - `.venv/bin/pre-commit run ruff-check --files vllm/entrypoints/openai/chat_completion/serving.py tests/entrypoints/openai/chat_completion/test_serving_chat.py tests/reasoning/test_rwkv_reasoning_parser.py`
   => passed
+
+
+## RWKV Legacy Trie Tokenizer Alignment (2026-07-16)
+
+当前已落实：
+
+- [x] 默认 RWKV vLLM tokenizer 按旧 SFT 数据处理语义，对完整渲染 prompt 做一次
+  native greedy-trie 编码。
+- [x] 不再因为 `tokenizer_config.json` 的 added-token metadata 或 vocab 内
+  `<|...|>` 形态而将 native marker 预切分。
+- [x] `bos/eos/pad` 仍从 native vocab 解析；旧 epoch-1 的 EOD 保持
+  `65532`，但 EOD 文本不会成为输入切分边界。
+- [x] 仅保留“不存在于 RWKV txt vocab”的 metadata-only token 的兼容 added-token
+  处理，避免旧 HF 目录无法编码自身的非 native control token。
+
+未来 special-first 支持（暂不实现）：
+
+- [ ] 增加一个**显式且不会误判旧模型**的 special-first 选择机制。converter 的
+  `codex/special-first-tokenizer` 分支不会写模式字段，因此不能靠当前模型 JSON
+  自动猜测。
+- [ ] special-first 仅在确认训练数据本身也采用 marker-first tokenization 后启用：
+  固定 `<|im_start|>` / `<|im_end|>` / `<think>` / `<tool_call>` 到 vocab 内既有
+  ID，并在输入编码前隔离它们。
+- [ ] 启用 special-first 时，RWKV tool parser 需要像 Hermes / Granite / Step3 一样，
+  在有 tools 且 `tool_choice != "none"` 时设置 `skip_special_tokens=False`；否则
+  `<tool_call>` 会在 parser 前被过滤。
+- [ ] 为两种模式分别保留真实训练模板、thinking、tool-call、batch encode 和服务端
+  `/tokenize` 的逐 ID 回归测试，禁止以“标签独立编码为单 token”替代全 prompt
+  对照。

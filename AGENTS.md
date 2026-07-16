@@ -39,31 +39,27 @@ If work is duplicate/trivial busywork, **do not proceed**. Return a short explan
 
 ## 2. Development Workflow
 
-- **Never use system `python3` or bare `pip`/`pip install`.** All Python commands must go through `uv` and `.venv/bin/python`.
+- **Never use system `python3` or bare `pip`/`pip install`.** Use the project's Conda environment named `vllm` for every Python command: `conda run -n vllm python ...`.
 
 ### Environment setup
 
 ```bash
-# Install `uv` if you don't have it already:
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Verify that the required environment is available:
+conda env list
 
-# Always use `uv` for Python environment management:
-uv venv --python 3.12
-source .venv/bin/activate
-
-# Always make sure `pre-commit` and its hooks are installed:
-uv pip install -r requirements/lint.txt
-pre-commit install
+# Run tools in that environment; activation does not persist in non-interactive shells:
+conda run -n vllm python --version
+conda run -n vllm pre-commit install
 ```
 
 ### Installing dependencies
 
 ```bash
 # If you are only making Python changes:
-VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
+conda run -n vllm env VLLM_USE_PRECOMPILED=1 python -m pip install -e . --torch-backend=auto
 
 # If you are also making C/C++ changes:
-uv pip install -e . --torch-backend=auto
+conda run -n vllm python -m pip install -e . --torch-backend=auto
 ```
 
 ### Running tests
@@ -74,13 +70,12 @@ uv pip install -e . --torch-backend=auto
 # Install test dependencies.
 # requirements/test.txt is pinned to x86_64; on other platforms, use the
 # unpinned source file instead:
-uv pip install -r requirements/test.in    # resolves for current platform
+conda run -n vllm python -m pip install -r requirements/test.in  # resolves for current platform
 # Or on x86_64:
-uv pip install -r requirements/test.txt
+conda run -n vllm python -m pip install -r requirements/test.txt
 
-# Run a specific test file (use .venv/bin/python directly;
-# `source activate` does not persist in non-interactive shells):
-.venv/bin/python -m pytest tests/path/to/test_file.py -v
+# Run a specific test file:
+conda run -n vllm python -m pytest tests/path/to/test_file.py -v
 ```
 
 ### Running linters
@@ -89,16 +84,16 @@ uv pip install -r requirements/test.txt
 
 ```bash
 # Run all pre-commit hooks on staged files:
-pre-commit run
+conda run -n vllm pre-commit run
 
 # Run on all files:
-pre-commit run --all-files
+conda run -n vllm pre-commit run --all-files
 
 # Run a specific hook:
-pre-commit run ruff-check --all-files
+conda run -n vllm pre-commit run ruff-check --all-files
 
 # Run mypy as it is in CI:
-pre-commit run mypy-3.10 --all-files --hook-stage manual
+conda run -n vllm pre-commit run mypy-3.10 --all-files --hook-stage manual
 ```
 
 ### Commit messages
