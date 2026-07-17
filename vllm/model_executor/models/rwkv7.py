@@ -134,6 +134,58 @@ def get_tp_rank() -> int:
     return get_tensor_model_parallel_rank() if model_parallel_is_initialized() else 0
 
 
+def _get_rwkv7_intermediate_size(config) -> int:
+    if config.intermediate_size is not None:
+        return config.intermediate_size
+
+    hidden_ratio = 4 if config.hidden_ratio is None else config.hidden_ratio
+    intermediate_size = int(config.hidden_size * hidden_ratio)
+    return 32 * ((intermediate_size + 31) // 32)
+
+
+def _validate_rwkv7_tensor_parallel_config(config) -> None:
+    """Validate dimensions whose sharding follows RWKV7 attention heads."""
+    tp_size = get_tp_world_size()
+    if tp_size == 1:
+        return
+
+    if config.hidden_size != config.num_heads * config.head_dim:
+        raise ValueError(
+            "RWKV7 requires `hidden_size == num_heads * head_dim`; got "
+            f"{config.hidden_size} != {config.num_heads} * {config.head_dim}."
+        )
+    if config.hidden_size % tp_size != 0:
+        raise ValueError(
+            "RWKV7 tensor parallelism requires `hidden_size` to be divisible "
+            f"by tensor_parallel_size; got hidden_size={config.hidden_size}, "
+            f"tensor_parallel_size={tp_size}."
+        )
+    if config.num_heads % tp_size != 0:
+        raise ValueError(
+            "RWKV7 tensor parallelism requires `num_heads` to be divisible "
+            f"by tensor_parallel_size; got num_heads={config.num_heads}, "
+            f"tensor_parallel_size={tp_size}."
+        )
+
+    invalid_value_dims = [
+        value_dim for value_dim in config.value_dim if value_dim % tp_size != 0
+    ]
+    if invalid_value_dims:
+        raise ValueError(
+            "RWKV7 tensor parallelism requires every `value_dim` to be "
+            f"divisible by tensor_parallel_size={tp_size}; got "
+            f"value_dim={config.value_dim}."
+        )
+
+    intermediate_size = _get_rwkv7_intermediate_size(config)
+    if intermediate_size % tp_size != 0:
+        raise ValueError(
+            "RWKV7 tensor parallelism requires the FFN `intermediate_size` to "
+            f"be divisible by tensor_parallel_size; got "
+            f"intermediate_size={intermediate_size}, tensor_parallel_size={tp_size}."
+        )
+
+
 def _can_use_rwkv7_direct_linear(linear, x: torch.Tensor) -> bool:
     return (
         x.is_cuda
@@ -691,12 +743,8 @@ class RWKV7FeedForward(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        if config.intermediate_size is None:
-            hidden_ratio = 4 if config.hidden_ratio is None else config.hidden_ratio
-            intermediate_size = int(config.hidden_size * hidden_ratio)
-            intermediate_size = 32 * ((intermediate_size + 31) // 32)
-        else:
-            intermediate_size = config.intermediate_size
+        _validate_rwkv7_tensor_parallel_config(config)
+        intermediate_size = _get_rwkv7_intermediate_size(config)
 
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
@@ -801,6 +849,7 @@ class RWKV7Attention(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        _validate_rwkv7_tensor_parallel_config(config)
         self.layer_idx = layer_idx
         self.prefix = prefix
         self.hidden_size = config.hidden_size

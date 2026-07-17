@@ -196,8 +196,14 @@ Notes:
 
 - `--enforce-eager` is currently faster than piecewise CUDA graphs for RWKV7
   (decode TPS ≈ 1.4×). Drop it once piecewise wins on your workload.
+- Tensor parallelism is supported. Add `--tensor-parallel-size N`; `N` must
+  divide `hidden_size`, `num_heads`, every `value_dim`, and the FFN
+  `intermediate_size`. For the 13.3B RWKV7 checkpoint (`4096` hidden size,
+  `64` heads, `4096` value dim, `16384` intermediate size), TP=2/4/8 are
+  valid.
 - `RWKV7_USE_DIRECT_LINEAR=1` requires `tp_size == 1` and unquantized linears;
-  long-prompt prefill (>1024 tokens) regresses slightly, so disable it for
+  it automatically falls back to the normal parallel linear path under TP.
+  Long-prompt prefill (>1024 tokens) regresses slightly, so disable it for
   long-context-heavy workloads.
 - `--mamba-cache-mode align` is a balanced choice for prefix caching; switch to
   `all` if your KV cache budget is generous and you need the highest hit rate.
