@@ -26,6 +26,30 @@ def _write_vocab(path: Path) -> None:
     )
 
 
+def _write_sp_vocab(path: Path) -> None:
+    """Write a new-style SFT vocab with overlapping legacy trie entries."""
+    path.write_text(
+        "\n".join(
+            [
+                "1 'a' 1",
+                "2 '<' 1",
+                "3 'think' 5",
+                "4 '>' 1",
+                "5 'a<' 2",
+                "6 '.' 1",
+                "7 '.<' 2",
+                "65530 '<|im_start|>' 12",
+                "65531 '<|im_end|>' 10",
+                "65532 '<|endoftext|>' 13",
+                "65533 '<think>' 7",
+                "65534 '<tool_call>' 11",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_hf_rwkv_tokenizer_dir(path: Path) -> Path:
     vocab_path = path / "rwkv_vocab_v20230424.txt"
     vocab_path.write_text(
@@ -258,6 +282,26 @@ def test_rwkv_tokenizer_auto_registers_pipe_specials_from_vocab(tmp_path):
     # Each special must encode as exactly one token, not a byte split.
     encoded = tokenizer.encode("<|im_start|><|think|><|tool_call|><|im_end|>")
     assert encoded == [65530, 65533, 65534, 65531]
+
+
+def test_rwkv_tokenizer_auto_registers_new_sft_sp_markers(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_sp_vocab(vocab_path)
+
+    tokenizer = get_tokenizer(str(vocab_path))
+
+    assert tokenizer.all_special_ids == [65530, 65531, 65532, 65533, 65534]
+    assert tokenizer.convert_tokens_to_ids("<think>") == 65533
+    assert tokenizer.convert_tokens_to_ids("<tool_call>") == 65534
+
+    # SP markers must be split out before normal text goes through the greedy
+    # trie. Otherwise ``a<`` and ``.<`` would cross the marker boundary.
+    assert tokenizer.encode("a<think>") == [1, 65533]
+    assert tokenizer.encode(".<tool_call>") == [6, 65534]
+    assert tokenizer(["a<think>", ".<tool_call>"]).input_ids == [
+        [1, 65533],
+        [6, 65534],
+    ]
 
 
 def test_rwkv_tokenizer_renders_external_jinja_chat_template(tmp_path):

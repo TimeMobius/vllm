@@ -26,10 +26,13 @@ except ImportError:
 
 logger = init_logger(__name__)
 
-# Tokens shaped like ``<|...|>`` that already exist in the vocab are treated
-# as special by default (so encode/decode keep them as a single token even
-# when the model directory's ``tokenizer_config.json`` doesn't list them).
-_AUTO_SPECIAL_TOKEN_RE = re.compile(rb"^<\|[^<>|\s]+\|>$")
+# New RWKV SFT vocabularies may ship control markers directly in their txt
+# vocabularies, without duplicating them in ``tokenizer_config.json``. Treat
+# those markers as HF-style special tokens before the greedy RWKV trie sees
+# the surrounding text. This preserves the token boundaries used to preprocess
+# the training data (for example, ``a<think>`` must not be consumed as an
+# overlapping base-vocab token such as ``a<`` followed by ``think``).
+_AUTO_SPECIAL_TOKEN_RE = re.compile(rb"^(?:<\|[^<>|\s]+\|>|</?(?:think|tool_call)>)$")
 
 
 class _TrieNode:
