@@ -304,6 +304,20 @@ def test_rwkv_tokenizer_auto_registers_new_sft_sp_markers(tmp_path):
     ]
 
 
+def test_rwkv_tokenizer_preserves_sft_markers_in_chat_template_output(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
+    _write_sp_vocab(vocab_path)
+    chat_template = (
+        "{{ '<|im_start|>' }}{{ messages[0]['content'] }}<think><tool_call><|im_end|>"
+    )
+    tokenizer = get_tokenizer(str(vocab_path), chat_template=chat_template)
+
+    assert tokenizer.apply_chat_template(
+        [{"role": "user", "content": "a"}],
+        tokenize=True,
+    ) == [65530, 1, 65533, 65534, 65531]
+
+
 def test_rwkv_tokenizer_renders_external_jinja_chat_template(tmp_path):
     vocab_path = tmp_path / "rwkv_vocab_v20260603.txt"
     _write_im_vocab(vocab_path)
