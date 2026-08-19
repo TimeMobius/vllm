@@ -57,6 +57,18 @@ install(CODE "set(CMAKE_INSTALL_PREFIX \"\${CMAKE_INSTALL_PREFIX}/vllm/\")" ALL_
 FetchContent_MakeAvailable(vllm-flash-attn)
 message(STATUS "vllm-flash-attn is available at ${vllm-flash-attn_SOURCE_DIR}")
 
+# The vendored flash-attention tree normally provides its own CUTLASS headers,
+# but that directory is absent in the source snapshot used by vLLM. Reuse the
+# CUTLASS checkout already configured by the parent project so FA2/FA3 can
+# resolve headers such as cutlass/numeric_types.h.
+if(CUTLASS_INCLUDE_DIR)
+  foreach(_FA_TARGET _vllm_fa2_C _vllm_fa3_C)
+    if(TARGET ${_FA_TARGET})
+      target_include_directories(${_FA_TARGET} PRIVATE "${CUTLASS_INCLUDE_DIR}")
+    endif()
+  endforeach()
+endif()
+
 # Restore the install prefix after FA's install rules
 install(CODE "set(CMAKE_INSTALL_PREFIX \"\${OLD_CMAKE_INSTALL_PREFIX}\")" ALL_COMPONENTS)
 install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)
