@@ -50,6 +50,73 @@ def _write_sp_vocab(path: Path) -> None:
     )
 
 
+def _write_special_first_hf_tokenizer_dir(path: Path) -> None:
+    """Mirror the tokenizer files emitted by the special-first converter."""
+    vocab_path = path / "rwkv_vocab_v20260603.txt"
+    vocab_path.write_text(
+        "\n".join(
+            [
+                "1 'a' 1",
+                "2 'b' 1",
+                "3 '\\n\\n' 2",
+                "4 ' ' 1",
+                "5 '.' 1",
+                "6 '>' 1",
+                "7 ' <' 2",
+                "8 '.<' 2",
+                "9 '><' 2",
+                "10 'think' 5",
+                "11 'tool_call' 9",
+                "65530 '<|im_start|>' 12",
+                "65531 '<|im_end|>' 10",
+                "65532 '<|endoftext|>' 13",
+                "65533 '<think>' 7",
+                "65534 '<tool_call>' 11",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    primary_special_token = "<|endoftext|>"
+    additional_special_tokens = [
+        "<|im_start|>",
+        "<|im_end|>",
+        "<think>",
+        "<tool_call>",
+    ]
+    special_token_ids = {
+        primary_special_token: 65532,
+        "<|im_start|>": 65530,
+        "<|im_end|>": 65531,
+        "<think>": 65533,
+        "<tool_call>": 65534,
+    }
+    special_tokens_map = {
+        "bos_token": primary_special_token,
+        "eos_token": primary_special_token,
+        "unk_token": primary_special_token,
+        "pad_token": primary_special_token,
+        "additional_special_tokens": additional_special_tokens,
+    }
+    tokenizer_config = {
+        "tokenizer_class": "RwkvTokenizer",
+        **special_tokens_map,
+        "added_tokens_decoder": {
+            str(token_id): {"content": token, "special": True}
+            for token, token_id in special_token_ids.items()
+        },
+    }
+    (path / "tokenizer_config.json").write_text(
+        json.dumps(tokenizer_config),
+        encoding="utf-8",
+    )
+    (path / "special_tokens_map.json").write_text(
+        json.dumps(special_tokens_map),
+        encoding="utf-8",
+    )
+    (path / "added_tokens.json").write_text("{}", encoding="utf-8")
+
+
 def _write_hf_rwkv_tokenizer_dir(path: Path) -> Path:
     vocab_path = path / "rwkv_vocab_v20230424.txt"
     vocab_path.write_text(
@@ -316,6 +383,27 @@ def test_rwkv_tokenizer_preserves_sft_markers_in_chat_template_output(tmp_path):
         [{"role": "user", "content": "a"}],
         tokenize=True,
     ) == [65530, 1, 65533, 65534, 65531]
+
+
+def test_rwkv_tokenizer_matches_special_first_converter_metadata(tmp_path):
+    _write_special_first_hf_tokenizer_dir(tmp_path)
+    tokenizer = get_tokenizer(str(tmp_path))
+
+    assert tokenizer.all_special_tokens == [
+        "<|endoftext|>",
+        "<|im_start|>",
+        "<|im_end|>",
+        "<think>",
+        "<tool_call>",
+    ]
+    assert tokenizer.all_special_ids == [65532, 65530, 65531, 65533, 65534]
+
+    # The converter exports these markers as HF special tokens. vLLM must
+    # reproduce its special-first behavior rather than let the native trie
+    # choose overlapping ordinary entries: `` <``, ``.<``, and ``><``.
+    assert tokenizer.encode(" <think>") == [4, 65533]
+    assert tokenizer.encode(".<think>") == [5, 65533]
+    assert tokenizer.encode("><tool_call>") == [6, 65534]
 
 
 def test_rwkv_tokenizer_renders_external_jinja_chat_template(tmp_path):
