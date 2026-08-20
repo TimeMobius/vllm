@@ -34,6 +34,7 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_lnx_rkvres_xg,
     rwkv7_mix6,
     rwkv7_mix6_reference,
+    rwkv7_recurrent_t1,
 )
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -1171,6 +1172,23 @@ class RWKV7Attention(nn.Module):
         a: torch.Tensor,
         recurrent_state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if (
+            self.perf_flags.use_alt_recurrent_kernel
+            and os.getenv("RWKV7_USE_FUSED_RECURRENT_T1") == "1"
+            and recurrent_state.ndim == 4
+            and recurrent_state.shape[-2:] == (64, 64)
+        ):
+            final_recurrent_state, recurrent_output = rwkv7_recurrent_t1(
+                recurrent_state=recurrent_state,
+                w=w,
+                kk=kk,
+                a=a,
+                k=k,
+                v=v,
+                r=r,
+            )
+            return recurrent_output, final_recurrent_state
+
         if self.perf_flags.use_alt_recurrent_kernel and _can_use_rwkv7_alt_recurrent(
             hidden_states=hidden_states,
             r=r,

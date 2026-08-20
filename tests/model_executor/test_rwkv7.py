@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 
+import vllm._custom_ops as custom_ops
 import vllm.model_executor.models.rwkv7 as rwkv7_model
 from vllm.config import (
     CacheConfig,
@@ -40,8 +41,12 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_mix6_reference,
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
+    rwkv7_recurrent_t1,
 )
-from vllm.model_executor.layers.fla.ops.rwkv7 import _rwkv7_mix6_use_triton
+from vllm.model_executor.layers.fla.ops.rwkv7 import (
+    _rwkv7_mix6_use_triton,
+    _rwkv7_recurrent_t1_reference,
+)
 from vllm.model_executor.layers.mamba.mamba_utils import (
     get_conv_copy_spec,
     get_temporal_copy_spec,
@@ -614,6 +619,36 @@ def test_rwkv7_perf_flags_from_env(monkeypatch):
     assert flags.use_fused_cmix is True
     assert flags.use_alt_recurrent_kernel is True
     assert flags.use_direct_linear is True
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_FUSED_RECURRENT_T1", "1")
+    torch.manual_seed(7)
+    batch_size, num_heads, head_dim, value_dim = 3, 4, 64, 64
+    state = torch.randn(
+        batch_size, num_heads, head_dim, value_dim, device="cuda", dtype=torch.float32
+    ).contiguous()
+    terms = [
+        torch.randn(batch_size, num_heads, head_dim, device="cuda").contiguous()
+        for _ in range(4)
+    ]
+    v = torch.randn(
+        batch_size, num_heads, value_dim, device="cuda", dtype=torch.float32
+    ).contiguous()
+    r = torch.randn(batch_size, num_heads, head_dim, device="cuda").contiguous()
+    w, kk, a, k = terms
+
+    expected_state, expected_output = _rwkv7_recurrent_t1_reference(
+        state, w, kk, a, k, v, r
+    )
+    actual_state, actual_output = rwkv7_recurrent_t1(
+        state, w, kk, a, k, v, r
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(actual_state, expected_state, rtol=5e-4, atol=5e-4)
+    torch.testing.assert_close(actual_output, expected_output, rtol=5e-4, atol=5e-4)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -1483,6 +1518,26 @@ def test_rwkv7_fused_recurrent_checkpoint_states_match_reference():
     torch.testing.assert_close(out_fused, out_ref, rtol=2e-3, atol=1e-1)
     torch.testing.assert_close(state_fused, state_ref, rtol=2e-3, atol=1e-1)
     torch.testing.assert_close(checkpoint_fused, checkpoint_ref, rtol=2e-3, atol=1e-1)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_rwkv7_masked_store_skips_padding_slots(dtype):
+    if dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("bfloat16 is not supported on this CUDA device.")
+    if not hasattr(torch.ops, "_C") or not hasattr(torch.ops._C, "rwkv7_masked_store"):
+        pytest.skip("RWKV7 masked-store CUDA extension is not built.")
+
+    cache = torch.full((4, 2, 3), -7, device="cuda", dtype=dtype)
+    values = torch.arange(2 * 2 * 3, device="cuda", dtype=dtype).reshape(2, 2, 3)
+    slot_ids = torch.tensor([2, -1], device="cuda", dtype=torch.long)
+
+    custom_ops.rwkv7_masked_store(cache, values, slot_ids)
+    torch.cuda.synchronize()
+
+    expected = torch.full_like(cache, -7)
+    expected[2] = values[0]
+    torch.testing.assert_close(cache, expected)
 
 
 def test_rwkv7_alt_recurrent_matches_reference():

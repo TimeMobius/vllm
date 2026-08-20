@@ -1,0 +1,29 @@
+{
+  "algorithm_id": "recurrent-t1-fused",
+  "baseline": "reference fused recurrent T=1 path",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "temperature": 0.0,
+  "seed": 123,
+  "max_tokens": 32,
+  "ignore_eos": true,
+  "cross_service_token_ids_exact": true,
+  "per_prompt_mismatch_counts": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "prompt_count": 8,
+  "operator_parity": {
+    "shape": "B=3,H=4,D=64,V=64",
+    "state_max_abs_error": 4.57763671875e-05,
+    "output_max_abs_error": 0.000152587890625,
+    "rtol": 0.0005,
+    "atol": 0.0005
+  },
+  "notes": "Cross-service deterministic token IDs match for all 8 prompts; direct T=1 Triton output/state parity is within the recorded tolerance."
+}

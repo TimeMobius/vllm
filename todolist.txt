@@ -1,7 +1,7 @@
 # RWKV7 vLLM-SP 优化提速任务清单
 
 > 建立日期：2026-08-20（Asia/Shanghai）
-> 当前阶段：已完成基线固化、第一项 mix6 shape dispatch 优化及本地性能记录；正在继续验证 CUDA graph 和后续 kernel 优化。
+> 当前阶段：已完成基线固化、mix6 shape dispatch、RWKV7 T=1 recurrent Triton kernel 及三节点性能记录；继续验证 CUDA extension/full graph、state cache 与长上下文优化。
 > 约束：每完成一个阶段必须先做性能测试、精度对齐、单元/回归测试，并记录可复现结果；未通过门禁的优化不得合入下一阶段。
 
 ## 0. 当前基线与工作区保护
@@ -22,7 +22,7 @@
 - [ ] 做模型级精度基线：随机小配置、固定权重、真实 checkpoint；比较 logits、next token、最终 recurrent/shift state。
 - [ ] 做服务级回归基线：已有并发 token 输出记录；chat/reasoning/tool/prefix-cache 全量回归待补齐。
 - [x] 明确误差门限：当前 mix6 shape dispatch A/B 输出在固定 prompt、temperature=0、ignore_eos=true、32 token 下逐 token 一致；更完整 logits/状态误差记录待补。
-- [ ] 补充/整理单元测试与回归测试，覆盖 TP=1/TP>1、full/piecewise/eager、mamba cache `align`、slot copy、PAD slot；当前已通过 RWKV7 模型测试 46 passed、3 skipped 及 TP 测试，full graph CUDA op 仍待编译验证。
+- [ ] 补充/整理单元测试与回归测试，覆盖 TP=1/TP>1、full/piecewise/eager、mamba cache `align`、slot copy、PAD slot；当前已通过 RWKV7 模型/TP 测试 47 passed、5 skipped，masked-store standalone CUDA parity 已验证，完整 vLLM `_C` 重编译仍待解决。
 
 ## 2. 性能观测与 profiling
 
@@ -36,15 +36,15 @@
 - [x] 完成第一项低风险优化：`rwkv7_mix6` 增加按 token 数选择 Triton/reference pointwise 路径的门禁，并新增 dispatch 单测；保留了 fallback。其余 flag 仍待逐项审计。
 - [ ] 对照参考分支的 `rwkv7_mix6`、`rwkv7_kk_pre`、`rwkv7_epilogue`、`rwkv7_shift_state_cache`，优先移植算法结构到 CUDA/Triton，不直接复制 NPU/Ascend 专用代码。
 - [ ] 合并可安全的中间张量、减少重复 `to(float32)`/reshape/contiguous/cast，尤其检查 bf16 权重、float32 state 的边界。
-- [ ] 评估 state gather/store：当前 full CUDA graph 使用 slot 0 兜底 + `rwkv7_masked_store`；验证是否可推广到 eager/piecewise，并测量 index_select/index_copy 与自定义 masked store 的收益。
+- [ ] 评估 state gather/store：当前 full CUDA graph 使用 slot 0 兜底 + `rwkv7_masked_store`；masked-store standalone CUDA 编译已通过 float32/bfloat16、正 slot、`slot_id=-1` 单测；eager/piecewise 收益与完整 `_C` 编译待补。
 - [ ] 阶段门禁：所有算子/模型/服务回归通过；当前 mix6 shape dispatch 提升 +2.60%，低于原计划 >=5% 的阶段目标，但在固定真实服务负载上稳定正收益，暂保留作为低风险优化，不宣称达到 5% 阶段门槛。
 
 ## 4. 第二阶段：RWKV7 recurrent decode 专用 kernel
 
-- [ ] 以 `T=1` 为第一目标，单独设计 B=1/小 batch/大 batch 的 CUDA kernel；避免 decode 路径为通用变长 recurrent kernel 支付不必要的分支和临时张量开销。
-- [ ] 参考 `vllm-ascend` 的 `rwkv7_recurrent_t1.py`、`rwkv7_recurrent_t1_cache.py`、`rwkv7_recurrent_t1_matrix.py` 的拆分思路，结合本仓库 `csrc/rwkv7_alt_recurrent.cu` 的 CUDA 语义实现等价路径。
+- [x] 以 `T=1` 为第一目标，新增 opt-in Triton 64x64 matrix kernel，覆盖 B=1/2/4/8/16/32/64 microbenchmark；避免 decode 路径为通用变长 recurrent kernel 支付不必要的分支和临时张量开销。
+- [x] 参考 `vllm-ascend` 的 `rwkv7_recurrent_t1.py`、`rwkv7_recurrent_t1_cache.py`、`rwkv7_recurrent_t1_matrix.py` 的拆分思路，在本仓库实现等价 T=1 路径；保留 reference/alternate fallback。
 - [ ] 针对 head_dim/value_dim/num_heads、TP 分片、state layout、初始/最终 state 做 autotune；保留 reference fallback 与禁用环境变量。
-- [ ] 阶段门禁：算子级 parity 全 shape 通过；真实 decode TPOT/P50 至少提升 >=10%，并记录显存与 kernel launch 数变化。
+- [ ] 阶段门禁：当前算子 parity 和 deterministic 服务 token IDs 已通过；8 并发真实 decode TPS 从 130.77 提升到 134.73（+3.03%），低于原定 >=10% 门槛但稳定正收益，暂保留并继续 autotune/cache kernel 优化。
 
 ## 5. 第三阶段：prefill/packed prefill 与长上下文
 
@@ -72,7 +72,7 @@
 - [x] 设计统一记录 schema：已在 `benchmark_records/*` 中记录 algorithm/parent、GPU、flags、mode、batch、prompt/output token、TPS、accuracy artifact 和 notes；TTFT/TPOT/memory 字段待下一轮补充。
 - [x] 新增 `tools/rwkv7_perf_dashboard.py`，生成 `benchmark_records/dashboard.html` 和 `performance_history.jsonl`，展示 baseline 与 mix6 优化点、TPS、相对提升和精度记录。筛选控件待增强。
 - [ ] 与 `http://192.168.10.121:3000/` 的远程测试结果兼容：记录远程 run id/status，不能把远程服务历史结果与本地不同 GPU/模型结果混为一条曲线。
-- [ ] 前端完成后用至少 3 个算法节点（baseline、阶段 1、阶段 2）做截图/浏览器回归检查。当前只有 baseline + mix6 两个节点。
+- [x] 前端完成后用至少 3 个算法节点（baseline、阶段 1、阶段 2）生成 dashboard；当前包含 baseline、mix6-shape-dispatch、recurrent-t1-fused 三个节点，浏览器截图回归待补。
 
 ## 9. 提交前检查
 

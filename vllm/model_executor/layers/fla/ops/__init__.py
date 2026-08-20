@@ -26,6 +26,7 @@ from .rwkv7 import (
     rwkv7_mix6_reference,
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
+    rwkv7_recurrent_t1,
 )
 
 __all__ = [
@@ -45,5 +46,6 @@ __all__ = [
     "rwkv7_mix6",
     "rwkv7_mix6_reference",
     "rwkv7_recurrent_reference",
+    "rwkv7_recurrent_t1",
     "rwkv7_recurrent_reference_with_checkpoints",
 ]

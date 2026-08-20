@@ -1,0 +1,27 @@
+{
+  "algorithm_id": "recurrent-t1-fused",
+  "parent_id": "mix6-shape-dispatch",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "prompt_tokens": "mixed fixed prompts",
+  "output_tokens_per_round": 256,
+  "baseline_tps": [
+    129.90932365743478,
+    131.3879974964966,
+    132.07487899673805,
+    128.21887268535943,
+    132.2412852644545
+  ],
+  "heuristic_tps": [
+    134.62646452974042,
+    135.31125529157157,
+    133.85753489012404,
+    134.46290844199058,
+    135.3752669111551
+  ],
+  "baseline_avg_tps": 130.76647162009667,
+  "heuristic_avg_tps": 134.72668601291633,
+  "speedup_ratio": 1.0302846314024967,
+  "speedup_percent": 3.028463140249671,
+  "accuracy_record": "benchmark_records/20260820_recurrent_t1_accuracy.json",
+  "notes": "Same model/flags, 8 fixed prompts, concurrency=8, 32 output tokens, 5 measured rounds after one warmup. T=1 Triton matrix kernel is opt-in via RWKV7_USE_FUSED_RECURRENT_T1=1."
+}

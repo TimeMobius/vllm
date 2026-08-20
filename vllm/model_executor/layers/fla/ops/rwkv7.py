@@ -24,6 +24,140 @@ def _rwkv7_fused_recurrent_disabled() -> bool:
     )
 
 
+def _rwkv7_recurrent_t1_reference(
+    recurrent_state: torch.Tensor,
+    w: torch.Tensor,
+    kk: torch.Tensor,
+    a: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    r: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Reference for one RWKV7 recurrent decode step.
+
+    The state and all projected terms are FP32 in the model execution path.
+    Keeping this implementation next to the fused path makes the dispatch
+    guards and parity tests explicit.
+    """
+    sa = (recurrent_state * (-kk).unsqueeze(-1)).sum(dim=-2)
+    new_state = (
+        torch.exp(w).unsqueeze(-1) * recurrent_state
+        + (kk * a).unsqueeze(-1) * sa.unsqueeze(-2)
+        + k.unsqueeze(-1) * v.unsqueeze(-2)
+    )
+    reduce_out = (new_state * r.unsqueeze(-1)).sum(dim=-2)
+    return new_state, reduce_out
+
+
+if HAS_TRITON:
+
+    @triton.jit
+    def _rwkv7_recurrent_t1_matrix_kernel(
+        state_ptr,
+        w_ptr,
+        kk_ptr,
+        a_ptr,
+        k_ptr,
+        v_ptr,
+        r_ptr,
+        out_state_ptr,
+        out_reduce_ptr,
+        H: tl.constexpr,
+        D: tl.constexpr,
+        V: tl.constexpr,
+    ):
+        batch_idx = tl.program_id(0)
+        head_idx = tl.program_id(1)
+        state_idx = batch_idx * H + head_idx
+        d_offsets = tl.arange(0, D)[:, None]
+        v_offsets = tl.arange(0, V)
+        state_base = state_ptr + state_idx * D * V
+        scalar_base = state_idx * D
+        value_base = state_idx * V
+
+        state = tl.load(state_base + d_offsets * V + v_offsets[None, :]).to(tl.float32)
+        kk_val = tl.load(kk_ptr + scalar_base + d_offsets).to(tl.float32)
+        sa = tl.sum(state * (-kk_val), axis=0)
+        w_val = tl.exp(tl.load(w_ptr + scalar_base + d_offsets).to(tl.float32))
+        a_val = tl.load(a_ptr + scalar_base + d_offsets).to(tl.float32)
+        k_val = tl.load(k_ptr + scalar_base + d_offsets).to(tl.float32)
+        r_val = tl.load(r_ptr + scalar_base + d_offsets).to(tl.float32)
+        value = tl.load(v_ptr + value_base + v_offsets)[None, :].to(tl.float32)
+        new_state = w_val * state + (kk_val * a_val) * sa + k_val * value
+
+        tl.store(
+            out_state_ptr + state_idx * D * V + d_offsets * V + v_offsets[None, :],
+            new_state,
+        )
+        tl.store(
+            out_reduce_ptr + value_base + v_offsets,
+            tl.sum(new_state * r_val, axis=0),
+        )
+
+
+def rwkv7_recurrent_t1(
+    recurrent_state: torch.Tensor,
+    w: torch.Tensor,
+    kk: torch.Tensor,
+    a: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    r: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fuse the T=1 recurrent update and output reduction.
+
+    This is deliberately opt-in while it is being characterized.  The
+    ``RWKV7_USE_FUSED_RECURRENT_T1`` switch lets the normal reference/alternate
+    paths remain available for rollback and A/B benchmarking.
+    """
+    if recurrent_state.ndim != 4:
+        raise ValueError(
+            "`recurrent_state` must be rank 4 [B, H, D, V], got "
+            f"{recurrent_state.ndim}."
+        )
+
+    tensors = (recurrent_state, w, kk, a, k, v, r)
+    if (
+        not HAS_TRITON
+        or os.getenv("RWKV7_USE_FUSED_RECURRENT_T1", "0") != "1"
+        or recurrent_state.device.type != "cuda"
+        or any(t.dtype != torch.float32 or not t.is_contiguous() for t in tensors)
+    ):
+        return _rwkv7_recurrent_t1_reference(recurrent_state, w, kk, a, k, v, r)
+
+    B, H, D, V = recurrent_state.shape
+    if (
+        w.shape != (B, H, D)
+        or kk.shape != (B, H, D)
+        or a.shape != (B, H, D)
+        or k.shape != (B, H, D)
+        or r.shape != (B, H, D)
+        or v.shape != (B, H, V)
+        or D != 64
+        or V != 64
+    ):
+        return _rwkv7_recurrent_t1_reference(recurrent_state, w, kk, a, k, v, r)
+
+    new_state = torch.empty_like(recurrent_state)
+    reduce_out = torch.empty((B, H, V), device=v.device, dtype=torch.float32)
+    _rwkv7_recurrent_t1_matrix_kernel[(B, H)](
+        recurrent_state,
+        w,
+        kk,
+        a,
+        k,
+        v,
+        r,
+        new_state,
+        reduce_out,
+        H=H,
+        D=D,
+        V=V,
+        num_warps=4,
+    )
+    return new_state, reduce_out
+
+
 def rwkv7_alt_recurrent_available() -> bool:
     return hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_alt_recurrent")
 
