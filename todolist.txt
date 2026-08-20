@@ -1,7 +1,7 @@
 # RWKV7 vLLM-SP 优化提速任务清单
 
 > 建立日期：2026-08-20（Asia/Shanghai）
-> 当前阶段：已完成基线固化、mix6 shape dispatch、RWKV7 T=1 recurrent Triton kernel 及三节点性能记录；继续验证 CUDA extension/full graph、state cache 与长上下文优化。
+> 当前阶段：已完成基线固化、mix6 shape dispatch、RWKV7 T=1 recurrent Triton kernel 及三节点性能记录；CUDA Graph 已完成实验但因精度/收益门禁失败回退，继续优化 state cache 与长上下文。
 > 约束：每完成一个阶段必须先做性能测试、精度对齐、单元/回归测试，并记录可复现结果；未通过门禁的优化不得合入下一阶段。
 
 ## 0. 当前基线与工作区保护
@@ -36,7 +36,7 @@
 - [x] 完成第一项低风险优化：`rwkv7_mix6` 增加按 token 数选择 Triton/reference pointwise 路径的门禁，并新增 dispatch 单测；保留了 fallback。其余 flag 仍待逐项审计。
 - [ ] 对照参考分支的 `rwkv7_mix6`、`rwkv7_kk_pre`、`rwkv7_epilogue`、`rwkv7_shift_state_cache`，优先移植算法结构到 CUDA/Triton，不直接复制 NPU/Ascend 专用代码。
 - [ ] 合并可安全的中间张量、减少重复 `to(float32)`/reshape/contiguous/cast，尤其检查 bf16 权重、float32 state 的边界。
-- [ ] 评估 state gather/store：当前 full CUDA graph 使用 slot 0 兜底 + `rwkv7_masked_store`；masked-store standalone CUDA 编译已通过 float32/bfloat16、正 slot、`slot_id=-1` 单测；eager/piecewise 收益与完整 `_C` 编译待补。
+- [x] 评估 state gather/store：standalone masked-store CUDA 原型已通过 float32/bfloat16、正 slot、`slot_id=-1` 单测；接入 CUDA Graph 后仍出现状态交接错误，实验记录于 `benchmark_records/20260820_cuda_graph_rejected/`，未保留。
 - [ ] 阶段门禁：所有算子/模型/服务回归通过；当前 mix6 shape dispatch 提升 +2.60%，低于原计划 >=5% 的阶段目标，但在固定真实服务负载上稳定正收益，暂保留作为低风险优化，不宣称达到 5% 阶段门槛。
 
 ## 4. 第二阶段：RWKV7 recurrent decode 专用 kernel
@@ -55,9 +55,9 @@
 
 ## 6. 第四阶段：CUDA Graph / full graph
 
-- [ ] 先在当前 `--enforce-eager` 基线上完成所有优化，再单独打开 piecewise；确认 static forward context、动态 slot、state store、PAD_SLOT_ID=-1 处理均满足 graph capture 要求。
-- [ ] 验证 full decode graph、full-and-piecewise 与 piecewise 的安全性和收益；重点检查 padded batch 不会污染 slot 0 或其他请求状态。
-- [ ] 如 full graph 需要修改编译/调度逻辑，添加最小复现测试和 graph replay 回归测试；禁止用关闭正确性检查换取速度。
+- [x] 在当前 `--enforce-eager` 基线上完成 T1 优化后验证 piecewise；结果为 132.692 TPS，相比 eager T1 134.727 TPS 下降 1.51%，且 8 个 prompt 中 1 个出现 28/32 token 偏差，已回退。
+- [x] 验证 full decode graph、full-and-piecewise 与 piecewise；FULL 变体虽达 156.4–166.5 TPS，但 248/256 token 与 eager 不一致，疑似 recurrent state/cache handoff 或 padded slot replay 污染，已回退。
+- [x] 记录 full graph 最小复现和多种修复尝试；masked-store、非 contiguous stride、safe torch fallback、RWKV7 compile gating 均未通过服务级 token parity，禁止以关闭正确性检查换取速度。
 - [ ] 阶段门禁：eager/piecewise/full 三模式均能通过服务级 deterministic 回归；只保留稳定且可复现的 TPS/TPOT 提升。
 
 ## 7. 第五阶段：模型级融合与更高阶 CUDA 优化

@@ -1,0 +1,84 @@
+{
+  "reference": "eager_t1",
+  "prompts": [
+    "请解释什么是状态空间模型。",
+    "RWKV7 的 recurrent state 如何更新？",
+    "Write a short explanation of CUDA kernel fusion.",
+    "北京是中国的首都，继续写一段介绍。",
+    "给出一个 Python 排序算法并说明复杂度。",
+    "Why does prefix caching improve LLM serving?",
+    "请比较 Triton 和 CUDA 的优缺点。",
+    "The quick brown fox"
+  ],
+  "output_tokens": 32,
+  "variants": {
+    "piecewise": {
+      "seed_ids_artifact": "benchmark_records/20260820_cuda_graph_rejected/piecewise_seed_ids.json",
+      "mismatched_tokens_per_prompt": [
+        0,
+        0,
+        0,
+        28,
+        0,
+        0,
+        0,
+        0
+      ],
+      "mismatched_tokens_total": 28,
+      "max_mismatched_tokens": 28,
+      "exact_match_prompts": 7,
+      "prompt_count": 8
+    },
+    "full": {
+      "seed_ids_artifact": "benchmark_records/20260820_cuda_graph_rejected/full_seed_ids.json",
+      "mismatched_tokens_per_prompt": [
+        31,
+        31,
+        31,
+        32,
+        31,
+        31,
+        31,
+        30
+      ],
+      "mismatched_tokens_total": 248,
+      "max_mismatched_tokens": 32,
+      "exact_match_prompts": 0,
+      "prompt_count": 8
+    },
+    "full_extension": {
+      "seed_ids_artifact": "benchmark_records/20260820_cuda_graph_rejected/full_extension_seed_ids.json",
+      "mismatched_tokens_per_prompt": [
+        29,
+        31,
+        31,
+        32,
+        32,
+        31,
+        31,
+        31
+      ],
+      "mismatched_tokens_total": 248,
+      "max_mismatched_tokens": 32,
+      "exact_match_prompts": 0,
+      "prompt_count": 8
+    },
+    "full_safe_no_compile": {
+      "seed_ids_artifact": "benchmark_records/20260820_cuda_graph_rejected/full_safe_no_compile_seed_ids.json",
+      "mismatched_tokens_per_prompt": [
+        29,
+        31,
+        31,
+        32,
+        32,
+        31,
+        31,
+        31
+      ],
+      "mismatched_tokens_total": 248,
+      "max_mismatched_tokens": 32,
+      "exact_match_prompts": 0,
+      "prompt_count": 8
+    }
+  }
+}
