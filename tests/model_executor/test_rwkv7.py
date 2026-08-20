@@ -610,6 +610,7 @@ def test_rwkv7_perf_flags_from_env(monkeypatch):
     monkeypatch.setenv("RWKV7_USE_FUSED_CMIX", "yes")
     monkeypatch.setenv("RWKV7_USE_ALT_RECURRENT_KERNEL", "1")
     monkeypatch.setenv("RWKV7_USE_DIRECT_LINEAR", "1")
+    monkeypatch.setenv("RWKV7_USE_CACHED_FP32_PARAMS", "1")
 
     flags = _load_rwkv7_perf_flags()
 
@@ -619,6 +620,7 @@ def test_rwkv7_perf_flags_from_env(monkeypatch):
     assert flags.use_fused_cmix is True
     assert flags.use_alt_recurrent_kernel is True
     assert flags.use_direct_linear is True
+    assert flags.use_cached_fp32_params is True
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -1202,6 +1204,68 @@ def test_rwkv7_attention_kk_pre_flag_matches_reference(monkeypatch):
                 local_k_a.to(torch.float32),
             )
 
+            torch.testing.assert_close(actual_k, expected_k, atol=1e-6, rtol=1e-6)
+            torch.testing.assert_close(actual_kk, expected_kk, atol=1e-6, rtol=1e-6)
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_attention_cached_fp32_params_match_and_invalidate(monkeypatch):
+    monkeypatch.setenv("RWKV7_USE_CACHED_FP32_PARAMS", "1")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attn = RWKV7Attention(
+                config=config,
+                layer_idx=1,
+                prefix="model.layers.1.attn.cached_fp32_params",
+            )
+            _initialize_module_parameters(attn)
+            attn = attn.cuda().bfloat16()
+
+            k = torch.randn(
+                3,
+                attn.local_num_heads,
+                attn.head_dim,
+                device="cuda",
+                dtype=torch.float32,
+            )
+            a = torch.randn_like(k)
+            actual_k, actual_kk = attn._prepare_recurrent_key_terms(k, a)
+            first_k_k = attn._rwkv7_fp32_param_cache["k_k"][1]
+            actual_k_second, actual_kk_second = attn._prepare_recurrent_key_terms(k, a)
+
+            assert attn._rwkv7_fp32_param_cache["k_k"][1] is first_k_k
+            torch.testing.assert_close(actual_k_second, actual_k)
+            torch.testing.assert_close(actual_kk_second, actual_kk)
+
+            with torch.no_grad():
+                attn.k_k.add_(0.25)
+            expected_k_k = attn.k_k[attn.key_start : attn.key_end].view(
+                attn.local_num_heads, attn.head_dim
+            ).to(torch.float32)
+            actual_k, actual_kk = attn._prepare_recurrent_key_terms(k, a)
+            expected_k, expected_kk = rwkv7_kk_pre_reference(
+                k,
+                expected_k_k,
+                a,
+                attn.k_a[attn.key_start : attn.key_end]
+                .view(attn.local_num_heads, attn.head_dim)
+                .to(torch.float32),
+            )
+
+            assert attn._rwkv7_fp32_param_cache["k_k"][1] is not first_k_k
             torch.testing.assert_close(actual_k, expected_k, atol=1e-6, rtol=1e-6)
             torch.testing.assert_close(actual_kk, expected_kk, atol=1e-6, rtol=1e-6)
         finally:

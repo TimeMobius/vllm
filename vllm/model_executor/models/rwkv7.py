@@ -124,6 +124,7 @@ class RWKV7PerfFlags:
     use_fused_cmix: bool = False
     use_alt_recurrent_kernel: bool = False
     use_direct_linear: bool = False
+    use_cached_fp32_params: bool = False
 
 
 def get_tp_world_size() -> int:
@@ -378,6 +379,9 @@ def _load_rwkv7_perf_flags() -> RWKV7PerfFlags:
             "RWKV7_USE_ALT_RECURRENT_KERNEL"
         ),
         use_direct_linear=_rwkv7_env_flag_enabled("RWKV7_USE_DIRECT_LINEAR"),
+        use_cached_fp32_params=_rwkv7_env_flag_enabled(
+            "RWKV7_USE_CACHED_FP32_PARAMS"
+        ),
     )
 
 
@@ -959,6 +963,62 @@ class RWKV7Attention(nn.Module):
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
 
+        # Lazy, non-persistent inference cache. The source signature is
+        # checked on every use so weight loading / dtype conversion / in-place
+        # weight updates invalidate it automatically.
+        self._rwkv7_fp32_param_cache: dict[
+            str, tuple[tuple[object, ...], torch.Tensor]
+        ] = {}
+
+    def _get_cached_fp32_param(
+        self,
+        name: str,
+        source: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return an FP32 constant, avoiding per-token parameter casts.
+
+        RWKV7 recurrent math consumes FP32 projections, while its immutable
+        checkpoint parameters normally reside in BF16. In eager decode the
+        small ``.to(torch.float32)`` casts otherwise launch for every layer
+        and token. This opt-in cache is deliberately guarded by an environment
+        flag and invalidates itself whenever the source tensor changes.
+        """
+        if not self.perf_flags.use_cached_fp32_params:
+            return source.to(torch.float32)
+
+        signature = (
+            source.device,
+            source.dtype,
+            source.shape,
+            source.stride(),
+            source.data_ptr(),
+            source._version,
+        )
+        cached = self._rwkv7_fp32_param_cache.get(name)
+        if cached is None or cached[0] != signature:
+            cached = (signature, source.detach().to(torch.float32).contiguous())
+            self._rwkv7_fp32_param_cache[name] = cached
+        return cached[1]
+
+    def _get_local_key_constants_fp32(self) -> tuple[torch.Tensor, torch.Tensor]:
+        local_k_k = self.k_k[self.key_start : self.key_end].view(
+            self.local_num_heads, self.head_dim
+        )
+        local_k_a = self.k_a[self.key_start : self.key_end].view(
+            self.local_num_heads, self.head_dim
+        )
+        return (
+            self._get_cached_fp32_param("k_k", local_k_k),
+            self._get_cached_fp32_param("k_a", local_k_a),
+        )
+
+    def _get_local_r_k_fp32(self) -> torch.Tensor:
+        local_r_k = self.r_k[
+            self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
+            * self.local_num_heads
+        ]
+        return self._get_cached_fp32_param("r_k", local_r_k)
+
     def _can_use_direct_cuda_fast_path(self, hidden_states: torch.Tensor) -> bool:
         return self.perf_flags.use_direct_linear and (
             _can_use_rwkv7_direct_linear(self.r_proj, hidden_states)
@@ -1021,26 +1081,21 @@ class RWKV7Attention(nn.Module):
         k: torch.Tensor,
         a: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        local_k_k = self.k_k[self.key_start : self.key_end].view(
-            self.local_num_heads, self.head_dim
-        )
-        local_k_a = self.k_a[self.key_start : self.key_end].view(
-            self.local_num_heads, self.head_dim
-        )
+        local_k_k, local_k_a = self._get_local_key_constants_fp32()
 
         if self.perf_flags.use_fused_kk_pre and k.is_cuda:
             return rwkv7_kk_pre(
                 k=k,
-                k_k=local_k_k.to(torch.float32),
+                k_k=local_k_k,
                 a=a,
-                k_a=local_k_a.to(torch.float32),
+                k_a=local_k_a,
             )
 
         return rwkv7_kk_pre_reference(
             k=k,
-            k_k=local_k_k.to(torch.float32),
+            k_k=local_k_k,
             a=a,
-            k_a=local_k_a.to(torch.float32),
+            k_a=local_k_a,
         )
 
     def _project_recurrent_inputs(
@@ -1247,10 +1302,7 @@ class RWKV7Attention(nn.Module):
         if self.perf_flags.use_fused_lnx_rkvres_xg and recurrent_output.is_cuda:
             weight = self.g_norm.weight[self.value_start : self.value_end].contiguous()
             bias = self.g_norm.bias[self.value_start : self.value_end].contiguous()
-            local_r_k = self.r_k[
-                self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
-                * self.local_num_heads
-            ].to(torch.float32)
+            local_r_k = self._get_local_r_k_fp32()
             output = rwkv7_lnx_rkvres_xg(
                 recurrent_output=recurrent_output.contiguous(),
                 r=r.contiguous(),
@@ -1265,10 +1317,7 @@ class RWKV7Attention(nn.Module):
             )
         else:
             output = self.g_norm(output)
-            local_r_k = self.r_k[
-                self.tp_rank * self.local_num_heads : (self.tp_rank + 1)
-                * self.local_num_heads
-            ].to(torch.float32)
+            local_r_k = self._get_local_r_k_fp32()
             correction = (
                 (r * k * local_r_k.unsqueeze(0)).sum(dim=-1, keepdim=True) * v
             ).reshape(-1, self.local_value_dim)

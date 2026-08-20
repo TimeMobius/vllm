@@ -1,0 +1,29 @@
+{
+  "algorithm_id": "cached-fp32-params",
+  "parent_id": "recurrent-t1-fused",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "mode": "eager",
+  "prompt_tokens": "mixed fixed prompts",
+  "output_tokens_per_round": 256,
+  "baseline_tps": [
+    133.82608667613474,
+    131.7545983014101,
+    134.5404025276861,
+    134.30426421147365,
+    134.44749732867447
+  ],
+  "heuristic_tps": [
+    136.77227860993588,
+    137.68557435824917,
+    138.20175196107206,
+    138.145176202589,
+    139.0550203964708
+  ],
+  "baseline_avg_tps": 133.77456980907579,
+  "heuristic_avg_tps": 137.9719603056634,
+  "speedup_ratio": 1.0313765949879574,
+  "speedup_percent": 3.137659498795742,
+  "accuracy_record": "benchmark_records/20260820_cached_fp32_params/accuracy.json",
+  "notes": "Same RTX 4090 D service and retained eager flags (mix6 shape dispatch, fused kk-pre, fused lnx/rkvres/xg, fused cmix, direct linear, alternate recurrent plus fused T=1). Eight fixed prompts at concurrency=8, max_tokens=32, ignore_eos=true; five rounds after one warmup. The opt-in FP32 constant cache removes repeated BF16-to-FP32 casts of k_k, k_a and r_k during each attention decode."
+}

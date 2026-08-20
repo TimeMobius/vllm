@@ -1,0 +1,24 @@
+{
+  "algorithm_id": "cached-fp32-params",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "seed": "server default; deterministic serial completion regression",
+  "max_tokens": 32,
+  "ignore_eos": true,
+  "cross_service_serial_token_ids_exact": true,
+  "per_prompt_mismatch_counts": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "total_mismatch_count": 0,
+  "prompt_count": 8,
+  "cache_invalidation_unit_test": "tests/model_executor/test_rwkv7.py::test_rwkv7_attention_cached_fp32_params_match_and_invalidate",
+  "notes": "The source signature includes device, dtype, shape, stride, data_ptr and tensor _version. The unit test verifies reuse and invalidation after an in-place k_k update. Cache-off versus cache-on serial service outputs are token-exact for all eight prompts; two cache-on serial repeats are also token-exact."
+}
