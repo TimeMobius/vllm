@@ -967,10 +967,15 @@ if _is_hip():
 
 if _is_cuda():
     ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
-    if envs.VLLM_USE_PRECOMPILED or (
-        CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
+    if (
+        os.getenv("VLLM_BUILD_FA3", "1") != "0"
+        and (
+            envs.VLLM_USE_PRECOMPILED
+            or (CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3"))
+        )
     ):
-        # FA3 requires CUDA 12.3 or later
+        # FA3 requires CUDA 12.3 or later. Set VLLM_BUILD_FA3=0 when building
+        # on non-Hopper GPUs; FA3's Hopper-only sources are not needed there.
         ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
     # FA4 CuteDSL - Python-only component for FA4's cute DSL support
     # Optional since this doesn't produce a .so file, just copies Python files
