@@ -1,0 +1,74 @@
+[
+  {
+    "T": 1,
+    "case": "no_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 1,
+    "case": "single_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 1,
+    "case": "batch_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 8,
+    "case": "no_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 8,
+    "case": "single_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 8,
+    "case": "batch_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 257,
+    "case": "no_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 257,
+    "case": "single_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 257,
+    "case": "batch_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 1024,
+    "case": "no_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 1024,
+    "case": "single_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  },
+  {
+    "T": 1024,
+    "case": "batch_cache",
+    "max_abs_error": 0.0,
+    "exact": true
+  }
+]

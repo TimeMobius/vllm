@@ -1,0 +1,26 @@
+{
+  "record_id": "20260820_shift_mix6_native_rejected",
+  "status": "rejected",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "scope": "RWKV7 native-BF16 token-shift plus six-way mix6 Triton fusion for single-sequence and decode-batch paths.",
+  "baseline": {
+    "avg_tps": 137.9719603056634,
+    "record": "benchmark_records/20260820_cached_fp32_params/cache_on_bench.json"
+  },
+  "candidate": {
+    "avg_tps": 132.48451605697403,
+    "record": "service_bench.json"
+  },
+  "additional_candidate_run": {
+    "avg_tps": 132.21679407261317,
+    "record": "service_bench_more.json"
+  },
+  "speedup_percent": -3.977970626421677,
+  "accuracy": {
+    "operator": "operator_accuracy.json; exact max_abs_error=0.0 for T=1/8/257/1024 with no cache, [hidden] cache, and [tokens, hidden] batch cache",
+    "service": "candidate_serial_ids.json and candidate_serial_ids_repeat.json; 3 repeated serial runs matched retained token IDs for 8 prompts x 32 tokens"
+  },
+  "workload": "8 fixed prompts, concurrency=8, 32 output tokens, five measured rounds after one warmup; --enforce-eager --mamba-cache-mode align",
+  "operator_microbenchmark": "operator_bench.json",
+  "conclusion": "Rejected and reverted: native BF16 fusion passed exact operator and serial token parity, but real service throughput regressed 3.98% (additional run -4.17%). The isolated kernel gain did not survive the full RWKV7 decode pipeline."
+}
