@@ -225,6 +225,31 @@ def test_rwkv_tokenizer_round_trips_and_prefers_longest_match(tmp_path):
     assert tokenizer.vocab_size == 64
 
 
+def test_rwkv_fast_decoder_panic_falls_back_to_python_bytes(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20250609.txt"
+    vocab_path.write_text("1 b'\\xff' 1\n", encoding="utf-8")
+    tokenizer = get_tokenizer(str(vocab_path))
+
+    # PyO3's PanicException inherits directly from BaseException. This fake
+    # backend mirrors an older pyrwkv_tokenizer UTF-8 panic without emitting a
+    # Rust panic message in the test process.
+    panic_type = type(
+        "PanicException",
+        (BaseException,),
+        {"__module__": "pyo3_runtime"},
+    )
+
+    class PanicDecoder:
+        def decode(self, ids):
+            del ids
+            raise panic_type("invalid UTF-8")
+
+    tokenizer._fast_backend = PanicDecoder()
+    tokenizer._fast_backend_vocab_size = 2
+
+    assert tokenizer.decode([1]) == "�"
+
+
 def test_rwkv_tokenizer_preserves_hf_added_token_semantics(tmp_path):
     _write_hf_rwkv_tokenizer_dir(tmp_path)
 

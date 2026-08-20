@@ -841,6 +841,25 @@ class RWKVTokenizer(TokenizerLike):
             return str(self._fast_backend.decode(ids))
         except Exception:
             return None
+        except BaseException as exc:
+            # ``pyrwkv_tokenizer`` is a PyO3 extension. Its decoder used to
+            # unwrap UTF-8 conversion errors, which becomes a
+            # ``pyo3_runtime.PanicException`` (a direct ``BaseException``
+            # subclass rather than ``Exception``). Generated token streams
+            # can transiently contain an incomplete/invalid byte sequence, so
+            # do not let that optional fast-path panic terminate the vLLM
+            # output handler. The Python byte decoder below is loss-tolerant
+            # and returns replacement characters as intended.
+            if (
+                type(exc).__module__ == "pyo3_runtime"
+                and type(exc).__name__ == "PanicException"
+            ):
+                logger.warning(
+                    "RWKV fast tokenizer decode panicked; falling back to "
+                    "the Python decoder for this token sequence."
+                )
+                return None
+            raise
 
     def convert_ids_to_tokens(
         self,
