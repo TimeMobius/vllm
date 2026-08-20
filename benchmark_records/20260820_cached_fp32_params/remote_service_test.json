@@ -1,0 +1,22 @@
+{
+  "endpoint": "http://192.168.10.121:3000/api/run-test",
+  "start_response": {
+    "message": "Test started"
+  },
+  "initial_status": {
+    "running": true,
+    "progress": 0.1,
+    "message": "Fetching models...",
+    "last_run": "2026-08-20 14:31:58",
+    "last_run_status": "success"
+  },
+  "final_status": {
+    "running": false,
+    "progress": 1.0,
+    "message": "Test completed: 8 records saved",
+    "last_run": "2026-08-20 14:58:32",
+    "last_run_status": "success"
+  },
+  "result": "passed",
+  "notes": "Ran against the cache-on vLLM service. The external harness completed eight records; this is an integration/stability result and is not combined with the local fixed-load TPS A/B."
+}

@@ -25,4 +25,6 @@ The serial cache-off/cache-on token-ID regression is exact for all 8 prompts
 (256 generated token IDs).  The dedicated CUDA unit test also confirms numeric
 reference parity, cache reuse, and invalidation after a parameter mutation.
 
+The external remote harness also completed successfully with this cache-on service: `Test completed: 8 records saved`; see `remote_service_test.json`. This is an integration/stability result and is not mixed into the local fixed-load TPS A/B.
+
 Raw A/B throughput and output artifacts are retained in this directory.
