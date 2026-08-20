@@ -75,6 +75,14 @@ def test_rwkv_tool_parser_is_registered(parser):
     assert parser.tool_call_end_token == "</tool_call>"
 
 
+def test_adjust_request_keeps_sp_tool_markers(parser, chat_request):
+    assert chat_request.skip_special_tokens is True
+
+    adjusted_request = parser.adjust_request(chat_request)
+
+    assert adjusted_request.skip_special_tokens is False
+
+
 def test_extract_tool_calls_non_streaming(parser, chat_request):
     result = parser.extract_tool_calls(
         _tool_xml(content="I'll check.\n"),

@@ -62,6 +62,16 @@ class RWKVToolParser(ToolParser):
                 "constructor during construction."
             )
 
+    def adjust_request(
+        self, request: ChatCompletionRequest
+    ) -> ChatCompletionRequest:
+        request = super().adjust_request(request)
+        if request.tools and request.tool_choice != "none":
+            # <tool_call> is an SP special token. Keep it in the decoded
+            # output so the parser can recognize the complete XML block.
+            request.skip_special_tokens = False
+        return request
+
     def _generate_tool_call_id(self, function_name: str, idx: int) -> str:
         return make_tool_call_id(
             id_type="random",
