@@ -1,0 +1,915 @@
+{
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "dtype": "bfloat16",
+  "enforce_eager": true,
+  "enable_prefix_caching": true,
+  "cudagraph_mode": "default",
+  "compile_no_cg": false,
+  "cudagraph_copy_inputs": false,
+  "disable_compile_cache": false,
+  "max_tokens": 16,
+  "rounds": 1,
+  "warmup": 1,
+  "prompt_lengths": [
+    1024,
+    1984
+  ],
+  "concurrency_levels": [
+    1,
+    4,
+    8
+  ],
+  "server_log": "/tmp/rwkv7_long_baseline_8040.log",
+  "scenarios": [
+    {
+      "prompt_len": 1024,
+      "concurrency": 1,
+      "max_tokens": 16,
+      "baseline": {
+        "token_ids": [
+          51128,
+          4706,
+          36473,
+          47,
+          4171,
+          1184,
+          56,
+          4600,
+          332,
+          60342,
+          40213,
+          39043,
+          21700,
+          56529,
+          62035,
+          47
+        ],
+        "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+        "elapsed_sec": 1.1013564839959145,
+        "output_tokens": 16,
+        "request_tps": 14.527539659047717
+      },
+      "rounds": [
+        {
+          "wall_time_sec": 1.0390692446380854,
+          "total_output_tokens": 16,
+          "aggregate_tps": 15.398396288375281,
+          "requests": [
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 1.0385961635038257,
+              "output_tokens": 16,
+              "request_tps": 15.405410266510255,
+              "matches_serial_baseline": true
+            }
+          ],
+          "round": 0,
+          "all_match_serial_baseline": true
+        }
+      ]
+    },
+    {
+      "prompt_len": 1024,
+      "concurrency": 4,
+      "max_tokens": 16,
+      "baseline": {
+        "token_ids": [
+          51128,
+          4706,
+          36473,
+          47,
+          4171,
+          1184,
+          56,
+          4600,
+          332,
+          60342,
+          40213,
+          39043,
+          21700,
+          56529,
+          62035,
+          47
+        ],
+        "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+        "elapsed_sec": 1.0474478881806135,
+        "output_tokens": 16,
+        "request_tps": 15.275222930461519
+      },
+      "rounds": [
+        {
+          "wall_time_sec": 1.7991403713822365,
+          "total_output_tokens": 64,
+          "aggregate_tps": 35.5725439871211,
+          "requests": [
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 1.7975417142733932,
+              "output_tokens": 16,
+              "request_tps": 8.901045173501055,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 1.7981588868424296,
+              "output_tokens": 16,
+              "request_tps": 8.897990114820182,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 1.7967344615608454,
+              "output_tokens": 16,
+              "request_tps": 8.905044313615827,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 1.7974943537265062,
+              "output_tokens": 16,
+              "request_tps": 8.901279699059597,
+              "matches_serial_baseline": true
+            }
+          ],
+          "round": 0,
+          "all_match_serial_baseline": true
+        }
+      ]
+    },
+    {
+      "prompt_len": 1024,
+      "concurrency": 8,
+      "max_tokens": 16,
+      "baseline": {
+        "token_ids": [
+          51128,
+          4706,
+          36473,
+          47,
+          4171,
+          1184,
+          56,
+          4600,
+          332,
+          60342,
+          40213,
+          39043,
+          21700,
+          56529,
+          62035,
+          47
+        ],
+        "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+        "elapsed_sec": 1.022807919420302,
+        "output_tokens": 16,
+        "request_tps": 15.643210906177124
+      },
+      "rounds": [
+        {
+          "wall_time_sec": 2.548501344397664,
+          "total_output_tokens": 128,
+          "aggregate_tps": 50.22559642017873,
+          "requests": [
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.43325169198215,
+              "output_tokens": 16,
+              "request_tps": 6.575563084049989,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.4893939467146993,
+              "output_tokens": 16,
+              "request_tps": 6.427267175255851,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.488946685567498,
+              "output_tokens": 16,
+              "request_tps": 6.428422148525002,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.543830305337906,
+              "output_tokens": 16,
+              "request_tps": 6.2897277253227255,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.5446381391957402,
+              "output_tokens": 16,
+              "request_tps": 6.287730956141752,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.5453978814184666,
+              "output_tokens": 16,
+              "request_tps": 6.285854214306066,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.5434751641005278,
+              "output_tokens": 16,
+              "request_tps": 6.290605949619416,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529,
+                62035,
+                47
+              ],
+              "text": " capital of China. RWKV7 is a recurrent world model for language generation.",
+              "elapsed_sec": 2.546190034598112,
+              "output_tokens": 16,
+              "request_tps": 6.283898602456601,
+              "matches_serial_baseline": true
+            }
+          ],
+          "round": 0,
+          "all_match_serial_baseline": true
+        }
+      ]
+    },
+    {
+      "prompt_len": 1984,
+      "concurrency": 1,
+      "max_tokens": 16,
+      "baseline": {
+        "token_ids": [
+          4600,
+          22590,
+          51128,
+          4706,
+          36473,
+          47,
+          4171,
+          1184,
+          56,
+          4600,
+          332,
+          60342,
+          40213,
+          39043,
+          21700,
+          56529
+        ],
+        "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+        "elapsed_sec": 1.0393739948049188,
+        "output_tokens": 16,
+        "request_tps": 15.39388139396643
+      },
+      "rounds": [
+        {
+          "wall_time_sec": 1.0342028038576245,
+          "total_output_tokens": 16,
+          "aggregate_tps": 15.47085343447074,
+          "requests": [
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 1.0337749440222979,
+              "output_tokens": 16,
+              "request_tps": 15.47725652717589,
+              "matches_serial_baseline": true
+            }
+          ],
+          "round": 0,
+          "all_match_serial_baseline": true
+        }
+      ]
+    },
+    {
+      "prompt_len": 1984,
+      "concurrency": 4,
+      "max_tokens": 16,
+      "baseline": {
+        "token_ids": [
+          4600,
+          22590,
+          51128,
+          4706,
+          36473,
+          47,
+          4171,
+          1184,
+          56,
+          4600,
+          332,
+          60342,
+          40213,
+          39043,
+          21700,
+          56529
+        ],
+        "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+        "elapsed_sec": 1.035291999578476,
+        "output_tokens": 16,
+        "request_tps": 15.454577072472768
+      },
+      "rounds": [
+        {
+          "wall_time_sec": 1.870981897227466,
+          "total_output_tokens": 64,
+          "aggregate_tps": 34.20663775252933,
+          "requests": [
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 1.8173147225752473,
+              "output_tokens": 16,
+              "request_tps": 8.804198745128202,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 1.869604273699224,
+              "output_tokens": 16,
+              "request_tps": 8.55796075409166,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 1.8687822297215462,
+              "output_tokens": 16,
+              "request_tps": 8.56172524841701,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 1.8694827631115913,
+              "output_tokens": 16,
+              "request_tps": 8.558516995026684,
+              "matches_serial_baseline": true
+            }
+          ],
+          "round": 0,
+          "all_match_serial_baseline": true
+        }
+      ]
+    },
+    {
+      "prompt_len": 1984,
+      "concurrency": 8,
+      "max_tokens": 16,
+      "baseline": {
+        "token_ids": [
+          4600,
+          22590,
+          51128,
+          4706,
+          36473,
+          47,
+          4171,
+          1184,
+          56,
+          4600,
+          332,
+          60342,
+          40213,
+          39043,
+          21700,
+          56529
+        ],
+        "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+        "elapsed_sec": 1.0046430360525846,
+        "output_tokens": 16,
+        "request_tps": 15.926054753603582
+      },
+      "rounds": [
+        {
+          "wall_time_sec": 2.220275108702481,
+          "total_output_tokens": 128,
+          "aggregate_tps": 57.65051344236465,
+          "requests": [
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.110384258441627,
+              "output_tokens": 16,
+              "request_tps": 7.5815576883685125,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.1642131339758635,
+              "output_tokens": 16,
+              "request_tps": 7.392987201129536,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.163823653012514,
+              "output_tokens": 16,
+              "request_tps": 7.394317913904173,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.2168373446911573,
+              "output_tokens": 16,
+              "request_tps": 7.217489383385081,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.217690598219633,
+              "output_tokens": 16,
+              "request_tps": 7.2147124638778894,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.216375943273306,
+              "output_tokens": 16,
+              "request_tps": 7.218991908191366,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.2158853504806757,
+              "output_tokens": 16,
+              "request_tps": 7.220590179238848,
+              "matches_serial_baseline": true
+            },
+            {
+              "token_ids": [
+                4600,
+                22590,
+                51128,
+                4706,
+                36473,
+                47,
+                4171,
+                1184,
+                56,
+                4600,
+                332,
+                60342,
+                40213,
+                39043,
+                21700,
+                56529
+              ],
+              "text": " is the capital of China. RWKV7 is a recurrent world model for language",
+              "elapsed_sec": 2.2171698259189725,
+              "output_tokens": 16,
+              "request_tps": 7.216407066774112,
+              "matches_serial_baseline": true
+            }
+          ],
+          "round": 0,
+          "all_match_serial_baseline": true
+        }
+      ]
+    }
+  ]
+}

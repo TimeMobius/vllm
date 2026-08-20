@@ -1,0 +1,74 @@
+{
+  "record_id": "20260820_prefill_decode_baseline_1k_2k",
+  "status": "baseline",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "flags": [
+    "RWKV7_USE_FUSED_MIX6=1",
+    "RWKV7_USE_FUSED_KK_PRE=1",
+    "RWKV7_USE_FUSED_LNX_RKVRES_XG=1",
+    "RWKV7_USE_ALT_RECURRENT_KERNEL=1",
+    "RWKV7_USE_FUSED_CMIX=1",
+    "RWKV7_USE_DIRECT_LINEAR=1",
+    "RWKV7_USE_FUSED_RECURRENT_T1=1",
+    "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
+  ],
+  "service": {
+    "enforce_eager": true,
+    "prefix_caching": true,
+    "mamba_cache_mode": "align",
+    "max_num_seqs": 64,
+    "max_model_len": 1048576
+  },
+  "rows": [
+    {
+      "prompt_tokens": 1024,
+      "concurrency": 1,
+      "max_output_tokens": 16,
+      "serial_request_tps": 14.527539659047717,
+      "aggregate_tps": 15.398396288375281,
+      "token_parity": true
+    },
+    {
+      "prompt_tokens": 1024,
+      "concurrency": 4,
+      "max_output_tokens": 16,
+      "serial_request_tps": 15.275222930461519,
+      "aggregate_tps": 35.5725439871211,
+      "token_parity": true
+    },
+    {
+      "prompt_tokens": 1024,
+      "concurrency": 8,
+      "max_output_tokens": 16,
+      "serial_request_tps": 15.643210906177124,
+      "aggregate_tps": 50.22559642017873,
+      "token_parity": true
+    },
+    {
+      "prompt_tokens": 1984,
+      "concurrency": 1,
+      "max_output_tokens": 16,
+      "serial_request_tps": 15.39388139396643,
+      "aggregate_tps": 15.47085343447074,
+      "token_parity": true
+    },
+    {
+      "prompt_tokens": 1984,
+      "concurrency": 4,
+      "max_output_tokens": 16,
+      "serial_request_tps": 15.454577072472768,
+      "aggregate_tps": 34.20663775252933,
+      "token_parity": true
+    },
+    {
+      "prompt_tokens": 1984,
+      "concurrency": 8,
+      "max_output_tokens": 16,
+      "serial_request_tps": 15.926054753603582,
+      "aggregate_tps": 57.65051344236465,
+      "token_parity": true
+    }
+  ],
+  "notes": "Initial long-prompt baseline. A 16-token output is used after each 1K/1,984-token prefill and every concurrent output matched the serial reference. 4K+ lengths remain tracked in todolist."
+}

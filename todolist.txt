@@ -13,7 +13,7 @@
   `CUDA_VISIBLE_DEVICES=0 RWKV7_USE_FUSED_MIX6=1 RWKV7_USE_FUSED_KK_PRE=1 RWKV7_USE_FUSED_LNX_RKVRES_XG=1 RWKV7_USE_ALT_RECURRENT_KERNEL=1 RWKV7_USE_FUSED_CMIX=1 RWKV7_USE_DIRECT_LINEAR=1 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 /mnt/data/anaconda3/envs/vllm-sp/bin/vllm serve /hikscale/models/XiaoKe/rwkv-0-hf --served-model-name xiaoke-5 --reasoning-parser rwkv --enable-auto-tool-choice --tool-call-parser rwkv --dtype bfloat16 --host 0.0.0.0 --port 8030 --max-model-len 1M --max-num-seqs 64 --gpu-memory-utilization 0.92 --enforce-eager --enable-prefix-caching --mamba-cache-mode align`。
 - [x] 确认远程测试服务可用：`GET http://192.168.10.121:3000/api/status` 返回空闲且已有 8 条记录；首页已有 Chart.js 仪表板；`POST /api/run-test` 无请求体即可启动测试。
 - [x] 建立本仓库自己的基线记录文件（JSONL/Markdown）：`benchmark_records/20260820_baseline_eager_c8_mt32/`，并记录 commit、环境变量、服务参数、模型路径、prompt 集、并发、输出 token 数、aggregate TPS、延迟 P50/P95。显存峰值和 TTFT/TPOT 将在下一轮 profiling 中补齐。
-- [ ] 固定三类基线：单请求 decode（B=1,T=1）、批量 decode（B=1/8/16/32/64）、长上下文 prefill（至少 1K/4K/16K/64K/256K，按可用时间分层）。当前已完成固定 prompt 的 8 并发 decode 基线，其他档位待补。
+- [ ] 固定三类基线：单请求 decode（B=1,T=1）、批量 decode（B=1/8/16/32/64）、长上下文 prefill（至少 1K/4K/16K/64K/256K，按可用时间分层）。当前已完成固定 prompt 的 8 并发 decode 基线，以及 1K/1,984-token prefill 后的 B=1/4/8、16-token decode 基线（全量 token 对齐），记录于 `benchmark_records/20260820_prefill_decode_baseline_1k_2k/`；4K/16K/64K/256K 仍待补。
 
 ## 1. 正确性与测试门禁（优化前先固化）
 
