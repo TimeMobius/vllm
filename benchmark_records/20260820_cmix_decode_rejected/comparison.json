@@ -1,0 +1,52 @@
+{
+  "record_id": "20260820_cmix_decode_rejected",
+  "status": "rejected",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "scope": "RWKV7 FFN decode CMix pointwise fusion candidate: FP32 shift-state conversion, subtract, multiply and add.",
+  "operator_microbenchmark": {
+    "shape": "[B, 4096], cached_state FP32, activation and x_k BF16",
+    "batches": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64
+    ],
+    "reference_ms": [
+      0.015209813117980957,
+      0.015571413040161132,
+      0.015503360430399576,
+      0.01560640017191569,
+      0.015612586339314779,
+      0.015496533711751302,
+      0.015544320742289225
+    ],
+    "candidate_ms": [
+      0.016483413378397625,
+      0.01605994701385498,
+      0.016377174059549967,
+      0.016155306498209634,
+      0.01623040040334066,
+      0.016076800028483072,
+      0.01586176077524821
+    ],
+    "speedup_percent": [
+      -7.726556576478183,
+      -3.0419401338770857,
+      -5.3355580515482615,
+      -3.3976843853428362,
+      -3.8065238606110774,
+      -3.609339642862508,
+      -2.0012912655594906
+    ],
+    "mean_speedup_percent": -4.131270559468492
+  },
+  "accuracy": {
+    "float16_max_abs_error": 0.0078125,
+    "bfloat16_max_abs_error": 0.0625,
+    "unit_test": "tests/model_executor/test_rwkv7.py::test_rwkv7_cmix_decode_triton_matches_reference"
+  },
+  "conclusion": "Rejected before service A/B. On target BF16 decode shapes B=1..64, the Triton candidate is slower by 2.00% to 7.73% (mean -4.13%) and also changes BF16 rounding relative to the PyTorch pointwise path. Source and tests were reverted."
+}

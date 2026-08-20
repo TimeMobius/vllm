@@ -35,7 +35,7 @@
 
 - [x] 完成第一项低风险优化：`rwkv7_mix6` 增加按 token 数选择 Triton/reference pointwise 路径的门禁，并新增 dispatch 单测；保留了 fallback。其余 flag 仍待逐项审计。
 - [ ] 对照参考分支的 `rwkv7_mix6`、`rwkv7_kk_pre`、`rwkv7_epilogue`、`rwkv7_shift_state_cache`，优先移植算法结构到 CUDA/Triton，不直接复制 NPU/Ascend 专用代码。
-- [ ] 合并可安全的中间张量、减少重复 `to(float32)`/reshape/contiguous/cast，尤其检查 bf16 权重、float32 state 的边界。
+- [ ] 合并可安全的中间张量、减少重复 `to(float32)`/reshape/contiguous/cast，尤其检查 bf16 权重、float32 state 的边界。已试验 FFN decode CMix（FP32 state conversion + subtract + addcmul）Triton 融合；RTX 4090 D BF16 B=1–64 全部下降 2.00%–7.73%，已回退并记录于 `benchmark_records/20260820_cmix_decode_rejected/`。
 - [x] 评估 state gather/store：standalone masked-store CUDA 原型已通过 float32/bfloat16、正 slot、`slot_id=-1` 单测；接入 CUDA Graph 后仍出现状态交接错误，实验记录于 `benchmark_records/20260820_cuda_graph_rejected/`，未保留。
 - [ ] 阶段门禁：所有算子/模型/服务回归通过；当前 mix6 shape dispatch 提升 +2.60%，低于原计划 >=5% 的阶段目标，但在固定真实服务负载上稳定正收益，暂保留作为低风险优化，不宣称达到 5% 阶段门槛。
 

@@ -1,0 +1,100 @@
+[
+  {
+    "dtype": "torch.bfloat16",
+    "batch": 1,
+    "reference_ms": 0.015209813117980957,
+    "fused_ms": 0.016483413378397625,
+    "speedup_percent": -7.726556576478183
+  },
+  {
+    "dtype": "torch.bfloat16",
+    "batch": 2,
+    "reference_ms": 0.015571413040161132,
+    "fused_ms": 0.01605994701385498,
+    "speedup_percent": -3.0419401338770857
+  },
+  {
+    "dtype": "torch.bfloat16",
+    "batch": 4,
+    "reference_ms": 0.015503360430399576,
+    "fused_ms": 0.016377174059549967,
+    "speedup_percent": -5.3355580515482615
+  },
+  {
+    "dtype": "torch.bfloat16",
+    "batch": 8,
+    "reference_ms": 0.01560640017191569,
+    "fused_ms": 0.016155306498209634,
+    "speedup_percent": -3.3976843853428362
+  },
+  {
+    "dtype": "torch.bfloat16",
+    "batch": 16,
+    "reference_ms": 0.015612586339314779,
+    "fused_ms": 0.01623040040334066,
+    "speedup_percent": -3.8065238606110774
+  },
+  {
+    "dtype": "torch.bfloat16",
+    "batch": 32,
+    "reference_ms": 0.015496533711751302,
+    "fused_ms": 0.016076800028483072,
+    "speedup_percent": -3.609339642862508
+  },
+  {
+    "dtype": "torch.bfloat16",
+    "batch": 64,
+    "reference_ms": 0.015544320742289225,
+    "fused_ms": 0.01586176077524821,
+    "speedup_percent": -2.0012912655594906
+  },
+  {
+    "dtype": "torch.float16",
+    "batch": 1,
+    "reference_ms": 0.015264426867167155,
+    "fused_ms": 0.015957013765970866,
+    "speedup_percent": -4.340329017454925
+  },
+  {
+    "dtype": "torch.float16",
+    "batch": 2,
+    "reference_ms": 0.015530667304992675,
+    "fused_ms": 0.015786666870117188,
+    "speedup_percent": -1.6216188460218772
+  },
+  {
+    "dtype": "torch.float16",
+    "batch": 4,
+    "reference_ms": 0.015591786702473959,
+    "fused_ms": 0.015725013415018717,
+    "speedup_percent": -0.8472279738567012
+  },
+  {
+    "dtype": "torch.float16",
+    "batch": 8,
+    "reference_ms": 0.015520426432291666,
+    "fused_ms": 0.015725119908650716,
+    "speedup_percent": -1.301697395938095
+  },
+  {
+    "dtype": "torch.float16",
+    "batch": 16,
+    "reference_ms": 0.015619413057963053,
+    "fused_ms": 0.015667200088500977,
+    "speedup_percent": -0.3050132140266504
+  },
+  {
+    "dtype": "torch.float16",
+    "batch": 32,
+    "reference_ms": 0.015520426432291666,
+    "fused_ms": 0.0158788267771403,
+    "speedup_percent": -2.257095879177906
+  },
+  {
+    "dtype": "torch.float16",
+    "batch": 64,
+    "reference_ms": 0.015482880274454753,
+    "fused_ms": 0.015813973744710285,
+    "speedup_percent": -2.093676615381257
+  }
+]
