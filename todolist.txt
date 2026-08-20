@@ -64,6 +64,7 @@
 ## 7. 第五阶段：模型级融合与更高阶 CUDA 优化
 
 - [ ] 参考 Albatross 的 CUDA 优化方向：把 layer norm、mix6、LoRA/rank projection、linear、CMIX、residual/add 等高频小 kernel 做融合或减少 launch；先做 profiling 再决定融合边界。
+- [x] 试验 T=1 recurrent + lnx/rkvres/xg epilogue 单 kernel 融合；算子 B=1–32 明显减少 kernel 时间，但服务级与 retained 路径出现 48/256 token ID 偏差，候选已回退并记录于 `benchmark_records/20260820_t1_epilogue_rejected/`。
 - [ ] 评估 direct linear 的权重布局、CUTLASS/cuBLASLt 算法选择和针对 RTX 4090 D 的 tile/autotune；不能假设 5090/其他架构的最优参数可直接复用。
 - [ ] 评估将 recurrent、epilogue、output projection 的中间结果留在寄存器/共享内存的可行性；同步检查 TP、量化和 bf16/float32 state 兼容性。
 - [ ] 每一个融合 kernel 独立保留 reference 实现、单测、误差报告和回滚开关。

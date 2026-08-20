@@ -1,0 +1,18 @@
+{
+  "reference_record": "benchmark_records/20260820_cached_fp32_params/cache_on_serial_ids.json",
+  "candidate_record": "candidate_serial_ids.json",
+  "mismatched_tokens_per_prompt": [
+    0,
+    25,
+    0,
+    21,
+    0,
+    0,
+    0,
+    2
+  ],
+  "mismatched_tokens_total": 48,
+  "exact_match_prompts": 5,
+  "total_prompts": 8,
+  "candidate_repeat_mismatch_count": 0
+}
