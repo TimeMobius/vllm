@@ -124,7 +124,26 @@ if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_alt_recurrent"):
         return torch.empty_like(v, dtype=torch.float32), final_state
 
 
+if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_masked_store"):
+
+    @register_fake("_C::rwkv7_masked_store")
+    def _rwkv7_masked_store_fake(
+        cache: torch.Tensor,
+        values: torch.Tensor,
+        slot_ids: torch.Tensor,
+    ) -> None:
+        return None
+
+
 # page attention ops
+def rwkv7_masked_store(
+    cache: torch.Tensor,
+    values: torch.Tensor,
+    slot_ids: torch.Tensor,
+) -> None:
+    torch.ops._C.rwkv7_masked_store(cache, values, slot_ids)
+
+
 def rwkv7_alt_recurrent(
     r: torch.Tensor,
     w: torch.Tensor,

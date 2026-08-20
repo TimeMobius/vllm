@@ -111,6 +111,18 @@ def rwkv7_mix6_reference(
     return xr, xw, xk, xv, xa, xg
 
 
+def _rwkv7_mix6_use_triton(hidden_states: torch.Tensor) -> bool:
+    """Choose the mix6 implementation by token count.
+
+    The fused kernel has a fixed 2048-element block. On the target SM89 GPU,
+    small decode batches and the 1280-2048 token launch range are faster with
+    PyTorch's pointwise fusion, while larger prefill launches benefit from the
+    Triton kernel.
+    """
+    tokens = hidden_states.shape[0]
+    return tokens > 256 and not 1280 <= tokens <= 2048
+
+
 def rwkv7_mix6(
     hidden_states: torch.Tensor,
     delta: torch.Tensor,
@@ -142,6 +154,7 @@ def rwkv7_mix6(
         or hidden_states.numel() == 0
         or not hidden_states.is_contiguous()
         or not delta.is_contiguous()
+        or not _rwkv7_mix6_use_triton(hidden_states)
     ):
         return rwkv7_mix6_reference(
             hidden_states=hidden_states,

@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.activations import ACT2FN as HF_ACT2FN
 
+import vllm._custom_ops as custom_ops
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ModelConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed.parallel_state import (
@@ -1617,6 +1618,9 @@ class RWKV7Block(nn.Module, MambaBase):
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
+        self._uses_full_cudagraphs = (
+            compilation_config.cudagraph_mode.has_full_cudagraphs()
+        )
 
         self.kv_cache = (
             torch.tensor([]),
@@ -1692,6 +1696,11 @@ class RWKV7Block(nn.Module, MambaBase):
     def _get_kv_states(
         self, slot_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Full CUDA graphs pad uniform decode batches with PAD_SLOT_ID=-1.
+        # Gather padding from slot zero; its outputs are ignored and
+        # _store_kv_states masks it so slot zero is never mutated.
+        if self._uses_full_cudagraphs:
+            slot_ids = slot_ids.clamp_min(0)
         return (
             self.kv_cache[0].index_select(0, slot_ids),
             self.kv_cache[1].index_select(0, slot_ids),
@@ -1750,6 +1759,30 @@ class RWKV7Block(nn.Module, MambaBase):
         recurrent_state: torch.Tensor,
         ffn_shift_state: torch.Tensor,
     ) -> None:
+        use_masked_store = (
+            self._uses_full_cudagraphs
+            and self.kv_cache[0].is_cuda
+            and hasattr(torch.ops, "_C")
+            and hasattr(torch.ops._C, "rwkv7_masked_store")
+        )
+        if use_masked_store:
+            custom_ops.rwkv7_masked_store(
+                self.kv_cache[0],
+                attn_shift_state.to(self.kv_cache[0].dtype),
+                slot_ids,
+            )
+            custom_ops.rwkv7_masked_store(
+                self.kv_cache[1],
+                recurrent_state.to(self.kv_cache[1].dtype),
+                slot_ids,
+            )
+            custom_ops.rwkv7_masked_store(
+                self.kv_cache[2],
+                ffn_shift_state.to(self.kv_cache[2].dtype),
+                slot_ids,
+            )
+            return
+
         self.kv_cache[0].index_copy_(
             0, slot_ids, attn_shift_state.to(self.kv_cache[0].dtype)
         )

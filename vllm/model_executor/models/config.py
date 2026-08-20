@@ -9,7 +9,6 @@ from vllm.model_executor.models import ModelRegistry
 from vllm.utils.math_utils import cdiv, round_up
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
-from vllm.config.compilation import CUDAGraphMode
 from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec, MLAAttentionSpec
 
 if TYPE_CHECKING:
@@ -683,18 +682,6 @@ class RWKV7ForCausalLMConfig(MambaModelConfig):
                 "RWKV7 default mamba cache mode is set to 'align' until "
                 "cache-all checkpoint emission is optimized."
             )
-
-    @staticmethod
-    def apply_post_optimization_level_defaults(
-        vllm_config: "VllmConfig",
-    ) -> None:
-        compilation_config = vllm_config.compilation_config
-        if compilation_config.cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE:
-            logger.info(
-                "Overriding RWKV7 cudagraph mode from FULL_AND_PIECEWISE "
-                "to PIECEWISE to avoid unsafe full decode graph capture."
-            )
-            compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE
 
 
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {

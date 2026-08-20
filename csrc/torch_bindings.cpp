@@ -40,6 +40,9 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "Tensor? initial_state=None) -> (Tensor, Tensor)");
   ops.impl("rwkv7_alt_recurrent", torch::kCUDA, &rwkv7_alt_recurrent);
 
+  ops.def("rwkv7_masked_store(Tensor(a!) cache, Tensor values, Tensor slot_ids) -> ()");
+  ops.impl("rwkv7_masked_store", torch::kCUDA, &rwkv7_masked_store);
+
   // Attention ops
   // Compute the attention between an input query and the cached
   // keys/values using PagedAttention.

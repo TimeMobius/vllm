@@ -41,6 +41,7 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
 )
+from vllm.model_executor.layers.fla.ops.rwkv7 import _rwkv7_mix6_use_triton
 from vllm.model_executor.layers.mamba.mamba_utils import (
     get_conv_copy_spec,
     get_temporal_copy_spec,
@@ -1059,6 +1060,14 @@ def test_rwkv7_feed_forward_fused_cmix_activation_falls_back_without_flag(
             torch.testing.assert_close(actual_out, expected_out, rtol=1e-5, atol=2e-2)
         finally:
             cleanup_dist_env_and_memory()
+
+
+def test_rwkv7_mix6_shape_dispatch_prefers_low_launch_overhead():
+    hidden_states = torch.empty(64, 4096)
+    assert not _rwkv7_mix6_use_triton(hidden_states)
+    assert _rwkv7_mix6_use_triton(torch.empty(1024, 4096))
+    assert not _rwkv7_mix6_use_triton(torch.empty(1536, 4096))
+    assert _rwkv7_mix6_use_triton(torch.empty(4096, 4096))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -2210,16 +2219,21 @@ def test_rwkv7_cache_all_packed_checkpoint_metadata_matches_reference():
         torch.testing.assert_close(actual_tensor, expected_tensor)
 
 
-def test_rwkv7_post_optimization_defaults_choose_piecewise():
+def test_rwkv7_post_optimization_defaults_preserve_full_graph_mode():
     vllm_config = SimpleNamespace(
         compilation_config=SimpleNamespace(
             cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE
         )
     )
 
+    # RWKV7 full-graph safety is handled by masked state stores. Do not
+    # silently downgrade a user-selected FULL_AND_PIECEWISE mode.
     RWKV7ForCausalLMConfig.apply_post_optimization_level_defaults(vllm_config)
 
-    assert vllm_config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
+    assert (
+        vllm_config.compilation_config.cudagraph_mode
+        == CUDAGraphMode.FULL_AND_PIECEWISE
+    )
 
 
 def test_rwkv7_block_uses_fp32_runtime_state_dtype():

@@ -1,0 +1,23 @@
+{
+  "run_name": "20260820_mix6_heuristic_eager_c8_mt32",
+  "base_url": "http://127.0.0.1:8030",
+  "endpoint": "completions",
+  "model": "xiaoke-5",
+  "num_requests": 16,
+  "concurrency": 8,
+  "dispatch_mode": "closed_loop",
+  "worker_count": 8,
+  "burst_workers": null,
+  "arrival_rate": null,
+  "arrival_jitter_sec": 0.0,
+  "max_tokens": 32,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "seed": null,
+  "timeout_sec": 300.0,
+  "prompt_file": null,
+  "prompt_case_count": 8,
+  "return_token_ids": true,
+  "extra_body_keys": [],
+  "has_api_key": false
+}

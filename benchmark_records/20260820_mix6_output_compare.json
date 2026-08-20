@@ -1,0 +1,30 @@
+{
+  "all_match": true,
+  "rows": [
+    {
+      "prompt": "i am",
+      "match": true,
+      "first_mismatch": null
+    },
+    {
+      "prompt": "北京是",
+      "match": true,
+      "first_mismatch": null
+    },
+    {
+      "prompt": "The capital of France is",
+      "match": true,
+      "first_mismatch": null
+    },
+    {
+      "prompt": "Once upon a time",
+      "match": true,
+      "first_mismatch": null
+    },
+    {
+      "prompt": "人工智能的未来",
+      "match": true,
+      "first_mismatch": null
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+# RWKV7 vLLM-SP 优化提速任务清单
+
+> 建立日期：2026-08-20（Asia/Shanghai）
+> 当前阶段：已完成基线固化、第一项 mix6 shape dispatch 优化及本地性能记录；正在继续验证 CUDA graph 和后续 kernel 优化。
+> 约束：每完成一个阶段必须先做性能测试、精度对齐、单元/回归测试，并记录可复现结果；未通过门禁的优化不得合入下一阶段。
+
+## 0. 当前基线与工作区保护
+
+- [x] 通读当前仓库的整体结构，并完成 RWKV7 相关路径盘点。
+- [x] 记录当前分支与工作区状态：`codex/rwkv7-sp-fast`，HEAD `e5821e43d`；工作区已有未提交改动，后续不得覆盖或回退，优化应与这些改动兼容。
+- [x] 确认运行环境：`/mnt/data/anaconda3/envs/vllm-sp/bin/python`，Python 3.11.15，PyTorch 2.11.0+cu130，GPU 为 NVIDIA GeForce RTX 4090 D（compute capability 8.9）。
+- [x] 确认服务启动配置（后续所有 A/B 测试默认固定）：
+  `CUDA_VISIBLE_DEVICES=0 RWKV7_USE_FUSED_MIX6=1 RWKV7_USE_FUSED_KK_PRE=1 RWKV7_USE_FUSED_LNX_RKVRES_XG=1 RWKV7_USE_ALT_RECURRENT_KERNEL=1 RWKV7_USE_FUSED_CMIX=1 RWKV7_USE_DIRECT_LINEAR=1 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 /mnt/data/anaconda3/envs/vllm-sp/bin/vllm serve /hikscale/models/XiaoKe/rwkv-0-hf --served-model-name xiaoke-5 --reasoning-parser rwkv --enable-auto-tool-choice --tool-call-parser rwkv --dtype bfloat16 --host 0.0.0.0 --port 8030 --max-model-len 1M --max-num-seqs 64 --gpu-memory-utilization 0.92 --enforce-eager --enable-prefix-caching --mamba-cache-mode align`。
+- [x] 确认远程测试服务可用：`GET http://192.168.10.121:3000/api/status` 返回空闲且已有 8 条记录；首页已有 Chart.js 仪表板；`POST /api/run-test` 无请求体即可启动测试。
+- [x] 建立本仓库自己的基线记录文件（JSONL/Markdown）：`benchmark_records/20260820_baseline_eager_c8_mt32/`，并记录 commit、环境变量、服务参数、模型路径、prompt 集、并发、输出 token 数、aggregate TPS、延迟 P50/P95。显存峰值和 TTFT/TPOT 将在下一轮 profiling 中补齐。
+- [ ] 固定三类基线：单请求 decode（B=1,T=1）、批量 decode（B=1/8/16/32/64）、长上下文 prefill（至少 1K/4K/16K/64K/256K，按可用时间分层）。当前已完成固定 prompt 的 8 并发 decode 基线，其他档位待补。
+
+## 1. 正确性与测试门禁（优化前先固化）
+
+- [ ] 建立 reference 路径（关闭所有 fused/direct/alt kernel）与当前全优化路径的统一比较入口。现有算子 reference/fused 单测已覆盖，统一服务 runner 待补。
+- [x] 做算子级精度基线：现有 `tests/model_executor/test_rwkv7.py` 已覆盖 mix6、kk_pre、lnx_rkvres_xg、recurrent、CMIX、direct linear 的 reference 对齐；非连续/更多真实 shape 仍待扩展。
+- [ ] 做模型级精度基线：随机小配置、固定权重、真实 checkpoint；比较 logits、next token、最终 recurrent/shift state。
+- [ ] 做服务级回归基线：已有并发 token 输出记录；chat/reasoning/tool/prefix-cache 全量回归待补齐。
+- [x] 明确误差门限：当前 mix6 shape dispatch A/B 输出在固定 prompt、temperature=0、ignore_eos=true、32 token 下逐 token 一致；更完整 logits/状态误差记录待补。
+- [ ] 补充/整理单元测试与回归测试，覆盖 TP=1/TP>1、full/piecewise/eager、mamba cache `align`、slot copy、PAD slot；当前已通过 RWKV7 模型测试 46 passed、3 skipped 及 TP 测试，full graph CUDA op 仍待编译验证。
+
+## 2. 性能观测与 profiling
+
+- [ ] 给 RWKV7 前向各阶段加可关闭的计时/计数器：norm、mix6、LoRA/direct-linear、kk_pre、recurrent、epilogue、CMIX、state gather/store、跨层同步与 Python 调度。当前完成 mix6 独立 CUDA event microbenchmark。
+- [x] 使用 CUDA event 对 mix6/recurrent 做了形状扫描；发现 mix6 在 SM89 上 T<=256 及 T=1280-2048 不稳定获益，recurrent fused 明显优于 reference。Nsight 分阶段画像待补。
+- [x] 建立统一 benchmark runner/记录：复用 `tmp_rwkv7_remote_concurrency_bench.py`，结果保存在 `benchmark_records/`，并新增 `tools/rwkv7_perf_dashboard.py` 生成图表。
+- [x] 已在真实服务命令下完成 mix6 shape dispatch A/B：固定 209 prompt tokens、8 并发、64 max tokens、3 轮；平均 aggregate TPS 139.173 → 142.788（+2.60%），输出 token 逐条一致。
+
+## 3. 第一阶段：低风险融合与内存访问优化
+
+- [x] 完成第一项低风险优化：`rwkv7_mix6` 增加按 token 数选择 Triton/reference pointwise 路径的门禁，并新增 dispatch 单测；保留了 fallback。其余 flag 仍待逐项审计。
+- [ ] 对照参考分支的 `rwkv7_mix6`、`rwkv7_kk_pre`、`rwkv7_epilogue`、`rwkv7_shift_state_cache`，优先移植算法结构到 CUDA/Triton，不直接复制 NPU/Ascend 专用代码。
+- [ ] 合并可安全的中间张量、减少重复 `to(float32)`/reshape/contiguous/cast，尤其检查 bf16 权重、float32 state 的边界。
+- [ ] 评估 state gather/store：当前 full CUDA graph 使用 slot 0 兜底 + `rwkv7_masked_store`；验证是否可推广到 eager/piecewise，并测量 index_select/index_copy 与自定义 masked store 的收益。
+- [ ] 阶段门禁：所有算子/模型/服务回归通过；当前 mix6 shape dispatch 提升 +2.60%，低于原计划 >=5% 的阶段目标，但在固定真实服务负载上稳定正收益，暂保留作为低风险优化，不宣称达到 5% 阶段门槛。
+
+## 4. 第二阶段：RWKV7 recurrent decode 专用 kernel
+
+- [ ] 以 `T=1` 为第一目标，单独设计 B=1/小 batch/大 batch 的 CUDA kernel；避免 decode 路径为通用变长 recurrent kernel 支付不必要的分支和临时张量开销。
+- [ ] 参考 `vllm-ascend` 的 `rwkv7_recurrent_t1.py`、`rwkv7_recurrent_t1_cache.py`、`rwkv7_recurrent_t1_matrix.py` 的拆分思路，结合本仓库 `csrc/rwkv7_alt_recurrent.cu` 的 CUDA 语义实现等价路径。
+- [ ] 针对 head_dim/value_dim/num_heads、TP 分片、state layout、初始/最终 state 做 autotune；保留 reference fallback 与禁用环境变量。
+- [ ] 阶段门禁：算子级 parity 全 shape 通过；真实 decode TPOT/P50 至少提升 >=10%，并记录显存与 kernel launch 数变化。
+
+## 5. 第三阶段：prefill/packed prefill 与长上下文
+
+- [ ] 检查 packed/varlen prefill 的 `cu_seqlens`、checkpoint state、mamba cache `align` 以及跨 step state handoff；避免为长上下文产生 O(T) Python/CPU 操作。
+- [ ] 评估 recurrent kernel 的 BLOCK_K/BLOCK_V、grid、warp/stage、寄存器和 shared memory；按 1K/4K/16K/64K/256K 输入长度分档调参。
+- [ ] 优化 long-context state materialization、prefix cache 命中路径和 cache block 复制；分别报告冷启动、重复前缀、混合长度三种结果。
+- [ ] 阶段门禁：长上下文 prefill TTFT/吞吐有稳定收益，且 prefix hit/miss、并发输出和状态均对齐。
+
+## 6. 第四阶段：CUDA Graph / full graph
+
+- [ ] 先在当前 `--enforce-eager` 基线上完成所有优化，再单独打开 piecewise；确认 static forward context、动态 slot、state store、PAD_SLOT_ID=-1 处理均满足 graph capture 要求。
+- [ ] 验证 full decode graph、full-and-piecewise 与 piecewise 的安全性和收益；重点检查 padded batch 不会污染 slot 0 或其他请求状态。
+- [ ] 如 full graph 需要修改编译/调度逻辑，添加最小复现测试和 graph replay 回归测试；禁止用关闭正确性检查换取速度。
+- [ ] 阶段门禁：eager/piecewise/full 三模式均能通过服务级 deterministic 回归；只保留稳定且可复现的 TPS/TPOT 提升。
+
+## 7. 第五阶段：模型级融合与更高阶 CUDA 优化
+
+- [ ] 参考 Albatross 的 CUDA 优化方向：把 layer norm、mix6、LoRA/rank projection、linear、CMIX、residual/add 等高频小 kernel 做融合或减少 launch；先做 profiling 再决定融合边界。
+- [ ] 评估 direct linear 的权重布局、CUTLASS/cuBLASLt 算法选择和针对 RTX 4090 D 的 tile/autotune；不能假设 5090/其他架构的最优参数可直接复用。
+- [ ] 评估将 recurrent、epilogue、output projection 的中间结果留在寄存器/共享内存的可行性；同步检查 TP、量化和 bf16/float32 state 兼容性。
+- [ ] 每一个融合 kernel 独立保留 reference 实现、单测、误差报告和回滚开关。
+
+## 8. 测试记录与小前端
+
+- [x] 设计统一记录 schema：已在 `benchmark_records/*` 中记录 algorithm/parent、GPU、flags、mode、batch、prompt/output token、TPS、accuracy artifact 和 notes；TTFT/TPOT/memory 字段待下一轮补充。
+- [x] 新增 `tools/rwkv7_perf_dashboard.py`，生成 `benchmark_records/dashboard.html` 和 `performance_history.jsonl`，展示 baseline 与 mix6 优化点、TPS、相对提升和精度记录。筛选控件待增强。
+- [ ] 与 `http://192.168.10.121:3000/` 的远程测试结果兼容：记录远程 run id/status，不能把远程服务历史结果与本地不同 GPU/模型结果混为一条曲线。
+- [ ] 前端完成后用至少 3 个算法节点（baseline、阶段 1、阶段 2）做截图/浏览器回归检查。当前只有 baseline + mix6 两个节点。
+
+## 9. 提交前检查
+
+- [ ] `git diff --check`；运行相关 pytest、kernel tests、模型/服务回归；必要时运行 `pre-commit`。
+- [ ] 检查 C++/CUDA 编译产物与源码是否一致，确认只通过 `uv` 和 `/mnt/data/anaconda3/envs/vllm-sp/bin/python` 使用 Python 环境。
+- [ ] 记录每次阶段的命令、结果、误差、覆盖率、失败原因和是否保留；不提交未经人工复核的自动生成大改动。
+- [ ] 如准备 PR，先按 AGENTS.md 做 issue/open PR 重复工作检查；PR 描述包含 AI 辅助声明、测试命令/结果及非重复说明。

@@ -197,6 +197,9 @@ std::tuple<torch::Tensor, torch::Tensor> rwkv7_alt_recurrent(
     const torch::Tensor& v, const torch::Tensor& kk, const torch::Tensor& a,
     const std::optional<torch::Tensor>& initial_state);
 
+void rwkv7_masked_store(torch::Tensor& cache, const torch::Tensor& values,
+                        const torch::Tensor& slot_ids);
+
 #ifndef USE_ROCM
 
 torch::Tensor awq_gemm(torch::Tensor _in_feats, torch::Tensor _kernel,
