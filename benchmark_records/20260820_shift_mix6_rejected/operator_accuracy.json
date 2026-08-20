@@ -1,0 +1,9 @@
+{
+  "algorithm_id": "shift-mix6-fusion",
+  "status": "rejected",
+  "shape": "T in {1, 8, 257, 1024}, hidden_size=4096, BF16, CUDA",
+  "candidate": "fuse token shift with the six mix6 projections in one Triton kernel",
+  "reference": "token_shift_with_cache plus rwkv7_mix6_reference",
+  "max_abs_error": 0.125,
+  "reason": "The fused kernel performs the subtraction and multiply-add in FP32 before BF16 store, while the eager reference follows BF16 intermediate rounding. Exact BF16 tensor parity is lost (max absolute error 0.125), so it was rejected before service A/B."
+}
