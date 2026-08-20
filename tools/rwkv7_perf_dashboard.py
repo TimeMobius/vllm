@@ -19,27 +19,66 @@ from typing import Any
 
 def load_comparisons(records_dir: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for path in sorted(records_dir.rglob("*_comparison.json")):
+    paths = set(records_dir.rglob("*_comparison.json"))
+    paths.update(records_dir.rglob("comparison.json"))
+    for path in sorted(paths):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if not {
+        if {
             "algorithm_id",
             "baseline_avg_tps",
             "heuristic_avg_tps",
         } <= payload.keys():
+            status = "verified"
+            baseline_tps = payload["baseline_avg_tps"]
+            tps = payload["heuristic_avg_tps"]
+            speedup_percent = payload.get("speedup_percent")
+            algorithm_id = payload["algorithm_id"]
+            parent_id = payload.get("parent_id")
+            accuracy_record = payload.get("accuracy_record")
+            notes = payload.get("notes", "")
+            prompt_tokens = payload.get("prompt_tokens")
+            output_tokens = payload.get("output_tokens_per_round")
+        elif payload.get("status") == "rejected":
+            # Rejected candidates remain visible for auditability, but must not
+            # be included in the verified performance trend line.
+            baseline = payload.get("baseline", {})
+            candidate = payload.get("candidate", {})
+            experiments = payload.get("experiments", {})
+            if experiments:
+                baseline_tps = payload.get("reference_tps")
+                candidate = experiments.get("piecewise", {})
+                tps = candidate.get("avg_tps")
+            else:
+                baseline_tps = baseline.get("avg_tps")
+                tps = candidate.get("avg_tps")
+            if baseline_tps is None or tps is None:
+                continue
+            status = "rejected"
+            speedup_percent = payload.get("speedup_percent")
+            if speedup_percent is None:
+                speedup_percent = (tps / baseline_tps - 1) * 100
+            algorithm_id = payload.get("record_id", path.parent.name)
+            parent_id = "eager-t1-reference"
+            accuracy_record = payload.get("accuracy")
+            notes = payload.get("conclusion", "")
+            prompt_tokens = payload.get("workload", "see record")
+            output_tokens = "see record"
+        else:
             continue
         records.append(
             {
                 "record_path": str(path.relative_to(records_dir)),
-                "algorithm_id": payload["algorithm_id"],
-                "parent_id": payload.get("parent_id"),
-                "baseline_tps": payload["baseline_avg_tps"],
-                "tps": payload["heuristic_avg_tps"],
-                "speedup_percent": payload.get("speedup_percent"),
-                "prompt_tokens": payload.get("prompt_tokens"),
-                "output_tokens_per_round": payload.get("output_tokens_per_round"),
+                "algorithm_id": algorithm_id,
+                "parent_id": parent_id,
+                "status": status,
+                "baseline_tps": baseline_tps,
+                "tps": tps,
+                "speedup_percent": speedup_percent,
+                "prompt_tokens": prompt_tokens,
+                "output_tokens_per_round": output_tokens,
                 "gpu": payload.get("gpu"),
-                "accuracy_record": payload.get("accuracy_record"),
-                "notes": payload.get("notes", ""),
+                "accuracy_record": accuracy_record,
+                "notes": notes,
             }
         )
     return records
@@ -72,7 +111,7 @@ code {{ color: #97d8ff; }} .muted {{ color: #93a8ca; font-size: 13px; }}
 </head>
 <body><main>
 <h1>{title}</h1>
-<p>每一个数据点来自保留的 JSON 测试记录。只有完成精度对齐的算法才应进入此图；不同 GPU、模型或负载不得直接横向比较。</p>
+<p>每一个数据点来自保留的 JSON 测试记录。折线图只包含通过精度门禁的保留优化；被拒绝候选以红色表格行保留，方便回溯。不同 GPU、模型或负载不得直接横向比较。</p>
 <div class="card"><svg id="chart" viewBox="0 0 1000 380" role="img" aria-label="算法 TPS 折线图"></svg></div>
 <div class="card"><h2>已记录的算法</h2><div id="table"></div></div>
 <div class="card muted"><strong>数据位置：</strong><code>benchmark_records/performance_history.jsonl</code>。重新生成：<code>/mnt/data/anaconda3/envs/vllm-sp/bin/python tools/rwkv7_perf_dashboard.py</code></div>
@@ -86,7 +125,11 @@ if (!records.length) {{
   chart.outerHTML = '<p class="empty">尚无 *_comparison.json 记录。</p>';
   table.innerHTML = '<p class="empty">请先完成基线与优化后的 A/B 测试。</p>';
 }} else {{
-  const points = [{{algorithm_id: 'baseline-current-flags', tps: records[0].baseline_tps, uplift: 0, notes: 'comparison baseline'}}, ...records.map(r => ({{algorithm_id:r.algorithm_id,tps:r.tps,uplift:r.speedup_percent,notes:r.notes}}))];
+  const verified = records.filter(r => r.status === 'verified');
+  const points = verified.length ? [{{algorithm_id: 'baseline-current-flags', tps: verified[0].baseline_tps, uplift: 0, notes: 'comparison baseline'}}, ...verified.map(r => ({{algorithm_id:r.algorithm_id,tps:r.tps,uplift:r.speedup_percent,notes:r.notes}}))] : [];
+  if (!points.length) {{
+    chart.outerHTML = '<p class="empty">尚无通过精度门禁的 *_comparison.json 记录。</p>';
+  }} else {{
   const W=1000,H=380,L=72,R=30,T=30,B=68;
   const min=Math.min(...points.map(p=>p.tps))*0.94, max=Math.max(...points.map(p=>p.tps))*1.06;
   const sx=i=>L+(W-L-R)*(points.length===1?.5:i/(points.length-1));
@@ -97,7 +140,8 @@ if (!records.length) {{
   points.forEach((p,i)=>{{const x=sx(i),y=sy(p.tps);svg+=`<circle cx="${{x}}" cy="${{y}}" r="6" fill="#55e6a5"/><text x="${{x}}" y="${{H-B+22}}" fill="#dce7fa" text-anchor="middle" font-size="12">${{esc(p.algorithm_id)}}</text><text x="${{x}}" y="${{y-12}}" fill="#55e6a5" text-anchor="middle" font-size="13">${{p.tps.toFixed(2)}} TPS</text>`;}});
   svg += `<text x="${{L}}" y="20" fill="#93a8ca" font-size="13">Aggregate TPS（固定负载）</text>`;
   chart.innerHTML=svg;
-  table.innerHTML=`<table><thead><tr><th>算法</th><th>TPS</th><th>相对基线</th><th>精度</th><th>负载</th><th>说明 / 原始记录</th></tr></thead><tbody>${{records.map(r=>`<tr><td><code>${{esc(r.algorithm_id)}}</code><div class="muted">parent: ${{esc(r.parent_id)}}</div></td><td>${{r.tps.toFixed(3)}}</td><td class="${{r.speedup_percent >= 0 ? 'up':'bad'}}">${{r.speedup_percent >= 0 ? '+':''}}${{r.speedup_percent.toFixed(2)}}%</td><td><code>${{esc(r.accuracy_record)}}</code></td><td>${{r.prompt_tokens}} prompt × ${{r.output_tokens_per_round}} output<br><span class="muted">${{esc(r.gpu)}}</span></td><td>${{esc(r.notes)}}<div class="muted"><code>${{esc(r.record_path)}}</code></div></td></tr>`).join('')}}</tbody></table>`;
+  }}
+  table.innerHTML=`<table><thead><tr><th>状态 / 算法</th><th>TPS</th><th>相对基线</th><th>精度</th><th>负载</th><th>说明 / 原始记录</th></tr></thead><tbody>${{records.map(r=>`<tr><td class="${{r.status === 'verified' ? 'up':'bad'}}">${{r.status === 'verified' ? '已保留':'已回退'}}<br><code>${{esc(r.algorithm_id)}}</code><div class="muted">parent: ${{esc(r.parent_id)}}</div></td><td>${{r.tps.toFixed(3)}}</td><td class="${{r.speedup_percent >= 0 && r.status === 'verified' ? 'up':'bad'}}">${{r.speedup_percent >= 0 ? '+':''}}${{r.speedup_percent.toFixed(2)}}%</td><td><code>${{esc(typeof r.accuracy_record === 'string' ? r.accuracy_record : JSON.stringify(r.accuracy_record))}}</code></td><td>${{esc(r.prompt_tokens)}} × ${{esc(r.output_tokens_per_round)}}<br><span class="muted">${{esc(r.gpu)}}</span></td><td>${{esc(r.notes)}}<div class="muted"><code>${{esc(r.record_path)}}</code></div></td></tr>`).join('')}}</tbody></table>`;
 }}
 </script></body></html>"""
 
