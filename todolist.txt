@@ -43,7 +43,7 @@
 
 - [x] 以 `T=1` 为第一目标，新增 opt-in Triton 64x64 matrix kernel，覆盖 B=1/2/4/8/16/32/64 microbenchmark；避免 decode 路径为通用变长 recurrent kernel 支付不必要的分支和临时张量开销。
 - [x] 参考 `vllm-ascend` 的 `rwkv7_recurrent_t1.py`、`rwkv7_recurrent_t1_cache.py`、`rwkv7_recurrent_t1_matrix.py` 的拆分思路，在本仓库实现等价 T=1 路径；保留 reference/alternate fallback。
-- [ ] 针对 head_dim/value_dim/num_heads、TP 分片、state layout、初始/最终 state 做 autotune；保留 reference fallback 与禁用环境变量。
+- [ ] 针对 head_dim/value_dim/num_heads、TP 分片、state layout、初始/最终 state 做 autotune；direct-cache T1 原型在服务级下降 29.54% 且 55/256 token 偏差，已回退并记录于 `benchmark_records/20260820_recurrent_t1_cache_rejected/`。
 - [ ] 阶段门禁：当前算子 parity 和 deterministic 服务 token IDs 已通过；8 并发真实 decode TPS 从 130.77 提升到 134.73（+3.03%），低于原定 >=10% 门槛但稳定正收益，暂保留并继续 autotune/cache kernel 优化。
 
 ## 5. 第三阶段：prefill/packed prefill 与长上下文

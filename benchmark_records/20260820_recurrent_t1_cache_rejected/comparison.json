@@ -1,0 +1,43 @@
+{
+  "record_id": "20260820_recurrent_t1_cache_rejected",
+  "status": "rejected",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "workload": "8 fixed prompts, concurrency=8, 32 output tokens, 5 measured rounds after warmup; --enforce-eager --mamba-cache-mode align",
+  "baseline": {
+    "flags": [
+      "RWKV7_USE_FUSED_RECURRENT_T1=1"
+    ],
+    "avg_tps": 130.49852307926326,
+    "artifact": "cache_off_bench.json"
+  },
+  "candidate": {
+    "flags": [
+      "RWKV7_USE_FUSED_RECURRENT_T1=1",
+      "RWKV7_USE_FUSED_RECURRENT_T1_CACHE=1"
+    ],
+    "avg_tps": 91.95388996945574,
+    "artifact": "cache_on_bench.json"
+  },
+  "speedup_percent": -29.536451601368675,
+  "accuracy": {
+    "reference": "/tmp/rwkv7_t1_seed_ids.json",
+    "candidate_artifact": "cache_on_seed_ids.json",
+    "mismatched_tokens_per_prompt": [
+      0,
+      25,
+      0,
+      28,
+      0,
+      0,
+      0,
+      2
+    ],
+    "mismatched_tokens_total": 55,
+    "exact_match_prompts": 5,
+    "total_tokens": 256
+  },
+  "operator_microbenchmark": {
+    "result": "cache direct kernel was 4.5%-6.8% slower than the out-of-place T1 kernel for B=1-64; it also omits gather/store overhead, so this is not a full service A/B."
+  },
+  "conclusion": "Rejected and reverted. Direct cache update regressed service TPS by -29.54% and violated deterministic token parity. Do not enable RWKV7_USE_FUSED_RECURRENT_T1_CACHE; cache row ownership / decode state indexing requires a smaller, isolated reproduction before another attempt."
+}
