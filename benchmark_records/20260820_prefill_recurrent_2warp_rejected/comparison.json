@@ -1,0 +1,36 @@
+{
+  "status": "rejected",
+  "record_id": "prefill-recurrent-2warp",
+  "baseline": {
+    "avg_tps": 8.790631936748865
+  },
+  "candidate": {
+    "avg_tps": 8.704901470852787
+  },
+  "speedup_percent": -0.9752480426086785,
+  "accuracy": {
+    "service_token_ids_same_prompt_cases": "not used as acceptance gate; raw prompt cases are deterministic within each variant",
+    "operator_parity": "unchanged kernel algorithm, launch configuration only"
+  },
+  "workload": "cold unique raw token prompt, 4K tokens, B=1, 16 decode tokens; supplemental 16K and 64K runs retained",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "experiments": {
+    "4k": {
+      "baseline_w4_tps": 8.790631936748865,
+      "candidate_w2_tps": 8.704901470852787,
+      "speedup_percent": -0.9752480426086785
+    },
+    "16k": {
+      "baseline_w4_tps": 3.1400349310523072,
+      "candidate_w2_tps": 3.1418073007871024,
+      "speedup_percent": 0.05644426809612302
+    },
+    "64k": {
+      "baseline_w4_tps": 0.873372794390516,
+      "candidate_w2_tps": 0.8774139133957302,
+      "speedup_percent": 0.462702643266355
+    }
+  },
+  "conclusion": "Rejected and reverted: the 2-warp launch was faster in isolated recurrent operator timings (about 2.7% at 4K and 3.6% at 16K), but the end-to-end 4K service workload regressed by about 0.98%; 16K gain was within noise and no stable service-level improvement was established. Keep the default 4-warp launch.",
+  "notes": "Candidate was opt-in via RWKV7_FUSED_RECURRENT_NUM_WARPS=2 and was not retained."
+}

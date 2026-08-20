@@ -1,0 +1,111 @@
+{
+  "mode": "cold-unique-raw-token-prompts",
+  "prompt_tokens_per_request": 16384,
+  "concurrency": 1,
+  "max_tokens": 16,
+  "warmup": {
+    "wall_sec": 5.084120358340442,
+    "prompt_tokens": 16384,
+    "output_tokens": 16,
+    "prompt_tokens_per_sec": 3222.583032111392,
+    "aggregate_output_tps": 3.1470537422962814,
+    "request_latencies": [
+      5.0786933451890945
+    ],
+    "prompt_id_prefixes": [
+      "fd88ed0bbb95"
+    ],
+    "output_token_ids": [
+      [
+        116,
+        33,
+        2928,
+        2949,
+        2950,
+        2927,
+        2929,
+        28202,
+        32829,
+        2930,
+        2938,
+        28237,
+        32837,
+        2953,
+        48210,
+        2942
+      ]
+    ]
+  },
+  "rounds": [
+    {
+      "wall_sec": 5.0900835217908025,
+      "prompt_tokens": 16384,
+      "output_tokens": 16,
+      "prompt_tokens_per_sec": 3218.8076934022,
+      "aggregate_output_tps": 3.143366888088086,
+      "request_latencies": [
+        5.085893254727125
+      ],
+      "prompt_id_prefixes": [
+        "9d386a82c54e"
+      ],
+      "output_token_ids": [
+        [
+          6859,
+          11,
+          754,
+          35762,
+          63,
+          261,
+          6699,
+          52569,
+          56501,
+          51746,
+          22590,
+          52204,
+          46685,
+          4706,
+          22184,
+          46
+        ]
+      ],
+      "round": 0
+    },
+    {
+      "wall_sec": 5.10089738573879,
+      "prompt_tokens": 16384,
+      "output_tokens": 16,
+      "prompt_tokens_per_sec": 3211.9838453929256,
+      "aggregate_output_tps": 3.136702974016529,
+      "request_latencies": [
+        5.096169755794108
+      ],
+      "prompt_id_prefixes": [
+        "58115828ee3a"
+      ],
+      "output_token_ids": [
+        [
+          33,
+          9503,
+          9519,
+          9507,
+          9513,
+          9506,
+          9512,
+          33,
+          9510,
+          9505,
+          9519,
+          9503,
+          2976,
+          131,
+          9507,
+          9519
+        ]
+      ],
+      "round": 1
+    }
+  ],
+  "average_prompt_tokens_per_sec": 3215.3957693975626,
+  "average_aggregate_output_tps": 3.1400349310523072
+}

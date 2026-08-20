@@ -1,0 +1,46 @@
+{
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "mode": "enforce-eager",
+  "flags": [
+    "RWKV7_USE_FUSED_MIX6=1",
+    "RWKV7_USE_FUSED_KK_PRE=1",
+    "RWKV7_USE_FUSED_LNX_RKVRES_XG=1",
+    "RWKV7_USE_ALT_RECURRENT_KERNEL=1",
+    "RWKV7_USE_FUSED_RECURRENT_T1=1",
+    "RWKV7_USE_FUSED_CMIX=1",
+    "RWKV7_USE_DIRECT_LINEAR=1",
+    "RWKV7_USE_CACHED_FP32_PARAMS=1"
+  ],
+  "workload": "cold unique raw token prompts, one request, 16 generated tokens",
+  "results": [
+    {
+      "prompt_tokens": 4096,
+      "concurrency": 1,
+      "max_tokens": 16,
+      "average_prompt_tokens_per_sec": 2250.4017758077093,
+      "average_aggregate_output_tps": 8.790631936748865
+    },
+    {
+      "prompt_tokens": 16384,
+      "concurrency": 1,
+      "max_tokens": 16,
+      "average_prompt_tokens_per_sec": 3215.3957693975626,
+      "average_aggregate_output_tps": 3.1400349310523072
+    },
+    {
+      "prompt_tokens": 65536,
+      "concurrency": 1,
+      "max_tokens": 16,
+      "average_prompt_tokens_per_sec": 3577.3349658235534,
+      "average_aggregate_output_tps": 0.873372794390516
+    },
+    {
+      "prompt_tokens": 262144,
+      "concurrency": 1,
+      "max_tokens": 16,
+      "average_prompt_tokens_per_sec": 3668.5716263071477,
+      "average_aggregate_output_tps": 0.22391184242597337
+    }
+  ]
+}
