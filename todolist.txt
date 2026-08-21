@@ -92,6 +92,7 @@ screen -ls
 - [x] **直接合并 r/k/v 权重为单一 GEMM**：B=32/128 BF16 输出不再 bit-exact（通常相差 1–2 BF16 units），不接入。
 - [x] **默认 cublasGemmEx 直接替换 `F.linear`**：isolated `[M,4096] × [4096,4096]` BF16 probe 与 PyTorch bit-exact，但性能仅约 -0.22% 至 +0.34%，无接入价值。
 - [x] **cublasLt heuristic/workspace 枚举（2026-08-21）**：在 `M=1/8/32/128, K=N=4096`、0/4/8/64/256 MiB workspace 的 isolated BF16 probe 中，能 `torch.equal` 的候选均与 PyTorch 基线持平量级；C=128 最快 `0.041146 ms` 对 PyTorch `0.041165 ms`（约 +0.05%，低于噪声门限），不接入模型。非精确算法在 M=8/32/128 可出现最高 1–2 BF16 units 的差异。
+- [x] **BF16 ordered sparse CMix down projection（2026-08-21）**：按 Albatross 思路实现了 M=1 CUDA-graph-safe 的 tile count/prefix/ordered compact/FP32 accumulation 候选。isolated 94% sparsity时约 `0.160 → 0.111 ms`，服务 C=1 为 `25.74 → 27.38 TPS`（+6.40%），说明 FFN sparse down 的性能潜力真实存在；但 8 prompts × 16 `logprobs=20` 出现 `2 / 8` text/token 分歧、selected max `2.630697`、common Top-K max `11.437075`。FP32 accumulation 和 index 顺序均不能匹配 PyTorch BF16 GEMV reduction contract，候选已从模型代码移除并恢复严格稳定服务。证据：`benchmark_records/20260821_sparse_cmix_bf16_c1_rejected/`。
 
 ## 4. 当前性能判断
 
@@ -171,7 +172,7 @@ curl -fsS http://192.168.10.121:3000/
 
 ## 6. 下一阶段优先级
 
-1. [ ] **BF16 sparse CMix down projection（最高优先级，C=1）**：checkpoint 实测 FFN preactivation 约 91.6–96.6% 非正，且 Albatross 同 checkpoint 的 sparse CMix raw graph 有 +30.2% B=1 潜力。以受 guard 保护的 isolated native prototype 开始，先做 tensor `torch.equal`；若有误差，调 accumulation/rounding 并量化服务 logprob，而不是直接默认启用。
+1. [ ] **保持 dense BF16 reduction contract 的 sparse/structured CMix（最高优先级，C=1）**：已验证 ordered FP32 sparse GEMV 有 +6.40% 服务潜力但仍发生 recursive token divergence，不能重复接入。下一次只探索能复用/匹配 CUTLASS tensor-core reduction 的结构化稀疏、或在不改变每个 dense projection reduction 的前提下融合/减少 projection launch；先做 `torch.equal` 与 8×16 service gate。
 2. [ ] **小 projection 调度/融合（C=1）**：profile 显示约 426 个 small linear/step。优先探索可 CUDA-graph-capture 的 grouped/low-rank projection dispatch；不得拼接 r/k/v 改变数学矩阵形状。`cublasGemmBatchedEx`/strided batched 目前在 M=1 或 M=128 输出不 strict exact，不能直接接入。
 3. [x] **cublasLt isolated algorithm profiling**：已覆盖 decoder/FFN `M=1/8/32/128`、0/4/8/32/64/256 MiB workspace；strict exact 候选在 C=128 与 PyTorch/CUTLASS 持平量级，未接入。
 4. [ ] 对 C=128 抓取新的 CUDA trace，并把 GEMM、reduction、launch/CPU schedule 占比与 C=1 profile 交叉验证；C=128 优化目标与 C=1 sparse FFN 优化分开裁决。

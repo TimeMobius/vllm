@@ -1,0 +1,19 @@
+{
+  "candidate": "BF16 ordered sparse CMix down projection (M=1 only)",
+  "status": "rejected_precision_gate",
+  "device": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "baseline_c1_tps_mean": 25.736428466872144,
+  "candidate_c1_tps": [27.261121707952302, 27.330946873817073, 27.560435880339366],
+  "candidate_c1_tps_mean": 27.38416815403625,
+  "candidate_c1_speedup_percent": 6.4024,
+  "service_accuracy": {
+    "prompts": 8,
+    "decode_tokens_per_prompt": 16,
+    "text_mismatch": 2,
+    "token_mismatch": 2,
+    "max_selected_logprob_error": 2.630697259635781,
+    "max_common_topk_logprob_error": 11.43707467452623,
+    "mean_selected_logprob_error": 0.07258240925954063
+  }
+}
