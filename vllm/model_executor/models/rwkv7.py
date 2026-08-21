@@ -36,6 +36,8 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_mix6,
     rwkv7_mix6_reference,
     rwkv7_recurrent_t1,
+    rwkv7_recurrent_t1_exact_update,
+    rwkv7_recurrent_t1_exact_update_available,
 )
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -1276,6 +1278,26 @@ class RWKV7Attention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if (
             self.perf_flags.use_alt_recurrent_kernel
+            and rwkv7_recurrent_t1_exact_update_available()
+            and _rwkv7_env_flag_enabled(
+                "RWKV7_USE_EXACT_RECURRENT_T1_UPDATE", default=True
+            )
+            and recurrent_state.ndim == 4
+            and recurrent_state.shape[-2:] == (64, 64)
+        ):
+            final_recurrent_state, recurrent_output = rwkv7_recurrent_t1_exact_update(
+                recurrent_state=recurrent_state,
+                w=w,
+                kk=kk,
+                a=a,
+                k=k,
+                v=v,
+                r=r,
+            )
+            return recurrent_output, final_recurrent_state
+
+        if (
+            self.perf_flags.use_alt_recurrent_kernel
             and _rwkv7_env_flag_enabled("RWKV7_USE_FUSED_RECURRENT_T1", default=True)
             and recurrent_state.ndim == 4
             and recurrent_state.shape[-2:] == (64, 64)
@@ -1876,6 +1898,7 @@ class RWKV7Block(nn.Module, MambaBase):
         use_masked_store = (
             self._uses_full_cudagraphs
             and self.kv_cache[0].is_cuda
+            and all(cache.is_contiguous() for cache in self.kv_cache)
             and hasattr(torch.ops, "_C")
             and hasattr(torch.ops._C, "rwkv7_masked_store")
         )

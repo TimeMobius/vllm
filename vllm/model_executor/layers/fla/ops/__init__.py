@@ -28,6 +28,8 @@ from .rwkv7 import (
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
     rwkv7_recurrent_t1,
+    rwkv7_recurrent_t1_exact_update,
+    rwkv7_recurrent_t1_exact_update_available,
 )
 
 __all__ = [
@@ -49,5 +51,7 @@ __all__ = [
     "rwkv7_masked_store_triton",
     "rwkv7_recurrent_reference",
     "rwkv7_recurrent_t1",
+    "rwkv7_recurrent_t1_exact_update",
+    "rwkv7_recurrent_t1_exact_update_available",
     "rwkv7_recurrent_reference_with_checkpoints",
 ]

@@ -1,0 +1,68 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp / Python 3.11.15 / PyTorch 2.11.0+cu130",
+  "binary": "same rebuilt vllm/_C.abi3.so for baseline and candidate",
+  "workload": {
+    "endpoint": "/v1/completions",
+    "model": "xiaoke-5",
+    "num_requests": 128,
+    "concurrency": 128,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "return_token_ids": true,
+    "ignore_eos": true,
+    "completed_tokens_per_run": 4096,
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128
+    ]
+  },
+  "reference": {
+    "mode": "RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=0",
+    "aggregate_output_tps": [
+      487.1075957951322,
+      488.71313772353415
+    ],
+    "mean_aggregate_output_tps": 487.9103667593332,
+    "raw_summaries": [
+      "raw/baseline_c128_1.summary.json",
+      "raw/baseline_c128_2.summary.json"
+    ]
+  },
+  "candidate": {
+    "mode": "RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1",
+    "aggregate_output_tps": [
+      695.0029301362897,
+      698.1475972514469
+    ],
+    "mean_aggregate_output_tps": 696.5752636938682,
+    "raw_summaries": [
+      "raw/candidate_c128_3.summary.json",
+      "raw/candidate_c128_4.summary.json"
+    ]
+  },
+  "mean_aggregate_output_tps_speedup_percent": 42.76705541644314,
+  "secondary_concurrency": {
+    "c64": {
+      "baseline_tps": 436.10568234564187,
+      "candidate_tps": 589.2480586012514,
+      "speedup_percent": 35.11588645942805
+    },
+    "c8": {
+      "baseline_tps": 149.68250822619274,
+      "candidate_tps": 154.28494577122945,
+      "speedup_percent": 3.074799854423693
+    }
+  },
+  "conclusion": "Retain the strict native FP32 state-update fusion: it is positive at C=8/C=64/C=128 and preserves the service logprob regression exactly."
+}

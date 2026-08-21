@@ -46,6 +46,8 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
     rwkv7_recurrent_t1,
+    rwkv7_recurrent_t1_exact_update,
+    rwkv7_recurrent_t1_exact_update_available,
 )
 from vllm.model_executor.layers.fla.ops.rwkv7 import (
     _rwkv7_mix6_use_triton,
@@ -684,6 +686,88 @@ def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
 
     torch.testing.assert_close(actual_state, expected_state, rtol=5e-4, atol=5e-4)
     torch.testing.assert_close(actual_output, expected_output, rtol=5e-4, atol=5e-4)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(
+    not rwkv7_recurrent_t1_exact_update_available(),
+    reason="RWKV7 exact recurrent CUDA op is unavailable",
+)
+@pytest.mark.parametrize("batch_size", [1, 8, 128])
+def test_rwkv7_recurrent_t1_exact_update_matches_reference(batch_size):
+    torch.manual_seed(71 + batch_size)
+    num_heads, head_dim, value_dim = 4, 64, 64
+    state = torch.randn(
+        batch_size,
+        num_heads,
+        head_dim,
+        value_dim,
+        device="cuda",
+        dtype=torch.float32,
+    ).contiguous()
+    terms = [
+        torch.randn(batch_size, num_heads, head_dim, device="cuda").contiguous()
+        for _ in range(4)
+    ]
+    v = torch.randn(
+        batch_size, num_heads, value_dim, device="cuda", dtype=torch.float32
+    ).contiguous()
+    r = torch.randn(batch_size, num_heads, head_dim, device="cuda").contiguous()
+    w, kk, a, k = terms
+
+    expected_state, expected_output = _rwkv7_recurrent_t1_reference(
+        state, w, kk, a, k, v, r
+    )
+    actual_state, actual_output = rwkv7_recurrent_t1_exact_update(
+        state, w, kk, a, k, v, r
+    )
+    torch.cuda.synchronize()
+
+    assert torch.equal(actual_state, expected_state)
+    assert torch.equal(actual_output, expected_output)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(
+    not rwkv7_recurrent_t1_exact_update_available(),
+    reason="RWKV7 exact recurrent CUDA op is unavailable",
+)
+@pytest.mark.parametrize("batch_size", [1, 8, 128])
+def test_rwkv7_recurrent_t1_exact_update_matches_reference_over_steps(batch_size):
+    torch.manual_seed(173 + batch_size)
+    num_heads, head_dim, value_dim = 4, 64, 64
+    expected_state = torch.randn(
+        batch_size,
+        num_heads,
+        head_dim,
+        value_dim,
+        device="cuda",
+        dtype=torch.float32,
+    ).contiguous()
+    actual_state = expected_state.clone()
+
+    for _ in range(10):
+        w, kk, a, k, r = [
+            torch.randn(
+                batch_size, num_heads, head_dim, device="cuda", dtype=torch.float32
+            ).contiguous()
+            for _ in range(5)
+        ]
+        v = torch.randn(
+            batch_size,
+            num_heads,
+            value_dim,
+            device="cuda",
+            dtype=torch.float32,
+        ).contiguous()
+        expected_state, expected_output = _rwkv7_recurrent_t1_reference(
+            expected_state, w, kk, a, k, v, r
+        )
+        actual_state, actual_output = rwkv7_recurrent_t1_exact_update(
+            actual_state, w, kk, a, k, v, r
+        )
+        assert torch.equal(actual_state, expected_state)
+        assert torch.equal(actual_output, expected_output)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

@@ -24,6 +24,11 @@ def _rwkv7_fused_recurrent_disabled() -> bool:
     )
 
 
+def _rwkv7_exact_recurrent_t1_update_enabled() -> bool:
+    value = os.getenv("RWKV7_USE_EXACT_RECURRENT_T1_UPDATE", "1")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _rwkv7_recurrent_t1_reference(
     recurrent_state: torch.Tensor,
     w: torch.Tensor,
@@ -232,6 +237,52 @@ def rwkv7_recurrent_t1(
 
 def rwkv7_alt_recurrent_available() -> bool:
     return hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_alt_recurrent")
+
+
+def rwkv7_recurrent_t1_exact_update_available() -> bool:
+    return hasattr(torch.ops, "_C") and hasattr(
+        torch.ops._C, "rwkv7_recurrent_t1_exact_update"
+    )
+
+
+def rwkv7_recurrent_t1_exact_update(
+    recurrent_state: torch.Tensor,
+    w: torch.Tensor,
+    kk: torch.Tensor,
+    a: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    r: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Exactly reproduce the reference T=1 recurrence with fewer state ops.
+
+    ``sa`` and the final output reduction remain native ATen operations, whose
+    reduction order is part of the greedy-decode numerical contract. The CUDA
+    kernel only replaces the three FP32 state products and two additions after
+    their eager scalar terms have been materialized.
+    """
+    tensors = (recurrent_state, w, kk, a, k, v, r)
+    if (
+        not _rwkv7_exact_recurrent_t1_update_enabled()
+        or not rwkv7_recurrent_t1_exact_update_available()
+        or recurrent_state.device.type != "cuda"
+        or recurrent_state.ndim != 4
+        or recurrent_state.shape[-2:] != (64, 64)
+        or any(t.dtype != torch.float32 or not t.is_contiguous() for t in tensors)
+    ):
+        return _rwkv7_recurrent_t1_reference(recurrent_state, w, kk, a, k, v, r)
+
+    # Keep these operations separate. The native update kernel uses explicit
+    # round-to-nearest mul/add instructions to match this eager materialization
+    # bit-for-bit, so recurrent state remains stable over long decode runs.
+    sa = (recurrent_state * (-kk).unsqueeze(-1)).sum(dim=-2)
+    exp_w = torch.exp(w)
+    kk_a = kk * a
+    final_state = custom_ops.rwkv7_recurrent_t1_exact_update(
+        recurrent_state, exp_w, kk_a, k, v, sa
+    )
+    recurrent_output = (final_state * r.unsqueeze(-1)).sum(dim=-2)
+    return final_state, recurrent_output
 
 
 def rwkv7_alt_recurrent(

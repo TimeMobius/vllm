@@ -1,0 +1,97 @@
+{
+  "config": {
+    "run_name": "baseline_c128_2",
+    "base_url": "http://127.0.0.1:8030",
+    "endpoint": "completions",
+    "model": "xiaoke-5",
+    "num_requests": 128,
+    "concurrency": 128,
+    "dispatch_mode": "closed_loop",
+    "worker_count": 128,
+    "burst_workers": null,
+    "arrival_rate": null,
+    "arrival_jitter_sec": 0.0,
+    "max_tokens": 32,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 0,
+    "timeout_sec": 300.0,
+    "prompt_file": null,
+    "prompt_case_count": 8,
+    "return_token_ids": true,
+    "extra_body_keys": [
+      "ignore_eos"
+    ],
+    "has_api_key": false
+  },
+  "health": {
+    "url": "http://127.0.0.1:8030/health",
+    "status_code": 200,
+    "ok": true,
+    "payload": null,
+    "error": null
+  },
+  "summary": {
+    "request_count": 128,
+    "success_count": 128,
+    "error_count": 0,
+    "success_rate": 1.0,
+    "requested_concurrency_arg": 128,
+    "configured_concurrency": 128,
+    "client_concurrency_limit": 128,
+    "dispatch_mode": "closed_loop",
+    "worker_count": 128,
+    "arrival_rate_rps": null,
+    "wall_time_sec": 8.381194782443345,
+    "active_window_sec": 8.381112653762102,
+    "client_queue_delay_before_first_start_sec": 8.212868124246597e-05,
+    "request_throughput_rps": 15.272285553860442,
+    "active_request_throughput_rps": 15.272435210919584,
+    "aggregate_output_tps": 488.71313772353415,
+    "token_throughput_tps": 488.71313772353415,
+    "active_output_tps": 488.7179267494267,
+    "latency_sec": {
+      "avg": 8.363344002864324,
+      "p50": 8.367490570992231,
+      "p95": 8.377704579383135,
+      "p99": 8.378826893866062,
+      "max": 8.379709978587925
+    },
+    "start_delay_sec": {
+      "avg": 0.0101183879232849,
+      "p50": 0.009999986737966537,
+      "p95": 0.018986240960657597,
+      "p99": 0.020808697678148746,
+      "max": 0.021344699896872044
+    },
+    "status_counts": {
+      "200": 128
+    },
+    "top_errors": [],
+    "known_completion_token_requests": 128,
+    "known_completion_tokens": 4096,
+    "token_throughput_tps_stats": {
+      "bucket_sec": 1.0,
+      "avg": 488.09386837467315,
+      "min": 479.6427284812362,
+      "max": 489.76461570449715
+    },
+    "token_throughput_tps_avg": 488.09386837467315,
+    "token_throughput_tps_min": 479.6427284812362,
+    "token_throughput_tps_max": 489.76461570449715,
+    "request_token_throughput_tps_stats": {
+      "avg": 3.826286060191382,
+      "p50": 3.824391806152163,
+      "p95": 3.8296756421474556,
+      "min": 3.8187479139215217,
+      "max": 3.951762956639549,
+      "weighted_avg": 3.826220706578668
+    },
+    "request_token_throughput_tps_avg": 3.826286060191382,
+    "request_token_throughput_tps_min": 3.8187479139215217,
+    "request_token_throughput_tps_max": 3.951762956639549,
+    "request_token_throughput_tps_weighted_avg": 3.826220706578668,
+    "peak_inflight_requests": 128,
+    "avg_inflight_requests": 127.72862943037823
+  }
+}

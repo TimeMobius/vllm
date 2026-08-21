@@ -124,6 +124,22 @@ if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_alt_recurrent"):
         return torch.empty_like(v, dtype=torch.float32), final_state
 
 
+if hasattr(torch.ops, "_C") and hasattr(
+    torch.ops._C, "rwkv7_recurrent_t1_exact_update"
+):
+
+    @register_fake("_C::rwkv7_recurrent_t1_exact_update")
+    def _rwkv7_recurrent_t1_exact_update_fake(
+        state: torch.Tensor,
+        exp_w: torch.Tensor,
+        kk_a: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        sa: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.empty_like(state)
+
+
 if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_masked_store"):
 
     @register_fake("_C::rwkv7_masked_store")
@@ -154,6 +170,17 @@ def rwkv7_alt_recurrent(
     initial_state: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.ops._C.rwkv7_alt_recurrent(r, w, k, v, kk, a, initial_state)
+
+
+def rwkv7_recurrent_t1_exact_update(
+    state: torch.Tensor,
+    exp_w: torch.Tensor,
+    kk_a: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    sa: torch.Tensor,
+) -> torch.Tensor:
+    return torch.ops._C.rwkv7_recurrent_t1_exact_update(state, exp_w, kk_a, k, v, sa)
 
 
 def paged_attention_v1(

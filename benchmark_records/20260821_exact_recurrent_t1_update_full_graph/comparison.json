@@ -1,0 +1,12 @@
+{
+  "algorithm_id": "exact-recurrent-t1-state-update-full-graph",
+  "parent_id": "full-decode-cuda-graph-triton-masked-store",
+  "baseline_avg_tps": 487.9103667593332,
+  "heuristic_avg_tps": 696.5752636938682,
+  "speedup_percent": 42.76705541644314,
+  "prompt_tokens": "mixed fixed prompts; 128 requests / C=128",
+  "output_tokens_per_round": 4096,
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "accuracy_record": "benchmark_records/20260821_exact_recurrent_t1_update_full_graph/accuracy.json",
+  "notes": "Same rebuilt _C binary; only RWKV7_USE_EXACT_RECURRENT_T1_UPDATE differs. FP32 state update is custom CUDA while exp, kk*a and both reductions retain eager ATen order. C=128 paired mean is reported; secondary single repeats show benefit at C=64 and C=8."
+}

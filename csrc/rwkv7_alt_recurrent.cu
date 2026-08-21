@@ -116,6 +116,44 @@ void check_rwkv7_alt_recurrent_tensor(const torch::Tensor& tensor,
               expected_last_dim, "], got ", tensor.sizes(), ".");
 }
 
+__global__ void rwkv7_recurrent_t1_exact_update_kernel(
+    const float* __restrict__ state, const float* __restrict__ exp_w,
+    const float* __restrict__ kk_a, const float* __restrict__ k,
+    const float* __restrict__ v, const float* __restrict__ sa,
+    float* __restrict__ out, const int64_t numel) {
+  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+  if (idx >= numel) {
+    return;
+  }
+
+  // state is [B, H, 64, 64]. Each scalar term is [B, H, 64] and each
+  // vector term is [B, H, 64]. Explicit round-to-nearest operations reproduce
+  // eager ATen's materialized product/add order while avoiding its five large
+  // intermediate state tensors.
+  const int64_t value_idx = idx & (kRWKV7AltHeadDim - 1);
+  const int64_t scalar_idx = idx >> 6;
+  const int64_t batch_head_idx = scalar_idx >> 6;
+  volatile float state_decay = __fmul_rn(exp_w[scalar_idx], state[idx]);
+  volatile float key_sa =
+      __fmul_rn(kk_a[scalar_idx], sa[batch_head_idx * kRWKV7AltHeadDim + value_idx]);
+  volatile float key_value =
+      __fmul_rn(k[scalar_idx], v[batch_head_idx * kRWKV7AltHeadDim + value_idx]);
+  volatile float partial = __fadd_rn(state_decay, key_sa);
+  out[idx] = __fadd_rn(partial, key_value);
+}
+
+void check_rwkv7_recurrent_t1_exact_update_tensor(
+    const torch::Tensor& tensor, const char* name,
+    const std::vector<int64_t>& expected_shape) {
+  TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
+  TORCH_CHECK(tensor.scalar_type() == torch::kFloat32, name,
+              " must have dtype float32.");
+  TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
+  TORCH_CHECK(tensor.sizes().vec() == expected_shape, name, " must have shape ",
+              expected_shape, ", got ", tensor.sizes(), ".");
+}
+
 }  // namespace
 
 std::tuple<torch::Tensor, torch::Tensor> rwkv7_alt_recurrent(
@@ -184,4 +222,46 @@ std::tuple<torch::Tensor, torch::Tensor> rwkv7_alt_recurrent(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return {out, final_state};
+}
+
+
+torch::Tensor rwkv7_recurrent_t1_exact_update(
+    const torch::Tensor& state, const torch::Tensor& exp_w,
+    const torch::Tensor& kk_a, const torch::Tensor& k,
+    const torch::Tensor& v, const torch::Tensor& sa) {
+  TORCH_CHECK(state.dim() == 4 && state.size(2) == kRWKV7AltHeadDim &&
+                  state.size(3) == kRWKV7AltHeadDim,
+              "`state` must have shape [B, H, 64, 64], got ", state.sizes(),
+              ".");
+  const int64_t batch_size = state.size(0);
+  const int64_t num_heads = state.size(1);
+  const std::vector<int64_t> scalar_shape = {batch_size, num_heads,
+                                               kRWKV7AltHeadDim};
+  check_rwkv7_recurrent_t1_exact_update_tensor(state, "`state`",
+                                                {batch_size, num_heads,
+                                                 kRWKV7AltHeadDim,
+                                                 kRWKV7AltHeadDim});
+  check_rwkv7_recurrent_t1_exact_update_tensor(exp_w, "`exp_w`", scalar_shape);
+  check_rwkv7_recurrent_t1_exact_update_tensor(kk_a, "`kk_a`", scalar_shape);
+  check_rwkv7_recurrent_t1_exact_update_tensor(k, "`k`", scalar_shape);
+  check_rwkv7_recurrent_t1_exact_update_tensor(v, "`v`", scalar_shape);
+  check_rwkv7_recurrent_t1_exact_update_tensor(sa, "`sa`", scalar_shape);
+  TORCH_CHECK(exp_w.device() == state.device() && kk_a.device() == state.device() &&
+                  k.device() == state.device() && v.device() == state.device() &&
+                  sa.device() == state.device(),
+              "all recurrent update tensors must share `state`'s CUDA device.");
+
+  c10::cuda::OptionalCUDAGuard device_guard;
+  device_guard.set_index(state.get_device());
+  auto out = torch::empty_like(state);
+  constexpr int kThreads = 256;
+  const int64_t numel = state.numel();
+  rwkv7_recurrent_t1_exact_update_kernel<<<
+      (numel + kThreads - 1) / kThreads, kThreads, 0,
+      at::cuda::getCurrentCUDAStream()>>>(
+      state.data_ptr<float>(), exp_w.data_ptr<float>(), kk_a.data_ptr<float>(),
+      k.data_ptr<float>(), v.data_ptr<float>(), sa.data_ptr<float>(),
+      out.data_ptr<float>(), numel);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return out;
 }
