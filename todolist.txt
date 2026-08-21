@@ -569,3 +569,9 @@ curl -fsS http://192.168.10.121:3000/
   reduction tree 和高效 multi-output tile；简单 warp-per-row 或跳过 zero 权重读取无法
   达标。临时 extension/代码均未进入仓库。记录：
   `benchmark_records/20260821_ffn_sparse_exact_reduction_probe/`。
+
+### 2026-08-21 fused BF16 decay-scale / cast preparation（拒绝）
+
+- [x] 试验 `RWKV7_USE_FUSED_W_SCALE_CAST=1`：把 direct CUDA path 中 `w = LOG_DECAY_SCALE * sigmoid(w_lora(...))` 的 BF16 标量乘并入已保留的 `rwkv7_cast_kk_pre` Triton kernel。kernel 明确执行 FP32 multiply → BF16 writeback语义 → FP32 recurrent input，避免直接 FP32 multiply 改变 eager BF16 materialization；每个 projection、sigmoid、state/reduction 与 Full Decode CUDA Graph 路径均保持不变。
+- [x] 精度门禁通过：B=1/8/128 `rwkv7_cast_kk_pre` 与 attention recurrent-input bundle 均 `torch.equal`；focused CUDA tests `6 passed`；8 prompts × 16 greedy、`logprobs=20` 服务 JSON trace byte-identical。
+- [x] **不保留**：C=1 32-token `28.9459 → 28.9515 TPS`（+0.019%）；idle-GPU repeat 的 C=128 aggregate `1609.28 → 1606.44 TPS`（-0.177%）。首个 candidate C=128 sample 被外部干扰污染（873.55 TPS）并保留原始记录但不用于结论。该操作虽严格正确，省掉的单个 scale launch 对完整 graph 无材料级收益；源码/服务已恢复稳定配置。证据：`benchmark_records/20260821_fused_w_scale_cast_rejected/`。

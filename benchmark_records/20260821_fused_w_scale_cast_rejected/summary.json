@@ -1,0 +1,25 @@
+{
+  "date": "2026-08-21",
+  "candidate": "Fuse LOG_DECAY_SCALE BF16 multiplication into rwkv7_cast_kk_pre",
+  "environment_gate": "RWKV7_USE_FUSED_W_SCALE_CAST=1 with the retained Full Decode CUDA Graph configuration",
+  "accuracy": {
+    "operator": "rwkv7_cast_kk_pre exact at B=1/8/128",
+    "attention_projection_bundle": "torch.equal at B=1/8/128",
+    "service_8x16_logprobs20": "byte-identical JSON trace"
+  },
+  "tests": {
+    "command": "CUDA_VISIBLE_DEVICES=0 /mnt/data/anaconda3/envs/vllm-sp/bin/python -m pytest tests/model_executor/test_rwkv7.py::test_rwkv7_cast_kk_pre_matches_separate_exact_path tests/model_executor/test_rwkv7.py::test_rwkv7_attention_fused_w_scale_cast_preserves_bits -q -v",
+    "result": "6 passed"
+  },
+  "performance": {
+    "c1_baseline_tps": 28.945896978545758,
+    "c1_candidate_tps": 28.951454657611308,
+    "c1_change_percent": 0.019200230933136275,
+    "c128_baseline_aggregate_tps": 1609.2844113085976,
+    "c128_candidate_aggregate_tps": 1606.4363275526025,
+    "c128_change_percent": -0.17697827282618928,
+    "discarded_first_c128_sample": 873.5524051684395,
+    "discard_reason": "The first candidate C=128 sample was externally contaminated (873.55 TPS). An idle-GPU repeat was 1606.44 TPS and is used for the decision."
+  },
+  "decision": "rejected: strict parity is preserved, but C=1 is only +0.02% and C=128 is -0.18%, both below the 1% materiality gate."
+}
