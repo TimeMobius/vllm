@@ -2035,7 +2035,10 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
             monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
             for _ in range(4):
                 actual = attention._project_recurrent_inputs(
-                    hidden_states, delta, v_first=None
+                    hidden_states,
+                    delta,
+                    v_first=None,
+                    allow_decode_multistream=True,
                 )
                 torch.cuda.synchronize()
                 for output, expected in zip(actual, reference, strict=True):
@@ -2064,7 +2067,10 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
             monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
             for _ in range(4):
                 actual = layer_one_attention._project_recurrent_inputs(
-                    hidden_states, delta, v_first=v_first
+                    hidden_states,
+                    delta,
+                    v_first=v_first,
+                    allow_decode_multistream=True,
                 )
                 torch.cuda.synchronize()
                 for output, expected in zip(actual, reference, strict=True):

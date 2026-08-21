@@ -4,8 +4,9 @@
 
 `RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS=1` extends the retained C=1 R/K/V
 child-stream path without changing the numerical contract of any projection.
-It is enabled only when the direct CUDA linear path is selected and the
-projection batch has exactly one row. Batches above one, including the
+It is enabled only when the direct CUDA linear path is selected, the
+projection batch has exactly one row, and the caller is `forward_decode_batch`;
+prefill (including a one-token prefill) stays on the single-stream route. Batches above one, including the
 C=128 Full Decode CUDA Graph replay, remain on the established single-stream
 path.
 

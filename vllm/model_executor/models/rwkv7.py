@@ -1308,6 +1308,8 @@ class RWKV7Attention(nn.Module):
         hidden_states: torch.Tensor,
         delta: torch.Tensor,
         v_first: torch.Tensor | None,
+        *,
+        allow_decode_multistream: bool = False,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -1321,7 +1323,8 @@ class RWKV7Attention(nn.Module):
         xr, xw, xk, xv, xa, xg = self._mix_recurrent_inputs(hidden_states, delta)
         if self._can_use_direct_cuda_fast_path(hidden_states):
             use_aux_multistream = (
-                _rwkv7_env_flag_enabled(
+                allow_decode_multistream
+                and _rwkv7_env_flag_enabled(
                     "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", default=False
                 )
                 and xr.is_cuda
@@ -1689,6 +1692,7 @@ class RWKV7Attention(nn.Module):
             hidden_states,
             delta,
             v_first,
+            allow_decode_multistream=True,
         )
         use_direct_cache = (
             recurrent_cache is not None

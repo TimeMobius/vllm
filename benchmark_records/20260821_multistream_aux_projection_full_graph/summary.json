@@ -22,7 +22,7 @@
     ]
   },
   "implementation": {
-    "scope": "direct CUDA linear path, decode-shaped batch size one only",
+    "scope": "direct CUDA linear path, forward_decode_batch with batch size one only; all prefill paths remain single-stream",
     "mechanism": "reuse the existing three persistent R/K/V child streams to issue independent BF16 branches in balanced groups: R+G, K+W+A, V+V-gate; join all groups before the existing FP32 conversion and recurrent path",
     "strict_arithmetic_contract": "each F.linear, activation, sigmoid, scale, lerp and FP32 recurrent operation retains the baseline inputs, operand order, dtype and reduction contract; only independent CUDA-stream scheduling changes",
     "higher_concurrency": "batch sizes above one retain the stable single-stream path"
