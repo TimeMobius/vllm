@@ -1,0 +1,12 @@
+weights 243
+{
+  "count": 243,
+  "mismatched_weights": 0,
+  "total_different": 0,
+  "shape_counts": {
+    "(192, 4096)": 122,
+    "(384, 4096)": 61,
+    "(128, 4096)": 60
+  },
+  "rows_with_errors": []
+}

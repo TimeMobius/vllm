@@ -402,3 +402,22 @@ curl -fsS http://192.168.10.121:3000/
   reduction**。因此下一项必须是少 launch 的 shape-specialized BF16 GEMV/
   projection backend；单纯 row split、event、metadata 或 cache 优化均不足。
   记录：`benchmark_records/20260821_bf16_gemv_shape_baseline/`。
+
+### 2026-08-21 native BF16 LoRA-input GEMV（精度通过、性能拒绝）
+
+- [x] 实现并验证过一个严格 M=1 CUDA BF16 GEMV 原型，仅覆盖 RWKV7 无 bias 的
+  LoRA input projection `[1,4096] × [128|192|384,4096]^T`；BF16 input/weight、
+  FP32 FMA、BF16 output rounding，不触碰 recurrent state。isolated 约 `1.46–1.50×`
+  快于 `F.linear`（例如 4096×4096 `17.39 → 11.92 µs`、LoRA input 约
+  `8.02 → 5.33 µs`）。
+- [x] 精度没有被轻易放弃：8 个随机 BF16 input 的目标 shape CUDA unit `3 passed`；
+  真实 checkpoint 的全部 243 个 LoRA-input 权重（122×192、61×384、60×128）各
+  8 个 BF16 input 的 `torch.equal` 检查为 **0 different elements**；服务 8×16
+  `logprobs=20` trace 字节级零差，Full Decode Graph 全 capture size 正常。
+- [x] 仍不保留的原因是端到端性能，而非精度：restart-paired C=1
+  `28.4445 → 28.1004 TPS`（**-1.21%**）；C=128 不触发 M=1 kernel，
+  `1565.1864 → 1566.7799 TPS`（+0.10% 噪声）。独立 kernel 的 output allocation/
+  graph integration 成本抵消了 low-rank kernel 节省；源码、扩展和服务均已恢复。
+  下一次 GEMV 实验必须采用 persistent output buffer 或融合紧随的 activation/
+  second low-rank projection，单独 allocating op 不再重复。记录：
+  `benchmark_records/20260821_native_bf16_lora_input_gemv_candidate/`。
