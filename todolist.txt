@@ -80,8 +80,8 @@ screen -ls
 ### 2.3 编译/图模式的现状
 
 - [x] `FULL_DECODE_ONLY` CUDA Graph 已通过真实 C=128 padded engine integration，测试覆盖普通 full decode graph 与 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 路径。
-- [x] model `torch.compile` 是严格对齐的 opt-in；因 C=128 服务均值约 `707.73 → 706.10 TPS`，暂无稳定收益，**默认不打开**。
-- [x] 证据：`benchmark_records/20260821_full_decode_cuda_graph_verified/`、`benchmark_records/20260821_full_decode_compile_final_norm/`。
+- [x] model `torch.compile` 是严格对齐的 opt-in；此前 C=128 服务均值约 `707.73 → 706.10 TPS`，2026-08-21 追加 `use_inductor_graph_partition=true` 复测也仅 `706.21 → 694.72 TPS`（剔除 candidate 首轮仍为 706.61），暂无稳定收益，**默认不打开**。
+- [x] 证据：`benchmark_records/20260821_full_decode_cuda_graph_verified/`、`benchmark_records/20260821_full_decode_compile_final_norm/`、`benchmark_records/20260821_full_decode_compile_inductor_partition_rejected/`。
 
 ## 3. 已拒绝候选（不要无证据重复接入）
 
@@ -94,6 +94,13 @@ screen -ls
 - [x] **cublasLt heuristic/workspace 枚举（2026-08-21）**：在 `M=1/8/32/128, K=N=4096`、0/4/8/64/256 MiB workspace 的 isolated BF16 probe 中，能 `torch.equal` 的候选均与 PyTorch 基线持平量级；C=128 最快 `0.041146 ms` 对 PyTorch `0.041165 ms`（约 +0.05%，低于噪声门限），不接入模型。非精确算法在 M=8/32/128 可出现最高 1–2 BF16 units 的差异。
 
 ## 4. 当前性能判断
+
+### 4.1 C=1 与 C=128 是不同目标
+
+- [x] 最新稳定服务（2026-08-21、32 output tokens、temperature=0、`ignore_eos=true`）C=1 三轮为 `25.31 / 25.95 / 25.95 TPS`，均值 **25.74 TPS**；C=8/32/128 aggregate 均值分别为 **158.95 / 460.69 / 705.31 TPS**。
+- [x] 因此“50+ TPS”应明确为单请求 C=1 目标，而不是 aggregate C=128。C=128 已远超 50 aggregate TPS，但每请求平均约 5.51 TPS，属排队/批处理吞吐指标，不能与单流 latency 指标混用。
+- [x] C=1 Torch profile（31 generation steps）表明三类 BF16 `internal::gemvx` 合计 **984.67 ms**，约占 trace 1.20 s CUDA time 的 **82%**，并有约 **426 个小 linear/step**；下一最大收益点是 decoder 小 projection/FFN down projection，不是 state cache。
+- [x] 在同 checkpoint `/hikscale/models/XiaoKe/rwkv-0.pth` 和同 RTX 4090 D 上复现 Albatross C++：`--wkv32 --cmix-sparse off` 为 31.61 raw tok/s，默认 sparse CMix 为 41.15 raw tok/s（+30.2%）。它是 FP16 standalone graph，未经过 vLLM API/sampling 与 BF16 strict logprob 门禁；其 README 的 145+ TPS 是 RTX 5090 的 standalone 结果，不能直接与本机 vLLM C=1 比较。完整证据：`benchmark_records/20260821_single_decode_bottleneck_and_albatross/`。
 
 - [x] 历史 trace（`/tmp/rwkv7_exact_profile_20260821_1616/`）显示：BF16 GEMM/CUTLASS 约 24%，ATen elementwise 约 20%，ATen reductions 约 13%，旧 cache gather/store 约 20%，exact recurrent update 约 9%。
 - [x] cache-control 与 recurrent state update 的高价值安全优化已保留；下一瓶颈优先是 **decoder projection GEMM/调度**，而不是继续堆叠 cache 小算子。
@@ -164,11 +171,11 @@ curl -fsS http://192.168.10.121:3000/
 
 ## 6. 下一阶段优先级
 
-1. [ ] **cublasLt isolated algorithm profiling（最高优先级）**：针对 decoder BF16 GEMM 的 `M=1/8/32/128, K=N=4096` 枚举 workspace/heuristic；先以 `torch.equal` 筛掉非 bit-exact 算法，再评估是否能显著优于 PyTorch/CUTLASS。
-2. [ ] 若存在显著且 bit-exact 的 Lt 算法：增加 guarded native op 与 M=1/8/32/128 单测，随后做服务精度、C=128 三轮 A/B、focused suite、benchmark record，满足门禁后才提交。
-3. [ ] 若 Lt 无稳定收益：研究保持每个 projection shape 的 grouped GEMM / stream dispatch；不得通过拼接 r/k/v weight 改变矩阵形状来换取 launch 数。
-4. [ ] 在阅读已有 rejected records 后，谨慎评估 strict CMix / LayerNorm / mix fusion；必须保留 BF16 GEMM 和 FP32 recurrence 的精确语义。
-5. [ ] 对高并发抓取新的 CUDA trace，并把 C=128 replay 中 GEMM、reduction、launch/CPU schedule 的占比与本文件的历史结论交叉验证。
+1. [ ] **BF16 sparse CMix down projection（最高优先级，C=1）**：checkpoint 实测 FFN preactivation 约 91.6–96.6% 非正，且 Albatross 同 checkpoint 的 sparse CMix raw graph 有 +30.2% B=1 潜力。以受 guard 保护的 isolated native prototype 开始，先做 tensor `torch.equal`；若有误差，调 accumulation/rounding 并量化服务 logprob，而不是直接默认启用。
+2. [ ] **小 projection 调度/融合（C=1）**：profile 显示约 426 个 small linear/step。优先探索可 CUDA-graph-capture 的 grouped/low-rank projection dispatch；不得拼接 r/k/v 改变数学矩阵形状。`cublasGemmBatchedEx`/strided batched 目前在 M=1 或 M=128 输出不 strict exact，不能直接接入。
+3. [x] **cublasLt isolated algorithm profiling**：已覆盖 decoder/FFN `M=1/8/32/128`、0/4/8/32/64/256 MiB workspace；strict exact 候选在 C=128 与 PyTorch/CUTLASS 持平量级，未接入。
+4. [ ] 对 C=128 抓取新的 CUDA trace，并把 GEMM、reduction、launch/CPU schedule 占比与 C=1 profile 交叉验证；C=128 优化目标与 C=1 sparse FFN 优化分开裁决。
+5. [ ] 保持追踪官方 upstream：2026-08-21 已 `git fetch upstream main` 到 `36bad1b90`（当前分支落后 4,993 commits，不能盲目 merge）。重点阅读 Kimi K3/KDA fused decode 与 Qwen3.5 GDN/linear-attention 的 state layout、native fused decode/graph guard；只有可独立、数值安全的实现才 backport。
 6. [ ] 将每个有效改动按阶段提交：有意义的 commit message、`Assisted-by: Codex` trailer、完整测试与 benchmark record；不要 push remote。
 
 ## 7. 构建约束

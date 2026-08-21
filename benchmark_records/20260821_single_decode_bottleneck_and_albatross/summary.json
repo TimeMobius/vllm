@@ -1,0 +1,23 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "vllm_c1_tps": [25.310614426495484, 25.95036415208855, 25.94883682203387],
+  "vllm_c1_tps_mean": 25.7366051335393,
+  "vllm_c1_api_ms_per_token": 38.85516348451199,
+  "profile": {
+    "generation_steps": 31,
+    "generation_cuda_ms": 1185.719,
+    "total_cuda_ms": 1200.0,
+    "gemvx_cuda_ms": 984.668582,
+    "gemvx_cuda_share_of_total": 0.8205571516666667,
+    "small_linear_calls": 426
+  },
+  "albatross_same_checkpoint_wkv32": {
+    "dense_cmix": {"b1t1_ms": 31.6378, "b1t1_tps": 31.6077, "b128t1_tps": 1263.82},
+    "sparse_cmix": {"b1t1_ms": 24.2992, "b1t1_tps": 41.1536, "b128t1_tps": 1264.03},
+    "sparse_b1_speedup": 0.301999000751,
+    "numerics_note": "Albatross standalone FP16 path is not a strict vLLM BF16/logprob parity result."
+  },
+  "hf_bf16_ffn_preactivation_nonpositive_ratio": [0.9663045914446722, 0.9290441294185451, 0.9160566486296107, 0.9329313684682377]
+}
