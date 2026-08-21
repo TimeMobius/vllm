@@ -1,0 +1,103 @@
+{
+  "source": "http://192.168.10.121:3000/",
+  "algorithm": "FULL_DECODE_ONLY",
+  "rows": [
+    {
+      "concurrency": 1,
+      "ttft_ms": 305.0,
+      "p50_ms": 291.0,
+      "p95_ms": 333.0,
+      "p99_ms": 337.0,
+      "output_tps": 36.7,
+      "aggregate_tps": 36.1,
+      "requests": 3,
+      "tokens": 2090,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 2,
+      "ttft_ms": 346.0,
+      "p50_ms": 348.0,
+      "p95_ms": 373.0,
+      "p99_ms": 377.0,
+      "output_tps": 30.7,
+      "aggregate_tps": 30.2,
+      "requests": 6,
+      "tokens": 4123,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 4,
+      "ttft_ms": 485.0,
+      "p50_ms": 496.0,
+      "p95_ms": 535.0,
+      "p99_ms": 549.0,
+      "output_tps": 30.8,
+      "aggregate_tps": 30.1,
+      "requests": 12,
+      "tokens": 8078,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 8,
+      "ttft_ms": 530.0,
+      "p50_ms": 539.0,
+      "p95_ms": 594.0,
+      "p99_ms": 620.0,
+      "output_tps": 27.2,
+      "aggregate_tps": 26.6,
+      "requests": 16,
+      "tokens": 10373,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 16,
+      "ttft_ms": 655.0,
+      "p50_ms": 669.0,
+      "p95_ms": 723.0,
+      "p99_ms": 738.0,
+      "output_tps": 24.4,
+      "aggregate_tps": 23.8,
+      "requests": 32,
+      "tokens": 21355,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 32,
+      "ttft_ms": 998.0,
+      "p50_ms": 977.0,
+      "p95_ms": 1116.0,
+      "p99_ms": 1164.0,
+      "output_tps": 18.6,
+      "aggregate_tps": 18.1,
+      "requests": 32,
+      "tokens": 21718,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 64,
+      "ttft_ms": 1259.0,
+      "p50_ms": 1255.0,
+      "p95_ms": 1361.0,
+      "p99_ms": 1464.0,
+      "output_tps": 12.8,
+      "aggregate_tps": 12.5,
+      "requests": 64,
+      "tokens": 43362,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 128,
+      "ttft_ms": 1835.0,
+      "p50_ms": 1870.0,
+      "p95_ms": 2041.0,
+      "p99_ms": 2208.0,
+      "output_tps": 7.9,
+      "aggregate_tps": 7.8,
+      "requests": 128,
+      "tokens": 86730,
+      "success_rate": 100.0
+    }
+  ],
+  "notes": "Remote test service result, workload controlled by remote service; server max-num-seqs=128."
+}

@@ -1,0 +1,98 @@
+{
+  "source": "http://192.168.10.121:3000/",
+  "runs": {
+    "eager": "2026-08-21 02:27:03",
+    "full_decode_graph": "2026-08-21 02:13:59"
+  },
+  "comparison": [
+    {
+      "concurrency": 1,
+      "eager_aggregate_tps": 25.5,
+      "full_decode_graph_aggregate_tps": 36.1,
+      "aggregate_speedup_percent": 41.5686274509804,
+      "eager_output_tps": 25.9,
+      "full_decode_graph_output_tps": 36.7,
+      "output_speedup_percent": 41.698841698841726,
+      "eager_ttft_ms": 401.0,
+      "full_decode_graph_ttft_ms": 305.0
+    },
+    {
+      "concurrency": 2,
+      "eager_aggregate_tps": 26.1,
+      "full_decode_graph_aggregate_tps": 30.2,
+      "aggregate_speedup_percent": 15.708812260536398,
+      "eager_output_tps": 26.4,
+      "full_decode_graph_output_tps": 30.7,
+      "output_speedup_percent": 16.287878787878785,
+      "eager_ttft_ms": 342.0,
+      "full_decode_graph_ttft_ms": 346.0
+    },
+    {
+      "concurrency": 4,
+      "eager_aggregate_tps": 25.4,
+      "full_decode_graph_aggregate_tps": 30.1,
+      "aggregate_speedup_percent": 18.50393700787403,
+      "eager_output_tps": 25.9,
+      "full_decode_graph_output_tps": 30.8,
+      "output_speedup_percent": 18.918918918918926,
+      "eager_ttft_ms": 477.0,
+      "full_decode_graph_ttft_ms": 485.0
+    },
+    {
+      "concurrency": 8,
+      "eager_aggregate_tps": 24.3,
+      "full_decode_graph_aggregate_tps": 26.6,
+      "aggregate_speedup_percent": 9.4650205761317,
+      "eager_output_tps": 24.8,
+      "full_decode_graph_output_tps": 27.2,
+      "output_speedup_percent": 9.677419354838701,
+      "eager_ttft_ms": 513.0,
+      "full_decode_graph_ttft_ms": 530.0
+    },
+    {
+      "concurrency": 16,
+      "eager_aggregate_tps": 24.2,
+      "full_decode_graph_aggregate_tps": 23.8,
+      "aggregate_speedup_percent": -1.6528925619834656,
+      "eager_output_tps": 24.7,
+      "full_decode_graph_output_tps": 24.4,
+      "output_speedup_percent": -1.2145748987854255,
+      "eager_ttft_ms": 628.0,
+      "full_decode_graph_ttft_ms": 655.0
+    },
+    {
+      "concurrency": 32,
+      "eager_aggregate_tps": 20.8,
+      "full_decode_graph_aggregate_tps": 18.1,
+      "aggregate_speedup_percent": -12.98076923076923,
+      "eager_output_tps": 21.4,
+      "full_decode_graph_output_tps": 18.6,
+      "output_speedup_percent": -13.0841121495327,
+      "eager_ttft_ms": 859.0,
+      "full_decode_graph_ttft_ms": 998.0
+    },
+    {
+      "concurrency": 64,
+      "eager_aggregate_tps": 16.0,
+      "full_decode_graph_aggregate_tps": 12.5,
+      "aggregate_speedup_percent": -21.875,
+      "eager_output_tps": 16.5,
+      "full_decode_graph_output_tps": 12.8,
+      "output_speedup_percent": -22.424242424242426,
+      "eager_ttft_ms": 1107.0,
+      "full_decode_graph_ttft_ms": 1259.0
+    },
+    {
+      "concurrency": 128,
+      "eager_aggregate_tps": 11.1,
+      "full_decode_graph_aggregate_tps": 7.8,
+      "aggregate_speedup_percent": -29.729729729729726,
+      "eager_output_tps": 11.4,
+      "full_decode_graph_output_tps": 7.9,
+      "output_speedup_percent": -30.701754385964907,
+      "eager_ttft_ms": 1606.0,
+      "full_decode_graph_ttft_ms": 1835.0
+    }
+  ],
+  "conclusion": "Remote workload test. At C=128 Full Decode CUDA Graph has lower aggregate throughput than Eager; do not retain it for the C=128 remote workload until reprofiling and further optimization."
+}
