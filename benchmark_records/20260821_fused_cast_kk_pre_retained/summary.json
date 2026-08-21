@@ -10,5 +10,7 @@
   "c128_candidate_mean_tps": 1604.0458815277443,
   "prior_retained_bulk_stream_mean_tps": 1584.9967112906647,
   "c128_incremental_speedup_percent": 1.201291863213003,
+  "concurrency_sweep_baseline_tps": {"2": 52.09262951253925, "8": 200.9363892383623, "32": 626.4988599197522},
+  "concurrency_sweep_candidate_tps": {"2": 52.80125888438168, "8": 203.41682951159353, "32": 632.7069592252408},
   "decision": "retained"
 }

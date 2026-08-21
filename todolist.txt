@@ -221,7 +221,7 @@ screen -ls
 ### 2.9 2026-08-21：fused BF16→FP32 recurrent preparation（已保留）
 
 - [x] 新增 `RWKV7_USE_FUSED_CAST_KK_PRE=1`：将 R/W/K/A/V 的 BF16→FP32 materialization 与既有 exact Triton `k` adjust/`kk` normalize 合并，限 equal 64-wide layout；其余 layout 自动 fallback，算术表达式保持现有 kk-pre 合同。
-- [x] isolated B=1/8/128 六个输出均 `torch.equal`，服务 8×16 `logprobs=20` byte-identical，Full Decode graph `1..128` 成功；focused regression **92 passed, 4 skipped**。C=1 `28.904 TPS`，C=128 四样本 **1604.05 aggregate TPS**，相对已保留 bulk stream `1584.997` 再增 **+1.20%**。
+- [x] isolated B=1/8/128 六个输出均 `torch.equal`，服务 8×16 `logprobs=20` byte-identical，Full Decode graph `1..128` 成功；focused regression **92 passed, 4 skipped**。C=1 `28.904 TPS`，C=128 四样本 **1604.05 aggregate TPS**，相对已保留 bulk stream `1584.997` 再增 **+1.20%**；clean-restart C=2/8/32 sweep 分别 `+1.36% / +1.23% / +0.99%`。
 - [x] 稳定启动脚本已加入此开关；证据：`benchmark_records/20260821_fused_cast_kk_pre_retained/`。
 
 ### 3.0 2026-08-21：C=128 projection bulk multistream（已保留）

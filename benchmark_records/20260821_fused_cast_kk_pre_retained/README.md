@@ -43,3 +43,19 @@ C=1 improves from roughly 28.46 to 28.90 TPS (about **+1.56%**).
 Retained. This is a strict, graph-safe reduction in recurrent-input launch and
 materialization overhead, with output equality established before service
 benchmarking.
+
+## Clean-restart concurrency sweep A/B
+
+A same-source/binary restart pair compared the retained bulk-stream path with
+and without only `RWKV7_USE_FUSED_CAST_KK_PRE=1` at dashboard-relevant closed
+loop concurrency. Each point used two post-warmup 32-token samples.
+
+| concurrency | baseline aggregate TPS | fused aggregate TPS | change |
+|---:|---:|---:|---:|
+| 2 | 52.093 | 52.801 | +1.36% |
+| 8 | 200.936 | 203.417 | +1.23% |
+| 32 | 626.499 | 632.707 | +0.99% |
+
+This confirms that the retained gain is not only a C=128 artifact: the fused
+preparation improves the high-concurrency dashboard sweep from C=2 through
+C=128 without altering API outputs.
