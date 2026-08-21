@@ -1,96 +1,179 @@
-# RWKV7 vLLM-SP 优化提速任务清单
+# RWKV7 vLLM-SP 性能优化追踪
 
-> 建立日期：2026-08-20（Asia/Shanghai）
-> 当前阶段：已完成基线固化、mix6 shape dispatch、RWKV7 T=1 recurrent Triton kernel、FP32 常量参数缓存及四节点性能记录；CUDA Graph 已完成实验但因精度/收益门禁失败回退，继续优化长上下文与模型级融合。
-> 约束：每完成一个阶段必须先做性能测试、精度对齐、单元/回归测试，并记录可复现结果；未通过门禁的优化不得合入下一阶段。
+> **最后核对：2026-08-21（Asia/Shanghai）**
+> 工作目录：`/mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast`
+> 分支：`codex/rwkv7-sp-fast`
+> 目标：在严格数值对齐和回归测试门禁下，提高 RWKV7 的 **Full Decode CUDA Graph** 和高并发 decode 吞吐。
 
-## 0. 当前基线与工作区保护
+本文件是下一轮优化的单一追踪入口。不要仅凭 microbenchmark 保留优化：每个候选都必须完成算子/模型精度、服务级 logprob、C=128 真实并发和 focused 回归测试；没有稳定收益或发生递归漂移的候选必须记录并退出默认路径。
 
-- [x] 通读当前仓库的整体结构，并完成 RWKV7 相关路径盘点。
-- [x] 记录当前分支与工作区状态：`codex/rwkv7-sp-fast`，HEAD `e5821e43d`；工作区已有未提交改动，后续不得覆盖或回退，优化应与这些改动兼容。
-- [x] 确认运行环境：`/mnt/data/anaconda3/envs/vllm-sp/bin/python`，Python 3.11.15，PyTorch 2.11.0+cu130，GPU 为 NVIDIA GeForce RTX 4090 D（compute capability 8.9）。
-- [x] 已将经验证的 RWKV7 CUDA 优化改为默认开启，并保留 `RWKV7_USE_* = 0` 显式回退开关；生产启动命令不再需要逐一设置七个 RWKV7 优化环境变量。
-- [x] 确认服务启动配置（后续所有 A/B 测试默认固定）：
-  `CUDA_VISIBLE_DEVICES=0 RWKV7_USE_FUSED_MIX6=1 RWKV7_USE_FUSED_KK_PRE=1 RWKV7_USE_FUSED_LNX_RKVRES_XG=1 RWKV7_USE_ALT_RECURRENT_KERNEL=1 RWKV7_USE_FUSED_CMIX=1 RWKV7_USE_DIRECT_LINEAR=1 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 /mnt/data/anaconda3/envs/vllm-sp/bin/vllm serve /hikscale/models/XiaoKe/rwkv-0-hf --served-model-name xiaoke-5 --reasoning-parser rwkv --enable-auto-tool-choice --tool-call-parser rwkv --dtype bfloat16 --host 0.0.0.0 --port 8030 --max-model-len 1M --max-num-seqs 64 --gpu-memory-utilization 0.92 --enforce-eager --enable-prefix-caching --mamba-cache-mode align`。
-- [x] 确认远程测试服务可用：`GET http://192.168.10.121:3000/api/status` 返回空闲且已有 8 条记录；首页已有 Chart.js 仪表板；`POST /api/run-test` 无请求体即可启动测试。
-- [x] 建立本仓库自己的基线记录文件（JSONL/Markdown）：`benchmark_records/20260820_baseline_eager_c8_mt32/`，并记录 commit、环境变量、服务参数、模型路径、prompt 集、并发、输出 token 数、aggregate TPS、延迟 P50/P95。显存峰值和 TTFT/TPOT 将在下一轮 profiling 中补齐。
-- [x] 固定三类基线：单请求 decode（B=1,T=1）、批量 decode（B=1/8/16/32/64）、长上下文 prefill（至少 1K/4K/16K/64K/256K，按可用时间分层）。1K/1,984-token prefill 后的 B=1/4/8、16-token decode 基线记录于 `benchmark_records/20260820_prefill_decode_baseline_1k_2k/`；4K/16K/64K/256K 的 B=1 冷唯一 prompt 基线位于 `benchmark_records/20260820_prefill_decode_baseline_4k_256k/`；209-token warm-prefix decode 的 B=1/8/16/32/64 吞吐、延迟和 token-ID hash 位于 `benchmark_records/20260820_decode_batch_baseline_b1_b64/`。B>=16 并发重复存在 token hash 波动，不能作为精度门禁；完整模型级 logits/state 对齐仍待补。
+## 1. 当前稳定状态
 
-## 1. 正确性与测试门禁（优化前先固化）
+- [x] Full Decode CUDA Graph 已验证并运行：capture sizes 为 `1,2,4,8,16,32,64,128`。
+- [x] 当前稳定服务在 `http://127.0.0.1:8030`（局域网地址：`http://192.168.10.121:8030`）。
+- [x] `2026-08-21` 已验证 `/health` 返回 HTTP 200，`/v1/models` 返回 `xiaoke-5`。
+- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；同日 `/api/status` 返回最近一次测试成功，保存 8 条记录。
+- [x] 使用 NVIDIA GeForce RTX 4090 D（sm89）、BF16 projection、FP32 recurrent state；Python 统一使用 vllm-sp 环境。
 
-- [ ] 建立 reference 路径（关闭所有 fused/direct/alt kernel）与当前全优化路径的统一比较入口。现有算子 reference/fused 单测已覆盖，统一服务 runner 待补。
-- [x] 做算子级精度基线：现有 `tests/model_executor/test_rwkv7.py` 已覆盖 mix6、kk_pre、lnx_rkvres_xg、recurrent、CMIX、direct linear 的 reference 对齐；非连续/更多真实 shape 仍待扩展。
-- [ ] 做模型级精度基线：随机小配置、固定权重、真实 checkpoint；比较 logits、next token、最终 recurrent/shift state。
-- [ ] 做服务级回归基线：已有并发 token 输出记录；chat/reasoning/tool/prefix-cache 全量回归待补齐.
-- [x] 增加服务级 logits 近似精度回归：通过 OpenAI API `logprobs=20` 比较 selected logprob、Top-K logprob、Top-1 和输出文本；Eager vs FULL_DECODE_ONLY 在 8 prompt × 16 decode steps 下 0 mismatch，最大 Top-K 与 selected logprob 绝对误差均为 0，记录于 `benchmark_records/20260821_logits_full_graph_prefix/`。完整 vocabulary logits 与 recurrent/shift state dump 仍待补。
-- [x] 明确误差门限：当前 mix6 shape dispatch A/B 输出在固定 prompt、temperature=0、ignore_eos=true、32 token 下逐 token 一致；更完整 logits/状态误差记录待补。
-- [ ] 补充/整理单元测试与回归测试，覆盖 TP=1/TP>1、full/piecewise/eager、mamba cache `align`、slot copy、PAD slot；当前已通过 RWKV7 模型/TP 测试 47 passed、5 skipped，masked-store standalone CUDA parity 已验证，完整 vLLM `_C` 重编译仍待解决。
+### 稳定启动命令
 
-## 2. 性能观测与 profiling
+```bash
+cd /mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast
 
-- [ ] 给 RWKV7 前向各阶段加可关闭的计时/计数器：norm、mix6、LoRA/direct-linear、kk_pre、recurrent、epilogue、CMIX、state gather/store、跨层同步与 Python 调度。当前完成 mix6 独立 CUDA event microbenchmark。
-- [x] 使用 CUDA event 对 mix6/recurrent 做了形状扫描；发现 mix6 在 SM89 上 T<=256 及 T=1280-2048 不稳定获益，recurrent fused 明显优于 reference。Nsight 分阶段画像待补。
-- [x] 建立统一 benchmark runner/记录：复用 `tmp_rwkv7_remote_concurrency_bench.py`，结果保存在 `benchmark_records/`，并新增 `tools/rwkv7_perf_dashboard.py` 生成图表。
-- [x] 已在真实服务命令下完成 mix6 shape dispatch A/B：固定 209 prompt tokens、8 并发、64 max tokens、3 轮；平均 aggregate TPS 139.173 → 142.788（+2.60%），输出 token 逐条一致。
+CUDA_VISIBLE_DEVICES=0 \
+VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
+VLLM_DISABLE_COMPILE_CACHE=1 \
+RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1 \
+RWKV7_USE_NATIVE_STRIDED_GATHER=1 \
+RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1 \
+RWKV7_USE_TRITON_MASKED_STORE=1 \
+/mnt/data/anaconda3/envs/vllm-sp/bin/vllm serve \
+  /hikscale/models/XiaoKe/rwkv-0-hf \
+  --served-model-name xiaoke-5 \
+  --reasoning-parser rwkv \
+  --enable-auto-tool-choice \
+  --tool-call-parser rwkv \
+  --dtype bfloat16 \
+  --host 0.0.0.0 \
+  --port 8030 \
+  --max-model-len 1M \
+  --max-num-seqs 128 \
+  --gpu-memory-utilization 0.92 \
+  --enable-prefix-caching \
+  --mamba-cache-mode align \
+  --compilation-config \
+  '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[1,2,4,8,16,32,64,128]}'
+```
 
-## 3. 第一阶段：低风险融合与内存访问优化
+检查服务：
 
-- [x] 完成第一项低风险优化：`rwkv7_mix6` 增加按 token 数选择 Triton/reference pointwise 路径的门禁，并新增 dispatch 单测；保留了 fallback。其余 flag 仍待逐项审计。
-- [x] 试验 token shift + six-way mix6 的单 Triton kernel，以消除 `delta` 张量和一次 launch；同时覆盖单条与 decode-batch shift cache，但改变 BF16 中间舍入导致算子最大绝对误差 0.125，未进入服务 A/B 即已拒绝并回退，记录于 `benchmark_records/20260820_shift_mix6_rejected/`。
-- [x] 重做 native BF16 token shift + six-way mix6 Triton kernel，覆盖无 cache、`[hidden]` cache、decode-batch `[tokens, hidden]` cache；算子与 3 次串行服务 token 回归均精确一致，但真实服务 137.972 → 132.485 TPS（-3.98%，追加 8 轮为 132.217 TPS），已拒绝并回退，记录于 `benchmark_records/20260820_shift_mix6_native_rejected/`。
-- [x] 将 native BF16 shift+mix6 融合限制为单序列 cache-all prefill 后重测：算子精确一致、4K 长 prompt 输出 token 对齐，但冷唯一 prompt 的 prefill 吞吐仅 4K +0.45%、16K -0.26%、64K -0.20%，没有稳定服务收益，已拒绝并回退，记录于 `benchmark_records/20260820_prefill_shift_mix6_rejected/`。
-- [ ] 对照参考分支的 `rwkv7_mix6`、`rwkv7_kk_pre`、`rwkv7_epilogue`、`rwkv7_shift_state_cache`，优先移植算法结构到 CUDA/Triton，不直接复制 NPU/Ascend 专用代码。
-- [x] 合并可安全的中间张量、减少重复 `to(float32)`/reshape/contiguous/cast，尤其检查 bf16 权重、float32 state 的边界。已通过 `RWKV7_USE_CACHED_FP32_PARAMS=1` 延迟缓存 attention 中 `k_k`/`k_a`/`r_k` 的 FP32 常量；缓存随 device/dtype/shape/stride/storage/version 变化自动失效，8 并发 decode 从 133.775 提升至 137.972 TPS（+3.14%），cache-off/cache-on 串行 256 token ID 精确一致，记录于 `benchmark_records/20260820_cached_fp32_params/`。FFN decode CMix（FP32 state conversion + subtract + addcmul）Triton 融合在 RTX 4090 D BF16 B=1–64 全部下降 2.00%–7.73%，已回退并记录于 `benchmark_records/20260820_cmix_decode_rejected/`。
-- [x] 评估 state gather/store：standalone masked-store CUDA 原型已通过 float32/bfloat16、正 slot、`slot_id=-1` 单测；接入 CUDA Graph 后仍出现状态交接错误，实验记录于 `benchmark_records/20260820_cuda_graph_rejected/`，未保留。
-- [x] 阶段门禁：mix6 dispatch、FP32 常量缓存均完成算子/模型单测、服务 token 回归与真实服务 A/B；二者分别提升 +2.60% 与 +3.14%，均为稳定正收益并保留（未将不同负载的收益相加宣称为单一百分比）。
+```bash
+curl -fsS http://127.0.0.1:8030/health
+curl -fsS http://127.0.0.1:8030/v1/models
+screen -ls
+```
 
-## 4. 第二阶段：RWKV7 recurrent decode 专用 kernel
+## 2. 已保留优化（默认稳定路径）
 
-- [x] 以 `T=1` 为第一目标，新增 opt-in Triton 64x64 matrix kernel，覆盖 B=1/2/4/8/16/32/64 microbenchmark；避免 decode 路径为通用变长 recurrent kernel 支付不必要的分支和临时张量开销。
-- [x] 参考 `vllm-ascend` 的 `rwkv7_recurrent_t1.py`、`rwkv7_recurrent_t1_cache.py`、`rwkv7_recurrent_t1_matrix.py` 的拆分思路，在本仓库实现等价 T=1 路径；保留 reference/alternate fallback。
-- [ ] 针对 head_dim/value_dim/num_heads、TP 分片、state layout、初始/最终 state 做 autotune；direct-cache T1 原型在服务级下降 29.54% 且 55/256 token 偏差，已回退并记录于 `benchmark_records/20260820_recurrent_t1_cache_rejected/`。
-- [x] 阶段门禁：当前算子 parity 和 deterministic 服务 token IDs 已通过；8 并发真实 decode TPS 从 130.77 提升到 134.73（+3.03%），低于原定 >=10% 门槛但稳定正收益，暂保留；后续重点转向 prefill 与长上下文。
+### 2.1 精确 T=1 recurrent state update
 
-## 5. 第三阶段：prefill/packed prefill 与长上下文
+- [x] 提交：`3d7adef20 RWKV7: fuse exact decode state update`。
+- [x] 将 T=1 decode 的 FP32 state pointwise update 融合到 native CUDA，保留 ATen 的敏感 reduction（`sa` 和 output reduction）及其计算顺序。
+- [x] 通过显式 FP32 round-to-nearest 的乘/加次序，避免 Albatross 风格 reduction tree 改写造成的递归状态漂移。
+- [x] 服务精度门禁（8 prompts × 16 decode tokens、greedy、`logprobs=20`）：文本、token、selected/common Top-K logprob 均为 **0 差异**。
+- [x] C=128 历史服务 A/B：`487.91 → 696.58 TPS`，**+42.77%**（同构建、同负载）。
+- [x] 证据：`benchmark_records/20260821_exact_recurrent_t1_update_full_graph/`。
 
-- [ ] 检查 packed/varlen prefill 的 `cu_seqlens`、checkpoint state、mamba cache `align` 以及跨 step state handoff；避免为长上下文产生 O(T) Python/CPU 操作。
-- [x] 评估 recurrent kernel 的 BLOCK_K/BLOCK_V、grid、warp/stage、寄存器 和 shared memory；4K/16K operator-only 测试显示 2 warp 更快，但 4K 端到端服务回退约 0.98%，16K/64K 仅在噪声范围内，候选已记录于 `benchmark_records/20260820_prefill_recurrent_2warp_rejected/` 并回退，保留默认 4 warp。
-- [ ] 优化 long-context state materialization、prefix cache 命中路径和 cache block 复制；分别报告冷启动、重复前缀、混合长度三种结果。
-- [ ] 阶段门禁：长上下文 prefill TTFT/吞吐有稳定收益，且 prefix hit/miss、并发输出和状态均对齐。
+回退开关：`RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=0`。
 
-## 6. 第四阶段：CUDA Graph / full graph
+### 2.2 Full-graph state cache 的 native strided gather/store
 
-- [x] 在当前 `--enforce-eager` 基线上完成 T1 优化后验证 piecewise；结果为 132.692 TPS，相比 eager T1 134.727 TPS 下降 1.51%，且 8 个 prompt 中 1 个出现 28/32 token 偏差，已回退。
-- [x] 验证 full decode graph、full-and-piecewise 与 piecewise；FULL 变体虽达 156.4–166.5 TPS，但 248/256 token 与 eager 不一致，疑似 recurrent state/cache handoff 或 padded slot replay 污染，已回退。
-- [x] 记录 full graph 最小复现和多种修复尝试；早期 masked-store、非 contiguous stride 与 compile gating 候选未通过服务级 token parity，均未直接保留；最终通过 graph 内动态 state-slot 派生与 PAD-slot 安全 fallback 修复。
-- [ ] 阶段门禁：piecewise/full mixed-prefill 以及 `--enable-prefix-caching --mamba-cache-mode align` 的 prefix hit/miss 仍需与无 cache 模型 reference 对齐；不得把该实验性 eager-prefix 行为当作精度基线。
-- [x] Full Decode CUDA Graph 阶段门禁（decode + prefix align）：`FULL_DECODE_ONLY` 已通过两次串行 8 prompt 回归（0/256 token mismatch、重复 0 mismatch）及 8 并发 64-token 压测；eager prefix-align 148.164 → Full Graph 168.063 TPS（+13.43%），记录于 `benchmark_records/20260821_full_cuda_graph_prefix_verified/`。
-- [ ] Full Decode CUDA Graph 在统一远程首页、并发128工作负载下的性能门禁：Eager aggregate 11.1 TPS vs FULL_DECODE_ONLY 7.8 TPS（-29.73%），TTFT 1606ms vs 1835ms；负收益结果已保留于 `benchmark_records/20260821_remote_eager_vs_full_graph_c128.json`，当前不能把 Full Graph 宣称为并发128下的最终保留提速，需继续优化/定位。
-- [x] 定位到高并发 Full Graph 的主要差异：源码 checkout 载入的 `_C` 扩展不含 `rwkv7_masked_store`，因此每层每个 graph replay 都走 3 组 `index_select + where + index_copy_` 的 PAD-slot 安全 fallback；这在 B=128 放大。尝试把三份 state 写入融合为一个 Triton kernel，C=128 仅 4.2 TPS（比原 Full Graph 7.8 更差），已回退并记录 `benchmark_records/20260821_triton_masked_store_rejected/`；原生扩展重编译因本机无 `/usr/local/cuda/bin/nvcc` 受阻。
-- [x] 尝试 Full Decode + torch.compile（`RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1`）：确实完成 torch.compile 与 CUDA graph capture，但 logits 门禁失败（8 prompts × 16 step 中 3 文本 mismatch、26/128 Top-1 mismatch、selected logprob max abs 3.1506），已回退，记录 `benchmark_records/20260821_full_decode_torch_compile_rejected/`。
-- [ ] Full mixed-prefill / FULL_AND_PIECEWISE 仍需单独完成，不得以 decode-only 结果代替。
-- [ ] `FULL_AND_PIECEWISE` exploratory smoke 已能启动并完成远程首页测试；8 prompt × 16 decode steps 的 Top-K logprob/text 对齐为 0 mismatch，但并发128 aggregate TPS=7.8，未超过 Eager 的 11.1 TPS，记录于 `benchmark_records/20260821_remote_full_and_piecewise_c128/`，暂不作为保留提速。
-- [x] Full decode CUDA Graph（`FULL_DECODE_ONLY`）完成：RWKV7 关闭模型级 compile、在 graph 内从持久 block-table/seq-len 重新派生 state slot，并为未重编译的 `_C` 扩展提供 PAD-slot 安全 store fallback。关闭 prefix cache 的 8 prompt × 32 token 串行回归相对 eager 为 0/256 token mismatch，候选两次重复为 0 mismatch；209-token prompt、8 并发、64 输出 token 的 3 轮均值为 136.490 → 150.150 TPS（+10.01%）。记录：`benchmark_records/20260821_full_decode_cuda_graph_verified/`。
+- [x] 提交：`b30e12944 RWKV7: accelerate strided full graph state cache`。
+- [x] 在 Full Decode graph 中，以 CUDA 行拷贝 gather 替换 RWKV7 block 的 state-cache `index_select`；native masked store 支持 graph replay 的 padded row stride。
+- [x] unsupported layout、扩展缺失或非 CUDA 情况自动 fallback；copy-only 路径保持 dtype bits。
+- [x] 服务精度门禁（8 prompts × 16 decode tokens）：文本、token、selected logprob 均为 **0 差异**。
+- [x] C=128 / 128 closed-loop requests / 每请求 32 tokens：`700.675 → 708.385 TPS`，**+1.10%**（剔除每个 mode 的首轮 warm-up）。
+- [x] 证据：`benchmark_records/20260821_native_strided_state_cache_full_graph/`。
 
-## 7. 第五阶段：模型级融合与更高阶 CUDA 优化
+回退开关：`RWKV7_USE_NATIVE_STRIDED_GATHER=0`、`RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=0`。
 
-- [ ] 参考 Albatross 的 CUDA 优化方向：把 layer norm、mix6、LoRA/rank projection、linear、CMIX、residual/add 等高频小 kernel 做融合或减少 launch；先做 profiling 再决定融合边界。
-- [x] 试验 T=1 recurrent + lnx/rkvres/xg epilogue 单 kernel 融合；算子 B=1–32 明显减少 kernel 时间，但服务级与 retained 路径出现 48/256 token ID 偏差，候选已回退并记录于 `benchmark_records/20260820_t1_epilogue_rejected/`。
-- [ ] 评估 direct linear 的权重布局、CUTLASS/cuBLASLt 算法选择和针对 RTX 4090 D 的 tile/autotune；不能假设 5090/其他架构的最优参数可直接复用。
-- [ ] 评估将 recurrent、epilogue、output projection 的中间结果留在寄存器/共享内存的可行性；同步检查 TP、量化和 bf16/float32 state 兼容性。
-- [ ] 每一个融合 kernel 独立保留 reference 实现、单测、误差报告和回滚开关。
+### 2.3 编译/图模式的现状
 
-## 8. 测试记录与小前端
+- [x] `FULL_DECODE_ONLY` CUDA Graph 已通过真实 C=128 padded engine integration，测试覆盖普通 full decode graph 与 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 路径。
+- [x] model `torch.compile` 是严格对齐的 opt-in；因 C=128 服务均值约 `707.73 → 706.10 TPS`，暂无稳定收益，**默认不打开**。
+- [x] 证据：`benchmark_records/20260821_full_decode_cuda_graph_verified/`、`benchmark_records/20260821_full_decode_compile_final_norm/`。
 
-- [x] 设计统一记录 schema：已在 `benchmark_records/*` 中记录 algorithm/parent、GPU、flags、mode、batch、prompt/output token、TPS、accuracy artifact 和 notes；TTFT/TPOT/memory 字段待下一轮补充。
-- [x] 新增 `tools/rwkv7_perf_dashboard.py`，生成 `benchmark_records/dashboard.html` 和 `performance_history.jsonl`，展示 baseline 与 mix6 优化点、TPS、相对提升和精度记录。筛选控件待增强。
-- [x] 与 `http://192.168.10.121:3000/` 的远程测试结果兼容：已保存 FULL_DECODE_ONLY 首页快照与状态，记录于 `benchmark_records/20260821_remote_full_graph_c128/`；后续 A/B 结果必须标注算法、GPU、并发和来源，不能混入本地曲线。
-- [x] 前端完成后用至少 3 个算法节点（baseline、阶段 1、阶段 2）生成 dashboard；当前包含 baseline、mix6-shape-dispatch、recurrent-t1-fused、cached-fp32-params 四个保留节点，浏览器截图回归待补。
+## 3. 已拒绝候选（不要无证据重复接入）
 
-## 9. 提交前检查
+- [x] **Albatross 风格整块 recurrent kernel**（`csrc/rwkv7_alt_recurrent.cu`）：controlled decode microbenchmark 可约 +106.5%，但 4 prompts × 16 steps 出现 `8 / 64` Top-1 分歧，selected-logprob 最大误差 `3.1454`、common Top-K 最大误差 `9.2296`。根因是 FP32 reduction/accumulation 顺序变化在 61 层递归 decode 中放大；不能作为默认路径。
+- [x] **将 `kk * a` inline 到 exact recurrent kernel**：算子 bit-exact，但 C=128 服务约 `705.61 → 705.65 TPS`，无稳定收益，已回退。
+- [x] **attention/FFN cache pair gather**：microbenchmark 减少 launch，但 C=128 服务没有稳定优于独立 native gather，已回退。
+- [x] **把 PAD remap 移入 native gather**：精度为零误差，但 `clamp + gather` 平均约 `707.23 TPS`，kernel remap 约 `706.57 TPS`，已回退。
+- [x] **直接合并 r/k/v 权重为单一 GEMM**：B=32/128 BF16 输出不再 bit-exact（通常相差 1–2 BF16 units），不接入。
+- [x] **默认 cublasGemmEx 直接替换 `F.linear`**：isolated `[M,4096] × [4096,4096]` BF16 probe 与 PyTorch bit-exact，但性能仅约 -0.22% 至 +0.34%，无接入价值。
+- [x] **cublasLt heuristic/workspace 枚举（2026-08-21）**：在 `M=1/8/32/128, K=N=4096`、0/4/8/64/256 MiB workspace 的 isolated BF16 probe 中，能 `torch.equal` 的候选均与 PyTorch 基线持平量级；C=128 最快 `0.041146 ms` 对 PyTorch `0.041165 ms`（约 +0.05%，低于噪声门限），不接入模型。非精确算法在 M=8/32/128 可出现最高 1–2 BF16 units 的差异。
 
-- [ ] `git diff --check`；运行相关 pytest、kernel tests、模型/服务回归；必要时运行 `pre-commit`。
-- [x] 新增 `tools/rwkv7_logprob_regression.py` 及单元测试，支持单独采集与 Eager/Graph Top-K logprob 对齐。
-- [ ] 检查 C++/CUDA 编译产物与源码是否一致，确认只通过 `uv` 和 `/mnt/data/anaconda3/envs/vllm-sp/bin/python` 使用 Python 环境。
-- [ ] 记录每次阶段的命令、结果、误差、覆盖率、失败原因和是否保留；不提交未经人工复核的自动生成大改动。
-- [ ] 如准备 PR，先按 AGENTS.md 做 issue/open PR 重复工作检查；PR 描述包含 AI 辅助声明、测试命令/结果及非重复说明。
+## 4. 当前性能判断
+
+- [x] 历史 trace（`/tmp/rwkv7_exact_profile_20260821_1616/`）显示：BF16 GEMM/CUTLASS 约 24%，ATen elementwise 约 20%，ATen reductions 约 13%，旧 cache gather/store 约 20%，exact recurrent update 约 9%。
+- [x] cache-control 与 recurrent state update 的高价值安全优化已保留；下一瓶颈优先是 **decoder projection GEMM/调度**，而不是继续堆叠 cache 小算子。
+- [x] 高并发慢的主要风险不只是单个 kernel：C=128 graph replay 同时受 GEMM、逐层 launch/调度、memory traffic、padding/请求调度影响。任何优化必须以服务级 128 并发结果裁决。
+
+## 5. 强制验证流程
+
+### Focused 单元/集成回归
+
+```bash
+cd /mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast
+export VLLM_RWKV7_ENGINE_TEST_MODEL_PATH=/hikscale/models/XiaoKe/rwkv-0-hf
+export RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1
+export RWKV7_USE_NATIVE_STRIDED_GATHER=1
+export RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1
+
+/mnt/data/anaconda3/envs/vllm-sp/bin/python -m pytest \
+  tests/model_executor/test_rwkv7.py -v
+```
+
+当前最近完整 focused 结果：**72 passed, 2 skipped**。其中包含 C=128 padded Full CUDA Graph engine integration；skip 为既有的外部 reference runtime 依赖。
+
+### 服务精度对齐
+
+```bash
+/mnt/data/anaconda3/envs/vllm-sp/bin/python \
+  /tmp/rwkv7_service_accuracy.py \
+  http://127.0.0.1:8030 > /tmp/rwkv7_candidate_trace.json
+```
+
+与稳定基线 `/tmp/rwkv7_native_state_final_trace.json` 比较：`text`、`token_ids` 与 `logprobs.token_logprobs`。先解决误差再决定是否保留，不因小误差直接放弃；但只要多步递归出现 token 分歧，就不能默认启用。
+
+### C=128 服务吞吐
+
+```bash
+/mnt/data/anaconda3/envs/vllm-sp/bin/python \
+  tmp_rwkv7_remote_concurrency_bench.py \
+  --base-url http://127.0.0.1:8030 \
+  --model xiaoke-5 \
+  --endpoint completions \
+  --prompts 'Hello, how are you?' 'The capital of France is' \
+            'Write a short poem about CUDA.' 'Explain attention briefly.' \
+            '1 + 1 =' 'The quick brown fox' \
+            'Python code to sort a list:' 'RWKV is' \
+  --num-requests 128 --concurrency 128 --dispatch-mode closed_loop \
+  --max-tokens 32 --temperature 0 --top-p 1 --seed 0 \
+  --return-token-ids --extra-body-json '{"ignore_eos":true}' \
+  --timeout-sec 300 --output-dir /tmp/rwkv7_candidate_eval \
+  --run-name candidate_c128_1
+```
+
+验收：同一 build/启动参数下，每个 mode 至少 3 轮（第一轮 warm-up 不进入平均）；服务级增益应至少约 1% 且方向稳定。保存原始 summary、accuracy、comparison 和 README 到新的 `benchmark_records/YYYYMMDD_<candidate>/`。
+
+### Dashboard / 外部测试服务
+
+```bash
+# 生成仓库内性能 dashboard
+/mnt/data/anaconda3/envs/vllm-sp/bin/python \
+  tools/rwkv7_perf_dashboard.py \
+  --records-dir benchmark_records \
+  --output benchmark_records/dashboard.html
+
+# 用户提供的外部回归服务
+curl -fsS http://192.168.10.121:3000/api/status
+curl -X POST -fsS http://192.168.10.121:3000/api/run-test
+curl -fsS http://192.168.10.121:3000/
+```
+
+## 6. 下一阶段优先级
+
+1. [ ] **cublasLt isolated algorithm profiling（最高优先级）**：针对 decoder BF16 GEMM 的 `M=1/8/32/128, K=N=4096` 枚举 workspace/heuristic；先以 `torch.equal` 筛掉非 bit-exact 算法，再评估是否能显著优于 PyTorch/CUTLASS。
+2. [ ] 若存在显著且 bit-exact 的 Lt 算法：增加 guarded native op 与 M=1/8/32/128 单测，随后做服务精度、C=128 三轮 A/B、focused suite、benchmark record，满足门禁后才提交。
+3. [ ] 若 Lt 无稳定收益：研究保持每个 projection shape 的 grouped GEMM / stream dispatch；不得通过拼接 r/k/v weight 改变矩阵形状来换取 launch 数。
+4. [ ] 在阅读已有 rejected records 后，谨慎评估 strict CMix / LayerNorm / mix fusion；必须保留 BF16 GEMM 和 FP32 recurrence 的精确语义。
+5. [ ] 对高并发抓取新的 CUDA trace，并把 C=128 replay 中 GEMM、reduction、launch/CPU schedule 的占比与本文件的历史结论交叉验证。
+6. [ ] 将每个有效改动按阶段提交：有意义的 commit message、`Assisted-by: Codex` trailer、完整测试与 benchmark record；不要 push remote。
+
+## 7. 构建约束
+
+- Python 只能用 `/mnt/data/anaconda3/envs/vllm-sp/bin/python`；不得使用系统 `python3` 或裸 `pip`。
+- C++/CUDA 变更前使用 vllm-sp 的 compiler/CUDA 变量，并通过既有 `/tmp/vllm-rwkv7-exact-build` 构建 `_C.abi3.so`；构建后再运行所有精度和服务测试。
+- 任何候选的默认开关必须可显式关闭并在不满足 layout/dtype/device guard 时 fallback。
+- 提交前检查 `git status --short`、focused suite、精度 A/B、C=128 benchmark 和 `benchmark_records` 完整性。
