@@ -2295,6 +2295,37 @@ def test_rwkv7_final_norm_matches_native_layer_norm():
     )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("has_bias", [False, True])
+def test_rwkv7_final_norm_cuda_custom_op_matches_native_layer_norm(
+    dtype: torch.dtype, has_bias: bool
+):
+    """Keep the compiled full-graph final-norm call bitwise eager-equivalent."""
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    hidden_states = torch.randn(
+        4, 64, device="cuda", dtype=dtype, generator=generator
+    )
+    weight = torch.randn(64, device="cuda", dtype=dtype, generator=generator)
+    bias = (
+        torch.randn(64, device="cuda", dtype=dtype, generator=generator)
+        if has_bias
+        else None
+    )
+    output = torch.empty_like(hidden_states)
+
+    torch.ops.vllm.rwkv7_final_norm(
+        hidden_states, weight, bias, output, 1e-5
+    )
+
+    torch.testing.assert_close(
+        output,
+        F.layer_norm(hidden_states, weight.shape, weight, bias, 1e-5),
+        rtol=0,
+        atol=0,
+    )
+
+
 def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_enabled():
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(

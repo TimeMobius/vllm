@@ -1,0 +1,34 @@
+{
+  "date": "2026-08-21",
+  "workload": {
+    "endpoint": "/v1/completions",
+    "num_requests": 16,
+    "concurrency": 8,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "return_token_ids": true
+  },
+  "method": "Fresh no-compile and opt-in compile servers were started with identical FULL_DECODE_ONLY capture sizes. Two paired runs generated the same number of output tokens and are compared below.",
+  "paired_runs": [
+    {
+      "completion_tokens": 512,
+      "reference_aggregate_output_tps": 140.50201216240998,
+      "candidate_aggregate_output_tps": 140.27381510438167,
+      "candidate_speedup_percent": -0.16241507057187235,
+      "reference_raw_summary": "/tmp/rwkv7_full_compile_bench/baseline_fullgraph_no_compile_c8_repeat1/summary.json",
+      "candidate_raw_summary": "/tmp/rwkv7_full_compile_bench/candidate_fullgraph_compile_final_norm_c8_strict1/summary.json"
+    },
+    {
+      "completion_tokens": 502,
+      "reference_aggregate_output_tps": 133.19309994825687,
+      "candidate_aggregate_output_tps": 133.08019458343682,
+      "candidate_speedup_percent": -0.08476716548720168,
+      "reference_raw_summary": "/tmp/rwkv7_full_compile_bench/baseline_fullgraph_no_compile_c8_repeat2/summary.json",
+      "candidate_raw_summary": "/tmp/rwkv7_full_compile_bench/candidate_fullgraph_compile_final_norm_c8_strict2/summary.json"
+    }
+  ],
+  "paired_mean_candidate_speedup_percent": -0.12359111802953702,
+  "conclusion": "The earlier single-run +6.89% observation did not reproduce under paired repeats. Model compile remains opt-in for functional/full-graph validation, not a default performance setting."
+}

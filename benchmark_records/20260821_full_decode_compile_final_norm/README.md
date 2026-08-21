@@ -24,10 +24,16 @@ common Top-K and selected-token logprobs. See `accuracy.json`.
 
 ## Performance gate
 
-A local `/v1/completions` closed-loop workload with 16 requests, concurrency 8,
-and 32 output tokens measured 129.77 aggregate output TPS for full graph
-without model compile and 138.70 TPS for the candidate (+6.89%). All 16
-requests succeeded. See `performance.json`.
+The initial single-run observation measured 129.77 aggregate output TPS for
+full graph without model compile and 138.70 TPS for the candidate (+6.89%).
+That observation was **not retained as a speedup claim**: fresh paired C=8
+repeats with the same completed-token count measured -0.16% and -0.08% for the
+candidate (paired mean -0.12%). The previous apparent gain was workload/startup
+noise, so this opt-in is not enabled by default for performance reasons.
+
+See `performance.json` for the historical observation and
+`repeat_performance.json` for the reproducible paired gate. A warmed C=128
+comparison was likewise statistically neutral (+0.23% in one pair).
 
 ## Reproduction
 
