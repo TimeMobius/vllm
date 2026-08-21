@@ -60,8 +60,10 @@
 
 - [x] 在当前 `--enforce-eager` 基线上完成 T1 优化后验证 piecewise；结果为 132.692 TPS，相比 eager T1 134.727 TPS 下降 1.51%，且 8 个 prompt 中 1 个出现 28/32 token 偏差，已回退。
 - [x] 验证 full decode graph、full-and-piecewise 与 piecewise；FULL 变体虽达 156.4–166.5 TPS，但 248/256 token 与 eager 不一致，疑似 recurrent state/cache handoff 或 padded slot replay 污染，已回退。
-- [x] 记录 full graph 最小复现和多种修复尝试；masked-store、非 contiguous stride、safe torch fallback、RWKV7 compile gating 均未通过服务级 token parity，禁止以关闭正确性检查换取速度。
-- [ ] 阶段门禁：eager/piecewise/full 三模式均能通过服务级 deterministic 回归；只保留稳定且可复现的 TPS/TPOT 提升。
+- [x] 记录 full graph 最小复现和多种修复尝试；早期 masked-store、非 contiguous stride 与 compile gating 候选未通过服务级 token parity，均未直接保留；最终通过 graph 内动态 state-slot 派生与 PAD-slot 安全 fallback 修复。
+- [ ] 阶段门禁：piecewise/full mixed-prefill 以及 `--enable-prefix-caching --mamba-cache-mode align` 的 prefix hit/miss 仍需与无 cache 模型 reference 对齐；不得把该实验性 eager-prefix 行为当作精度基线。
+- [x] Full Decode CUDA Graph 阶段门禁（decode + prefix align）：`FULL_DECODE_ONLY` 已通过两次串行 8 prompt 回归（0/256 token mismatch、重复 0 mismatch）及 8 并发 64-token 压测；eager prefix-align 148.164 → Full Graph 168.063 TPS（+13.43%），记录于 `benchmark_records/20260821_full_cuda_graph_prefix_verified/`。Full mixed-prefill / FULL_AND_PIECEWISE 仍需单独完成，不得以 decode-only 结果代替。
+- [x] Full decode CUDA Graph（`FULL_DECODE_ONLY`）完成：RWKV7 关闭模型级 compile、在 graph 内从持久 block-table/seq-len 重新派生 state slot，并为未重编译的 `_C` 扩展提供 PAD-slot 安全 store fallback。关闭 prefix cache 的 8 prompt × 32 token 串行回归相对 eager 为 0/256 token mismatch，候选两次重复为 0 mismatch；209-token prompt、8 并发、64 输出 token 的 3 轮均值为 136.490 → 150.150 TPS（+10.01%）。记录：`benchmark_records/20260821_full_decode_cuda_graph_verified/`。
 
 ## 7. 第五阶段：模型级融合与更高阶 CUDA 优化
 

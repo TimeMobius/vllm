@@ -59,6 +59,7 @@ from vllm.model_executor.models.rwkv7 import (
     RWKV7ForCausalLM,
     RWKV7Model,
     _load_rwkv7_perf_flags,
+    _rwkv7_should_compile,
 )
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
@@ -1584,6 +1585,28 @@ def test_rwkv7_fused_recurrent_checkpoint_states_match_reference():
     torch.testing.assert_close(checkpoint_fused, checkpoint_ref, rtol=2e-3, atol=1e-1)
 
 
+def test_rwkv7_full_graph_store_fallback_skips_padding_slots():
+    cache = torch.zeros(3, 4, dtype=torch.float32)
+    values = torch.tensor([[1.0] * 4, [2.0] * 4])
+    block = SimpleNamespace(
+        _uses_full_cudagraphs=True,
+        kv_cache=(cache.clone(), cache.clone(), cache.clone()),
+    )
+
+    RWKV7Block._store_kv_states(
+        block,
+        torch.tensor([1, -1]),
+        values,
+        values + 10,
+        values + 20,
+    )
+
+    assert torch.equal(block.kv_cache[0][0], torch.zeros(4))
+    assert torch.equal(block.kv_cache[0][1], values[0])
+    assert torch.equal(block.kv_cache[1][1], values[0] + 10)
+    assert torch.equal(block.kv_cache[2][1], values[0] + 20)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_rwkv7_masked_store_skips_padding_slots(dtype):
@@ -2205,6 +2228,21 @@ def test_rwkv7_pp_runtime_falls_back_to_hf_dtype_without_model_config():
     )
 
     assert RWKV7Model._get_effective_model_dtype(dummy_model) == torch.float32
+
+
+def test_rwkv7_disables_model_compile_for_full_cudagraphs():
+    assert not _rwkv7_should_compile(
+        SimpleNamespace(
+            compilation_config=SimpleNamespace(
+                cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY
+            )
+        )
+    )
+    assert _rwkv7_should_compile(
+        SimpleNamespace(
+            compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.PIECEWISE)
+        )
+    )
 
 
 def test_rwkv7_config_allows_non_eager_when_cudagraphs_are_enabled():

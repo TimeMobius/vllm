@@ -1850,6 +1850,34 @@ class RWKV7Block(nn.Module, MambaBase):
             )
             return
 
+        if self._uses_full_cudagraphs:
+            # The extension-backed masked store is optional in source checkouts.
+            # Keep the fallback graph-safe: CUDA graphs use PAD_SLOT_ID=-1,
+            # so clamp the index and preserve the existing row for padding.
+            safe_slot_ids = slot_ids.clamp_min(0)
+
+            def masked_values(
+                cache: torch.Tensor, values: torch.Tensor
+            ) -> torch.Tensor:
+                safe_old = cache.index_select(0, safe_slot_ids)
+                valid = (slot_ids >= 0).view(
+                    (slot_ids.shape[0],) + (1,) * (safe_old.ndim - 1)
+                )
+                return torch.where(
+                    valid, values.to(cache.dtype).reshape_as(safe_old), safe_old
+                )
+
+            self.kv_cache[0].index_copy_(
+                0, safe_slot_ids, masked_values(self.kv_cache[0], attn_shift_state)
+            )
+            self.kv_cache[1].index_copy_(
+                0, safe_slot_ids, masked_values(self.kv_cache[1], recurrent_state)
+            )
+            self.kv_cache[2].index_copy_(
+                0, safe_slot_ids, masked_values(self.kv_cache[2], ffn_shift_state)
+            )
+            return
+
         self.kv_cache[0].index_copy_(
             0, slot_ids, attn_shift_state.to(self.kv_cache[0].dtype)
         )
@@ -2122,6 +2150,24 @@ class RWKV7Block(nn.Module, MambaBase):
             and attn_metadata.block_idx_first_scheduled_token is not None
             and attn_metadata.block_idx_last_scheduled_token is not None
         )
+        if (
+            self._uses_full_cudagraphs
+            and not cache_all
+            and self.cache_config is not None
+            and self.cache_config.mamba_block_size is not None
+            and attn_metadata.block_table_tensor is not None
+        ):
+            # Metadata objects are captured by value, but their persistent
+            # block-table/sequence-length tensors are updated before replay.
+            # Derive the align/none state slot inside the graph so a replay
+            # never holds on to the capture-time gather result.
+            start_indices = torch.clamp(
+                (attn_metadata.seq_lens - 1) // self.cache_config.mamba_block_size,
+                min=0,
+            )
+            state_indices = torch.gather(
+                attn_metadata.block_table_tensor, 1, start_indices.unsqueeze(1)
+            ).squeeze(1)
 
         if attn_metadata.num_decode_tokens > 0:
             if cache_all:
@@ -2448,7 +2494,13 @@ class RWKV7Block(nn.Module, MambaBase):
         return output, v_first_out
 
 
+def _rwkv7_should_compile(vllm_config: VllmConfig) -> bool:
+    """Keep stateful RWKV7 cache handoff outside FULL CUDA graph compile."""
+    return not vllm_config.compilation_config.cudagraph_mode.has_full_cudagraphs()
+
+
 @support_torch_compile(
+    enable_if=_rwkv7_should_compile,
     dynamic_arg_dims={
         "input_ids": 0,
         "positions": 0,

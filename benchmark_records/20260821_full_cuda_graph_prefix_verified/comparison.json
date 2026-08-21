@@ -1,0 +1,15 @@
+{
+  "algorithm_id": "full-decode-cuda-graph-prefix-align",
+  "parent_id": "eager-prefix-align",
+  "status": "verified",
+  "baseline_avg_tps": 148.1644389989371,
+  "heuristic_avg_tps": 168.06273370792505,
+  "speedup_percent": 13.43184855677497,
+  "prompt_tokens": 209,
+  "output_tokens_per_round": 512,
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "accuracy_record": "benchmark_records/20260821_full_cuda_graph_prefix_verified/accuracy.json",
+  "baseline_command_mode": "--enforce-eager --enable-prefix-caching --mamba-cache-mode align; all retained RWKV7 fused flags",
+  "candidate_command_mode": "--compilation-config {cudagraph_mode: FULL_DECODE_ONLY, cudagraph_capture_sizes: [1,2,4,8,16,32,64]} --enable-prefix-caching --mamba-cache-mode align; all retained RWKV7 fused flags",
+  "notes": "Three measured rounds after two 8-request warmup rounds. Eager prefix-align measured 148.164 TPS versus Full Decode CUDA Graph 168.063 TPS (+13.43%). Two independent serial 8-prompt candidate runs matched the fresh eager-prefix reference exactly (0/256 mismatches each) and matched each other. The graph path uses a persistent block-table/sequence-length-derived state slot and a PAD_SLOT_ID-safe fallback when the optional masked-store extension is not available."
+}

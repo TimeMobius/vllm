@@ -39,6 +39,7 @@ class LinearAttentionMetadata:
     seq_lens: torch.Tensor
 
     state_indices_tensor: torch.Tensor  # shape: [batch] or [batch, max_blocks]
+    block_table_tensor: torch.Tensor | None = None
     num_computed_tokens: torch.Tensor | None = None
     block_idx_last_computed_token: torch.Tensor | None = None
     block_idx_first_scheduled_token: torch.Tensor | None = None
@@ -118,6 +119,7 @@ class LinearAttentionMetadataBuilder(AttentionMetadataBuilder[LinearAttentionMet
             num_decode_tokens=num_decode_tokens,
             query_start_loc=query_start_loc,
             seq_lens=seq_lens,
+            block_table_tensor=common_attn_metadata.block_table_tensor,
             state_indices_tensor=state_indices_tensor,
             num_computed_tokens=num_computed_tokens,
             block_idx_last_computed_token=block_idx_last_computed_token,

@@ -1,0 +1,9 @@
+{
+  "reference_mode": "--enforce-eager without prefix caching",
+  "candidate_mode": "FULL_DECODE_ONLY CUDA graph without prefix caching",
+  "workload": "8 fixed prompts x 32 generated tokens, temperature=0, top_p=1, seed=123, ignore_eos=true",
+  "reference_vs_candidate_mismatched_tokens": 0,
+  "per_prompt_mismatches": [0, 0, 0, 0, 0, 0, 0, 0],
+  "candidate_repeat_mismatched_tokens": 0,
+  "conclusion": "Exact token-ID parity and deterministic replay passed."
+}
