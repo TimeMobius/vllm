@@ -1,0 +1,19 @@
+{
+  "date": "2026-08-21",
+  "candidate": "--mamba-cache-mode all",
+  "status": "rejected_at_initialization",
+  "stable_configuration": {
+    "mamba_cache_mode": "align",
+    "max_model_len": 1048576,
+    "gpu": "NVIDIA GeForce RTX 4090 D",
+    "gpu_memory_utilization": 0.92
+  },
+  "initialization_result": {
+    "model_load_memory_gib": 24.73,
+    "available_kv_cache_memory_gib": 15.47,
+    "required_kv_cache_memory_gib_for_max_model_len": 3965.0,
+    "estimated_max_model_len_with_available_memory": 4080,
+    "error": "mamba cache-all cannot allocate enough state checkpoint memory for even one request at max_model_len=1048576"
+  },
+  "decision": "Do not change the stable one-million-token service from align to all. Cache-all is experimental and cannot initialize on this 46 GiB GPU with the required max model length, so there is no comparable C=128 throughput result."
+}

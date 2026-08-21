@@ -90,6 +90,11 @@ screen -ls
 - [x] 在 8192 已轻微回退后补测中间 scheduler budget `4096`，确认不是极端 buffer 配置才导致回退；8×16 `logprobs=20` trace byte-identical，Full Decode graph `1..128` capture 成功。
 - [x] C=1 `28.4540 → 28.4699 TPS`（+0.06%，噪声），C=128 aggregate `1568.15 → 1560.45 TPS`（-0.49%）。2048/4096/8192 三点均证实默认 2048 是本固定 128 并发 workload 的最佳 tested scheduler budget；已恢复启动命令默认值。证据：`benchmark_records/20260821_max_num_batched_tokens_4096_rejected/`。
 
+### 2026-08-21 `mamba-cache-mode=all` memory gate（拒绝）
+
+- [x] 为评估 upstream Mamba/Kimi 的 cache-all 生命周期是否改善高并发，使用稳定服务的 `--max-model-len 1M`、`--gpu-memory-utilization 0.92` 仅把 `--mamba-cache-mode align` 改为 `all`。模型加载后只剩 15.47 GiB cache memory，但 all-mode 要求 3,965.0 GiB 才能为 1,048,576 token 的单个请求分配 state checkpoint，engine 在 CUDA graph / HTTP benchmark 前拒绝启动，估算可支持的 max length 仅 4,080。
+- [x] 这不是精度回退，而是资源/服务契约不兼容；为了让 all-mode 启动而降到 4k context 不可与当前 1M 服务比较。启动命令已恢复 `align`，不保留 all-mode。证据：`benchmark_records/20260821_mamba_cache_all_memory_rejected/`。
+
 ### 2026-08-21 C=1 multi-stream R/K/V projection（已保留）
 
 - [x] 新增显式开关 `RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1`：仅对 TP=1、direct linear、**decode batch=1** 的独立 R/K/V BF16 `F.linear`，在三个 lazy CUDA child streams 并行提交。main stream 先 record readiness event，三个 branch 完成后全部 wait 才进入 recurrence；F.linear 的 input / weight / bias / dtype / reduction contract 完全不变。batch > 1 回退稳定单 stream，避免把 stream synchronization 开销带到高并发 graph replay。
