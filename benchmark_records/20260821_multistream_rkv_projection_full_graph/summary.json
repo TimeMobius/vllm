@@ -1,0 +1,82 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1",
+  "status": "retained",
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+    "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+    "model_dtype": "bfloat16",
+    "recurrent_state_dtype": "float32",
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128
+    ]
+  },
+  "implementation": {
+    "scope": "only exact direct R/K/V projections when decode batch size is 1",
+    "mechanism": "dispatch the three independent BF16 F.linear calls on lazily-created CUDA child streams; record a current-stream readiness event and wait for all completion events before recurrence",
+    "strict_arithmetic_contract": "each branch retains the baseline F.linear input, weight, bias, dtype and operand order; only stream scheduling changes",
+    "higher_concurrency": "batch sizes above one keep the stable single-stream projection path"
+  },
+  "strict_accuracy": {
+    "isolated": "BF16 R/K/V child-stream outputs torch.equal the same-stream outputs",
+    "service_gate": "8 prompts x 16 greedy decode, logprobs=20",
+    "trace_files_byte_identical": true,
+    "text_mismatches": 0,
+    "token_id_mismatches": 0,
+    "selected_logprob_error": 0.0,
+    "common_topk_logprob_error": 0.0,
+    "focused_rwkv_suite": "93 passed, 5 skipped"
+  },
+  "fixed_payload_performance": {
+    "c1_32_token_output_tps": {
+      "baseline": 27.611096078819315,
+      "candidate": 27.934088699674756,
+      "percent_change": 1.1697928250780754
+    },
+    "c1_512_token_output_tps": {
+      "baseline": 27.628438786657433,
+      "candidate": 27.959620426538613,
+      "percent_change": 1.1986983500534176
+    },
+    "c128_aggregate_output_tps": {
+      "baseline": 1563.040958788928,
+      "candidate": 1571.711486005405,
+      "percent_change": 0.5547216896475415,
+      "note": "the feature is intentionally inactive above batch size 1; this small movement is normal run-to-run variance, not attributed to multistream execution"
+    }
+  },
+  "dashboard": {
+    "post_endpoint": "http://192.168.10.121:3000/api/run-test",
+    "last_run": "2026-08-21 16:23:03",
+    "result": "success; 8 records saved; C=1/2/4/8/16/32/64/128 all 100% request success",
+    "per_request_output_tps": {
+      "1": 37.5,
+      "2": 33.4,
+      "4": 34.8,
+      "8": 32.8,
+      "16": 32.6,
+      "32": 26.1,
+      "64": 22.4,
+      "128": 17.4
+    },
+    "per_request_overall_tps": {
+      "1": 36.9,
+      "2": 32.8,
+      "4": 34.0,
+      "8": 32.0,
+      "16": 31.8,
+      "32": 25.4,
+      "64": 21.7,
+      "128": 16.8
+    },
+    "note": "Variable completion lengths and per-request accounting make this an API stability regression, not a direct comparison with fixed-payload C=128 aggregate TPS."
+  }
+}

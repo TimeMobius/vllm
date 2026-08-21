@@ -1,0 +1,1 @@
+final guarded strict trace: byte-identical to baseline

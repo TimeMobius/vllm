@@ -1968,6 +1968,54 @@ def test_rwkv7_strided_gather_matches_index_select(dtype, strided_rows):
     assert torch.equal(actual, expected)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
+    """Independent child-stream GEMVs keep each baseline F.linear bitwise."""
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("bfloat16 is not supported on this CUDA device.")
+
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            attention = RWKV7Attention(
+                config=config, layer_idx=0, prefix="model.layers.0.attn"
+            )
+            _initialize_module_parameters(attention)
+            attention = attention.to(device="cuda", dtype=torch.bfloat16)
+            generator = torch.Generator(device="cuda").manual_seed(23)
+            inputs = tuple(
+                torch.randn(
+                    1,
+                    config.hidden_size,
+                    device="cuda",
+                    dtype=torch.bfloat16,
+                    generator=generator,
+                )
+                for _ in range(3)
+            )
+
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            reference = attention._project_rkv_direct(*inputs)
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
+            for _ in range(4):
+                actual = attention._project_rkv_direct(*inputs)
+                torch.cuda.synchronize()
+                for output, expected in zip(actual, reference, strict=True):
+                    assert torch.equal(output, expected)
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_rwkv7_alt_recurrent_matches_reference():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required to exercise the RWKV7 alt recurrent op.")

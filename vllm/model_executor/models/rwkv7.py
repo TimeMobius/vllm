@@ -939,6 +939,13 @@ class RWKV7Attention(nn.Module):
         self.value_start = self.tp_rank * self.local_value_dim
         self.value_end = self.value_start + self.local_value_dim
         self.perf_flags = _load_rwkv7_perf_flags()
+        # Lazily created on the model device for the explicit R/K/V
+        # multi-stream candidate. Creating CUDA streams while constructing CPU
+        # test models would bind them to the wrong device.
+        self._rkv_projection_streams: tuple[torch.cuda.Stream, ...] | None = None
+        self._rkv_projection_ready: torch.cuda.Event | None = None
+        self._rkv_projection_done: tuple[torch.cuda.Event, ...] | None = None
+        self._rkv_projection_device: torch.device | None = None
 
         self.x_r = nn.Parameter(torch.zeros(1, 1, self.hidden_size))
         self.x_w = nn.Parameter(torch.zeros(1, 1, self.hidden_size))
@@ -1164,6 +1171,63 @@ class RWKV7Attention(nn.Module):
             k_a=local_k_a,
         )
 
+    def _project_rkv_direct(
+        self,
+        xr: torch.Tensor,
+        xk: torch.Tensor,
+        xv: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project independent R/K/V branches, optionally on child streams.
+
+        The branches consume distinct mixed inputs and have no data dependency
+        until the recurrent operator. Each F.linear keeps the exact baseline
+        operand order and dtype; streams only expose GPU overlap for M=1 GEMV.
+        """
+        if not (
+            _rwkv7_env_flag_enabled(
+                "RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", default=False
+            )
+            and xr.is_cuda
+            and xr.shape[0] == 1
+            and xr.device == xk.device == xv.device
+        ):
+            return (
+                _rwkv7_direct_linear(self.r_proj, xr),
+                _rwkv7_direct_linear(self.k_proj, xk),
+                _rwkv7_direct_linear(self.v_proj, xv),
+            )
+
+        if self._rkv_projection_device != xr.device:
+            self._rkv_projection_streams = tuple(
+                torch.cuda.Stream(device=xr.device) for _ in range(3)
+            )
+            self._rkv_projection_ready = torch.cuda.Event()
+            self._rkv_projection_done = tuple(torch.cuda.Event() for _ in range(3))
+            self._rkv_projection_device = xr.device
+
+        assert self._rkv_projection_streams is not None
+        assert self._rkv_projection_ready is not None
+        assert self._rkv_projection_done is not None
+        current_stream = torch.cuda.current_stream(xr.device)
+        self._rkv_projection_ready.record(current_stream)
+        inputs = (xr, xk, xv)
+        linears = (self.r_proj, self.k_proj, self.v_proj)
+        outputs: list[torch.Tensor] = []
+        for stream, done, input_, linear in zip(
+            self._rkv_projection_streams,
+            self._rkv_projection_done,
+            inputs,
+            linears,
+            strict=True,
+        ):
+            stream.wait_event(self._rkv_projection_ready)
+            with torch.cuda.stream(stream):
+                outputs.append(_rwkv7_direct_linear(linear, input_))
+                done.record(stream)
+        for done in self._rkv_projection_done:
+            current_stream.wait_event(done)
+        return outputs[0], outputs[1], outputs[2]
+
     def _project_recurrent_inputs(
         self,
         hidden_states: torch.Tensor,
@@ -1181,10 +1245,8 @@ class RWKV7Attention(nn.Module):
     ]:
         xr, xw, xk, xv, xa, xg = self._mix_recurrent_inputs(hidden_states, delta)
         if self._can_use_direct_cuda_fast_path(hidden_states):
-            r = _rwkv7_direct_linear(self.r_proj, xr)
+            r, k, v = self._project_rkv_direct(xr, xk, xv)
             w = LOG_DECAY_SCALE * self.w_lora._forward_direct(xw).sigmoid()
-            k = _rwkv7_direct_linear(self.k_proj, xk)
-            v = _rwkv7_direct_linear(self.v_proj, xv)
 
             if self.layer_idx == 0:
                 v_first_out = v

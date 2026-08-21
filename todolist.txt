@@ -4,6 +4,7 @@
 > 2026-08-21：保留 strict direct-cache `sa + update + output` single-state-read fusion：服务精度为零差异，C=128 aggregate TPS `1365.38 → 1541.71`（+12.91%）。
 > 同日完成 x=16 CTA 精度/性能调优：算子与服务均零差异，但同会话 C=128 仅 +0.48%、C=1 仅 +0.06%，不保留；稳定服务继续使用 x=32 full-fusion 路径。
 > 同日保留 BF16 model-dtype shift cache：recurrent state 仍为 FP32；8×16 service trace 字节级零差，C=1 `27.394 → 27.603 TPS`（+0.76%）、C=128 `1542.50 → 1566.23 aggregate TPS`（+1.54%），并节省 `999,424 B/state slot`。
+> 同日保留 C=1 multi-stream R/K/V projection：不改变任一 BF16 `F.linear` 数学，仅重叠三个独立 GEMV；8×16 service trace 字节级零差，短/长 C=1 分别 +1.17% / +1.20%。
 > 工作目录：`/mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast`
 > 分支：`codex/rwkv7-sp-fast`
 > 目标：在严格数值对齐和回归测试门禁下，提高 RWKV7 的 **Full Decode CUDA Graph** 和高并发 decode 吞吐。
@@ -34,6 +35,7 @@ RWKV7_USE_NATIVE_STRIDED_GATHER=1 \
 RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1 \
 RWKV7_USE_TRITON_MASKED_STORE=1 \
 RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE=1 \
+RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1 \
 /mnt/data/anaconda3/envs/vllm-sp/bin/vllm serve \
   /hikscale/models/XiaoKe/rwkv-0-hf \
   --served-model-name xiaoke-5 \
@@ -59,6 +61,13 @@ curl -fsS http://127.0.0.1:8030/health
 curl -fsS http://127.0.0.1:8030/v1/models
 screen -ls
 ```
+
+### 2026-08-21 C=1 multi-stream R/K/V projection（已保留）
+
+- [x] 新增显式开关 `RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1`：仅对 TP=1、direct linear、**decode batch=1** 的独立 R/K/V BF16 `F.linear`，在三个 lazy CUDA child streams 并行提交。main stream 先 record readiness event，三个 branch 完成后全部 wait 才进入 recurrence；F.linear 的 input / weight / bias / dtype / reduction contract 完全不变。batch > 1 回退稳定单 stream，避免把 stream synchronization 开销带到高并发 graph replay。
+- [x] 严格门禁：isolated BF16 R/K/V 每个 output `torch.equal`；真实 8 prompts × 16 greedy、`logprobs=20` response trace byte-identical；Full Decode graph 1..128 全部 capture；focused RWKV suite `93 passed, 5 skipped`。
+- [x] 成对固定负载：C=1 32-token `27.611 → 27.934 TPS`（+1.17%），512-token steady `27.628 → 27.960 TPS`（+1.20%）；C=128 因 feature inactive 保持基线量级（`1563.04 → 1571.71 aggregate TPS`，不归因）。该项解决的是 C=1 GEMV overlap 的一小部分，不能虚报为达到 50+ TPS；证据：`benchmark_records/20260821_multistream_rkv_projection_full_graph/`。
+- [x] 外部 dashboard POST 于 `2026-08-21 16:23:03` 成功完成并保存 8 条记录：C=1/2/4/8/16/32/64/128 均 100% success；每请求输出 TPS `37.5/33.4/34.8/32.8/32.6/26.1/22.4/17.4`，整体 TPS `36.9/32.8/34.0/32.0/31.8/25.4/21.7/16.8`。这是 OpenAI API 并发稳定性门禁；生成 token 数可变，不能和 fixed-payload C=128 aggregate TPS 直接比较。
 
 ### 2026-08-21 BF16 model-dtype shift cache（已保留）
 
