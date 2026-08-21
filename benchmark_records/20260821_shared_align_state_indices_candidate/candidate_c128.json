@@ -1,0 +1,33 @@
+{
+  "requests": 128,
+  "concurrency": 128,
+  "max_tokens": 32,
+  "prompt_tokens": 49,
+  "warmup": {
+    "wall_time_sec": 2.5483827609568834,
+    "completion_tokens": 4096,
+    "aggregate_output_tps": 1607.2938738849446,
+    "lengths": [
+      32
+    ]
+  },
+  "rounds": [
+    {
+      "wall_time_sec": 2.602348883636296,
+      "completion_tokens": 4096,
+      "aggregate_output_tps": 1573.9626710914358,
+      "lengths": [
+        32
+      ]
+    },
+    {
+      "wall_time_sec": 2.6024237954989076,
+      "completion_tokens": 4096,
+      "aggregate_output_tps": 1573.9173639144967,
+      "lengths": [
+        32
+      ]
+    }
+  ],
+  "mean_aggregate_output_tps": 1573.9400175029664
+}

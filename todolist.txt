@@ -323,3 +323,43 @@ curl -fsS http://192.168.10.121:3000/
 2. [ ] **`mamba_cache_mode=all` 的 RWKV src/dst direct-cache recurrence**。借鉴 Mamba `state_batch_indices`/`dst_state_batch_indices` 与 Kimi KDA `initial_state + state_indices` 接口：从 source persistent FP32 row 做既有 exact recurrence，写 destination row；必须覆盖 src=dst、src≠dst、outer stride、padding 只读 slot 0/绝不写、duplicate dst guard。预期只改善 cache-all/prefix/跨 block 场景，不宣传为当前 align steady decode 提速。
 3. [ ] **shared state-slot metadata hoist → GPU-only align-state migration**。先验证 shared integer slot metadata 与每层现有逻辑逐项相同（C=1/C=128、prefix resume、block boundary、padding、align/all）；目标是在 Full Graph 中减少每层重复 `clamp/gather/squeeze` 节点。随后才评估移植 upstream `vllm/v1/worker/gpu/model_states/mamba_hybrid.py` + `vllm/v1/worker/mamba_utils.py` 的 GPU-only byte-copy lifecycle：copy 必须对 shift/recurrent/FFN 三类 state 均 `torch.equal`，padding lane 永不写有效 slot。它主要改善 prefix / block boundary / speculative 状态迁移，不应宣传为 C=1 GEMV 突破；当前 upstream=`1baf372bfc`（2026-08-21 已 fetch），禁止盲目 merge/rebase。
 4. [x] **Albatross sparse CMix 结论**：有 C=1 性能信号但当前 BF16 ordered sparse reduction 仍不 exact（服务 token/logprob 分歧），继续保持拒绝。只有 isolated `torch.equal(sparse, dense F.linear)`、multi-token full-cache 和服务 gate 全部为零差异才可重启该方向。
+
+### 2026-08-21 shared align state-index metadata hoist（拒绝，已恢复）
+
+- [x] 参考官方 upstream 截点 `574e6a00` 的 Bailing hybrid linear-attention
+  persistent metadata 思路，验证了 RWKV7 的最小严格候选：layer 0 通过一个
+  in-place CUDA op 从每次 replay 更新后的 `seq_lens + block_table_tensor` 生成
+  state slot，后续 60 层复用同一个 scratch，从而消除 61 层重复的 graph
+  `clamp + gather`。BF16 projection、FP32 recurrent state、reduction 顺序、
+  direct-cache 写入和 PAD store contract 均不变。
+- [x] 候选 CUDA unit（int32/int64、零长度 padding、block boundary、strided
+  output）`4 passed`；Full Decode capture sizes `1,2,4,8,16,32,64,128` 完成；
+  `8 prompts × 16 greedy, logprobs=20` 服务 trace 与
+  `/tmp/rwkv7_service_trace_before_aux.json` 字节级零差。
+- [x] restart-paired HTTP：C=1 `28.4512 → 28.6072 TPS`（+0.55%），C=128
+  aggregate `1565.3460 → 1573.9400 TPS`（+0.55%）。低于 1% materiality gate，
+  已完整恢复源码与扩展；记录：
+  `benchmark_records/20260821_shared_align_state_indices_candidate/`。
+- [x] 恢复稳定服务后已 POST `http://192.168.10.121:3000/api/run-test`，
+  dashboard 在 **2026-08-21 17:36:48** 成功完成、保存 8 条记录。
+
+### 2026-08-21 官方 upstream / 混合线性模型审查
+
+- [x] 已 `git fetch upstream main --prune`；当前官方远端为
+  `fe76112ff2981e9373765d76687d53f94880f38e`（2026-08-21）。当前分支相对其
+  `ahead 173 / behind 5019`，禁止盲目 merge/rebase。
+- [x] 可借鉴的实现是 Bailing/Mamba/KDA 的 **persistent CUDA-Graph metadata、
+  PAD slot 与 GPU state 生命周期**；不能直接复制 Kimi KDA/GDN recurrence 或
+  Qwen merged projection，因为 RWKV7 必须保留 BF16 `F.linear` reduction
+  contract 与完整 FP32 recurrent matrix state。
+- [ ] 下一主线（按收益优先级）：严格兼容的 BF16 GEMV/projection 优化。历史
+  profile 显示 C=1 约 82% CUDA 时间在 `internal::gemvx`（约 426 个 linear-like
+  calls/token）；metadata/cache/scheduler 微调不可能把约 28.5 TPS 推到 50+。
+  需以 layer/projection group 为单位建立 exact-output A/B，优先探索不改变
+  PyTorch BF16 reduction 的 persistent GEMV scheduling、stream overlap 与
+  可验证的 cublasLt algorithm cache；任何 FP16 Albatross GEMV、sparse CMix 或
+  merged-GEMM 路径必须先通过长 decode logprob 门禁才可能作为可选精度档。
+- [ ] correctness hardening（非主要 TPS 项）：为 padded Full Decode 的
+  `PAD_SLOT_ID` 做端到端 gather/direct-cache 回归，覆盖 C=127→128、多 replay、
+  slot 0 不写入；先验证现有 full-fusion/direct-cache 的 -1 slot contract，避免
+  因纯性能改动引入隐患。
