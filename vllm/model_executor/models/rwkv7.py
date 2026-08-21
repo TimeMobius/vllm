@@ -939,8 +939,8 @@ class RWKV7Attention(nn.Module):
         self.value_start = self.tp_rank * self.local_value_dim
         self.value_end = self.value_start + self.local_value_dim
         self.perf_flags = _load_rwkv7_perf_flags()
-        # Lazily created on the model device for the explicit R/K/V
-        # multi-stream candidate. Creating CUDA streams while constructing CPU
+        # Lazily created on the model device for the explicit decode-projection
+        # multi-stream candidates. Creating CUDA streams while constructing CPU
         # test models would bind them to the wrong device.
         self._rkv_projection_streams: tuple[torch.cuda.Stream, ...] | None = None
         self._rkv_projection_ready: torch.cuda.Event | None = None
@@ -1228,6 +1228,81 @@ class RWKV7Attention(nn.Module):
             current_stream.wait_event(done)
         return outputs[0], outputs[1], outputs[2]
 
+    def _project_recurrent_decode_direct_multistream(
+        self,
+        xr: torch.Tensor,
+        xw: torch.Tensor,
+        xk: torch.Tensor,
+        xv: torch.Tensor,
+        xa: torch.Tensor,
+        xg: torch.Tensor,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+    ]:
+        """Run independent decode projections in three balanced stream groups.
+
+        Each group starts with one of the existing full-width R/K/V GEMVs and
+        then executes only LoRA chains that consume a distinct mixed input. The
+        individual ``F.linear`` calls, activation placement, operands, and
+        dtypes are unchanged; this only overlaps work that was formerly issued
+        after the R/K/V synchronization point. Keeping three streams avoids
+        the event and launch overhead of creating one stream per small LoRA
+        branch on consumer GPUs.
+        """
+        if self._rkv_projection_device != xr.device:
+            self._rkv_projection_streams = tuple(
+                torch.cuda.Stream(device=xr.device) for _ in range(3)
+            )
+            self._rkv_projection_ready = torch.cuda.Event()
+            self._rkv_projection_done = tuple(torch.cuda.Event() for _ in range(3))
+            self._rkv_projection_device = xr.device
+
+        assert self._rkv_projection_streams is not None
+        assert self._rkv_projection_ready is not None
+        assert self._rkv_projection_done is not None
+        current_stream = torch.cuda.current_stream(xr.device)
+        self._rkv_projection_ready.record(current_stream)
+        stream_r_g, stream_k_w_a, stream_v_v = self._rkv_projection_streams
+        done_r_g, done_k_w_a, done_v_v = self._rkv_projection_done
+
+        # For the target 4096-wide checkpoint, g's 384-rank LoRA is about
+        # twice the work of w/a (192 rank). Pair it with R, pair W+A with K,
+        # and leave V with the smaller V-gate chain. This balances the critical
+        # child stream instead of serializing both largest auxiliary branches
+        # after V. The groups remain data-independent.
+        stream_r_g.wait_event(self._rkv_projection_ready)
+        with torch.cuda.stream(stream_r_g):
+            r = _rwkv7_direct_linear(self.r_proj, xr)
+            g = self.g_lora._forward_direct(xg)
+            done_r_g.record(stream_r_g)
+
+        stream_k_w_a.wait_event(self._rkv_projection_ready)
+        with torch.cuda.stream(stream_k_w_a):
+            k = _rwkv7_direct_linear(self.k_proj, xk)
+            w = self.w_lora._forward_direct(xw).sigmoid()
+            a = self.a_lora._forward_direct(xa).sigmoid()
+            done_k_w_a.record(stream_k_w_a)
+
+        stream_v_v.wait_event(self._rkv_projection_ready)
+        with torch.cuda.stream(stream_v_v):
+            v = _rwkv7_direct_linear(self.v_proj, xv)
+            v_gate = (
+                None
+                if self.layer_idx == 0
+                else self.v_lora._forward_direct(xv).sigmoid()
+            )
+            done_v_v.record(stream_v_v)
+
+        for done in self._rkv_projection_done:
+            current_stream.wait_event(done)
+        return r, w, k, v, a, g, v_gate
+
     def _project_recurrent_inputs(
         self,
         hidden_states: torch.Tensor,
@@ -1245,19 +1320,42 @@ class RWKV7Attention(nn.Module):
     ]:
         xr, xw, xk, xv, xa, xg = self._mix_recurrent_inputs(hidden_states, delta)
         if self._can_use_direct_cuda_fast_path(hidden_states):
-            r, k, v = self._project_rkv_direct(xr, xk, xv)
-            w = LOG_DECAY_SCALE * self.w_lora._forward_direct(xw).sigmoid()
+            use_aux_multistream = (
+                _rwkv7_env_flag_enabled(
+                    "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", default=False
+                )
+                and xr.is_cuda
+                and xr.shape[0] == 1
+                and xr.device
+                == xw.device
+                == xk.device
+                == xv.device
+                == xa.device
+                == xg.device
+            )
+            if use_aux_multistream:
+                r, w, k, v, a, g, v_gate = (
+                    self._project_recurrent_decode_direct_multistream(
+                        xr, xw, xk, xv, xa, xg
+                    )
+                )
+            else:
+                r, k, v = self._project_rkv_direct(xr, xk, xv)
+                w = self.w_lora._forward_direct(xw).sigmoid()
+                a = self.a_lora._forward_direct(xa).sigmoid()
+                g = self.g_lora._forward_direct(xg)
+                v_gate = None
+            w = LOG_DECAY_SCALE * w
 
             if self.layer_idx == 0:
                 v_first_out = v
             else:
                 if v_first is None:
                     raise ValueError("RWKV7 layers after layer 0 require `v_first`.")
-                v = torch.lerp(v, v_first, self.v_lora._forward_direct(xv).sigmoid())
+                if v_gate is None:
+                    v_gate = self.v_lora._forward_direct(xv).sigmoid()
+                v = torch.lerp(v, v_first, v_gate)
                 v_first_out = v_first
-
-            a = self.a_lora._forward_direct(xa).sigmoid()
-            g = self.g_lora._forward_direct(xg)
         else:
             r, _ = self.r_proj(xr)
             w = LOG_DECAY_SCALE * self.w_lora(xw).sigmoid()

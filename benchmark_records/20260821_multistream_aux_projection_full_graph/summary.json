@@ -1,0 +1,84 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS=1",
+  "status": "retained",
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+    "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+    "model_layers": 61,
+    "hidden_size": 4096,
+    "model_dtype": "bfloat16",
+    "recurrent_state_dtype": "float32",
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128
+    ]
+  },
+  "implementation": {
+    "scope": "direct CUDA linear path, decode-shaped batch size one only",
+    "mechanism": "reuse the existing three persistent R/K/V child streams to issue independent BF16 branches in balanced groups: R+G, K+W+A, V+V-gate; join all groups before the existing FP32 conversion and recurrent path",
+    "strict_arithmetic_contract": "each F.linear, activation, sigmoid, scale, lerp and FP32 recurrent operation retains the baseline inputs, operand order, dtype and reduction contract; only independent CUDA-stream scheduling changes",
+    "higher_concurrency": "batch sizes above one retain the stable single-stream path"
+  },
+  "strict_accuracy": {
+    "unit": "layer 0 and layer 1 recurrent-input bundles match the single-stream path with torch.equal across repeated CUDA calls",
+    "service_gate": "8 prompts x 16 greedy decode, logprobs=20",
+    "trace_files_byte_identical": true,
+    "text_mismatches": 0,
+    "token_id_mismatches": 0,
+    "selected_logprob_error": 0.0,
+    "common_topk_logprob_error": 0.0,
+    "focused_rwkv_suite": "93 passed, 5 skipped",
+    "full_decode_graph": "service startup captured all 8 configured decode graphs successfully"
+  },
+  "fixed_payload_performance": {
+    "c1_32_token_output_tps": {
+      "baseline_rkv_only": 27.93655434464644,
+      "candidate": 28.457125327134886,
+      "percent_change": 1.8634061082648705
+    },
+    "c1_512_token_output_tps": {
+      "baseline_rkv_only": 27.959620426538613,
+      "candidate": 28.48909646704524,
+      "percent_change": 1.8937187549237469
+    },
+    "c128_aggregate_output_tps": {
+      "candidate": 1567.515101911953,
+      "note": "The gate requires batch size one and is inactive at C=128. This result remains in the established single-stream baseline range and is not attributed to the candidate."
+    }
+  },
+  "remaining_bottleneck": "C=1 is still dominated by the large number of BF16 GEMV/projection launches. This scheduling-only improvement is approximately 1.9%, not a path to 50+ TPS by itself.",
+  "dashboard": {
+    "post_endpoint": "http://192.168.10.121:3000/api/run-test",
+    "last_run": "2026-08-21 16:45:52",
+    "result": "success; 8 records saved; C=1/2/4/8/16/32/64/128 all 100% request success",
+    "per_request_output_tps": {
+      "1": 36.2,
+      "2": 31.2,
+      "4": 34.2,
+      "8": 32.5,
+      "16": 30.8,
+      "32": 26.2,
+      "64": 22.2,
+      "128": 17.3
+    },
+    "per_request_overall_tps": {
+      "1": 35.6,
+      "2": 30.7,
+      "4": 33.5,
+      "8": 31.8,
+      "16": 30.0,
+      "32": 25.4,
+      "64": 21.5,
+      "128": 16.8
+    },
+    "note": "Variable completion lengths and per-request accounting make this an API stability regression, not a direct comparison with fixed-payload C=128 aggregate TPS."
+  }
+}

@@ -36,6 +36,7 @@ RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1 \
 RWKV7_USE_TRITON_MASKED_STORE=1 \
 RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE=1 \
 RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1 \
+RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS=1 \
 /mnt/data/anaconda3/envs/vllm-sp/bin/vllm serve \
   /hikscale/models/XiaoKe/rwkv-0-hf \
   --served-model-name xiaoke-5 \
@@ -62,12 +63,19 @@ curl -fsS http://127.0.0.1:8030/v1/models
 screen -ls
 ```
 
+### 2026-08-21 C=1 balanced auxiliary projection streams（已保留）
+
+- [x] 新增显式开关 `RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS=1`：只在 TP=1、direct linear、**batch=1** 的 CUDA decode-shaped 投影路径触发。复用已有三个持久 child streams，将 mix6 后完全独立的 BF16 分支按 `R+G`、`K+W+A`、`V+V-gate`（非首层）均衡调度；随后仍在原 main stream 上执行原有 BF16→FP32、`kk_pre`、严格 FP32 recurrent/direct-cache、tail 与 `o_proj`。每一个 `F.linear`、激活、sigmoid、scale、`lerp`、dtype 和 reduction contract 均不变；batch > 1（含 C=128 Full Decode replay）保持稳定单流路径。
+- [x] 严格门禁：layer 0 与 layer 1 CUDA BF16 recurrent-input bundle 反复 `torch.equal`；真实服务 8 prompts × 16 greedy、`logprobs=20` trace byte-identical；全部 Full Decode graph size `1,2,4,8,16,32,64,128` 重新 capture 成功；focused suite `93 passed, 5 skipped`。
+- [x] 配对固定负载：C=1 32-token `27.9366 → 28.4571 TPS`（**+1.86%**）；512-token steady `27.9596 → 28.4891 TPS`（**+1.89%**）。C=128 实测 `1567.52 aggregate TPS`，该 gate 不触发，不能归因。保留原因是零精度漂移下可复现的 C=1 改善；仍远未达到 50+ TPS，主瓶颈依旧是大量严格 BF16 GEMV。证据：`benchmark_records/20260821_multistream_aux_projection_full_graph/`。
+- [x] 外部 dashboard POST 于 `2026-08-21 16:45:52` 成功完成、保存 8 条记录：C=1/2/4/8/16/32/64/128 均 100% success；每请求输出 TPS `36.2/31.2/34.2/32.5/30.8/26.2/22.2/17.3`，整体 TPS `35.6/30.7/33.5/31.8/30.0/25.4/21.5/16.8`。这是服务 API 回归门禁；completion 数量可变，不能与 fixed-payload C=128 aggregate TPS 混用。
+
 ### 2026-08-21 C=1 multi-stream R/K/V projection（已保留）
 
 - [x] 新增显式开关 `RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1`：仅对 TP=1、direct linear、**decode batch=1** 的独立 R/K/V BF16 `F.linear`，在三个 lazy CUDA child streams 并行提交。main stream 先 record readiness event，三个 branch 完成后全部 wait 才进入 recurrence；F.linear 的 input / weight / bias / dtype / reduction contract 完全不变。batch > 1 回退稳定单 stream，避免把 stream synchronization 开销带到高并发 graph replay。
 - [x] 严格门禁：isolated BF16 R/K/V 每个 output `torch.equal`；真实 8 prompts × 16 greedy、`logprobs=20` response trace byte-identical；Full Decode graph 1..128 全部 capture；focused RWKV suite `93 passed, 5 skipped`。
 - [x] 成对固定负载：C=1 32-token `27.611 → 27.934 TPS`（+1.17%），512-token steady `27.628 → 27.960 TPS`（+1.20%）；C=128 因 feature inactive 保持基线量级（`1563.04 → 1571.71 aggregate TPS`，不归因）。该项解决的是 C=1 GEMV overlap 的一小部分，不能虚报为达到 50+ TPS；证据：`benchmark_records/20260821_multistream_rkv_projection_full_graph/`。
-- [x] 外部 dashboard POST 于 `2026-08-21 16:23:03` 成功完成并保存 8 条记录：C=1/2/4/8/16/32/64/128 均 100% success；每请求输出 TPS `37.5/33.4/34.8/32.8/32.6/26.1/22.4/17.4`，整体 TPS `36.9/32.8/34.0/32.0/31.8/25.4/21.7/16.8`。这是 OpenAI API 并发稳定性门禁；生成 token 数可变，不能和 fixed-payload C=128 aggregate TPS 直接比较。
+- [x] 外部 dashboard POST 于 `2026-08-21 16:23:03` 成功完成并保存 8 条记录：C=1/2/4/8/16/32/64/128 均 100% success；每请求输出 TPS `32.5/29.3/33.9/32.8/31.5/26.3/22.7/17.5`，整体 TPS `32.0/28.8/33.3/32.1/30.7/25.6/22.0/16.8`。这是 OpenAI API 并发稳定性门禁；生成 token 数可变，不能和 fixed-payload C=128 aggregate TPS 直接比较。
 
 ### 2026-08-21 BF16 model-dtype shift cache（已保留）
 

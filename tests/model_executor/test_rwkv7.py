@@ -2011,6 +2011,64 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
                 torch.cuda.synchronize()
                 for output, expected in zip(actual, reference, strict=True):
                     assert torch.equal(output, expected)
+
+            hidden_states = torch.randn(
+                1,
+                config.hidden_size,
+                device="cuda",
+                dtype=torch.bfloat16,
+                generator=generator,
+            )
+            delta = torch.randn(
+                1,
+                config.hidden_size,
+                device="cuda",
+                dtype=torch.bfloat16,
+                generator=generator,
+            )
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
+            reference = attention._project_recurrent_inputs(
+                hidden_states, delta, v_first=None
+            )
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
+            for _ in range(4):
+                actual = attention._project_recurrent_inputs(
+                    hidden_states, delta, v_first=None
+                )
+                torch.cuda.synchronize()
+                for output, expected in zip(actual, reference, strict=True):
+                    assert torch.equal(output, expected)
+
+            layer_one_attention = RWKV7Attention(
+                config=config, layer_idx=1, prefix="model.layers.1.attn"
+            )
+            _initialize_module_parameters(layer_one_attention)
+            layer_one_attention = layer_one_attention.to(
+                device="cuda", dtype=torch.bfloat16
+            )
+            v_first = torch.randn(
+                1,
+                layer_one_attention.value_dim,
+                device="cuda",
+                dtype=torch.bfloat16,
+                generator=generator,
+            )
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
+            reference = layer_one_attention._project_recurrent_inputs(
+                hidden_states, delta, v_first=v_first
+            )
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
+            for _ in range(4):
+                actual = layer_one_attention._project_recurrent_inputs(
+                    hidden_states, delta, v_first=v_first
+                )
+                torch.cuda.synchronize()
+                for output, expected in zip(actual, reference, strict=True):
+                    assert torch.equal(output, expected)
         finally:
             cleanup_dist_env_and_memory()
 

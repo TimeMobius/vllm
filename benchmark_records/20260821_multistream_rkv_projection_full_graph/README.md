@@ -41,7 +41,7 @@ BF16 projection/GEMV launches, not recurrence or state-copy overhead.
 
 The external dashboard completed successfully at **2026-08-21 16:23:03** and
 saved eight records. C=1/2/4/8/16/32/64/128 all had 100% request success, with
-per-request output TPS **37.5 / 33.4 / 34.8 / 32.8 / 32.6 / 26.1 / 22.4 / 17.4**.
+per-request output TPS **32.5 / 29.3 / 33.9 / 32.8 / 31.5 / 26.3 / 22.7 / 17.5**.
 This is a real OpenAI API stability regression; variable completion lengths and
 per-request accounting mean it is not directly comparable with fixed-payload
 C=128 aggregate TPS.

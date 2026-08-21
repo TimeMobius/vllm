@@ -58,23 +58,23 @@
     "last_run": "2026-08-21 16:23:03",
     "result": "success; 8 records saved; C=1/2/4/8/16/32/64/128 all 100% request success",
     "per_request_output_tps": {
-      "1": 37.5,
-      "2": 33.4,
-      "4": 34.8,
+      "1": 32.5,
+      "2": 29.3,
+      "4": 33.9,
       "8": 32.8,
-      "16": 32.6,
-      "32": 26.1,
-      "64": 22.4,
-      "128": 17.4
+      "16": 31.5,
+      "32": 26.3,
+      "64": 22.7,
+      "128": 17.5
     },
     "per_request_overall_tps": {
-      "1": 36.9,
-      "2": 32.8,
-      "4": 34.0,
-      "8": 32.0,
-      "16": 31.8,
-      "32": 25.4,
-      "64": 21.7,
+      "1": 32.0,
+      "2": 28.8,
+      "4": 33.3,
+      "8": 32.1,
+      "16": 30.7,
+      "32": 25.6,
+      "64": 22.0,
       "128": 16.8
     },
     "note": "Variable completion lengths and per-request accounting make this an API stability regression, not a direct comparison with fixed-payload C=128 aggregate TPS."
