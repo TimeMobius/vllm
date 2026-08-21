@@ -1,0 +1,83 @@
+{
+  "device": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "checkpoint": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "dtype": "bfloat16",
+  "candidate": {
+    "name": "RWKV7_USE_BATCHED_WA_RANK_IN",
+    "operation": "Post-load pack equal W/A LoRA rank-in weights into adjacent [2, 192, 4096] storage and issue one [2, 1, 4096] batched BMM at decode M=1.",
+    "scope": "Only W/A rank-in, only batch size 1; existing W/A activations and rank-out F.linear calls unchanged."
+  },
+  "isolated_actual_checkpoint": {
+    "layers": [
+      0,
+      1,
+      10
+    ],
+    "seeds_per_layer": 4,
+    "rank_in_output": "torch.equal to two independent F.linear calls for all measured cases",
+    "steady_us_layer0_two_linear": 18.20672035217285,
+    "steady_us_layer0_batched_bmm": 8.074160019556682,
+    "isolated_speedup": 2.2549367746085993
+  },
+  "service_accuracy": {
+    "rows": [
+      {
+        "prompt": "Hello, how are you?",
+        "text_equal": true,
+        "token_ids_equal": true
+      },
+      {
+        "prompt": "The capital of France is",
+        "text_equal": true,
+        "token_ids_equal": true
+      },
+      {
+        "prompt": "Write a short poem about CUDA.",
+        "text_equal": true,
+        "token_ids_equal": true
+      },
+      {
+        "prompt": "Explain attention briefly.",
+        "text_equal": true,
+        "token_ids_equal": true
+      },
+      {
+        "prompt": "1 + 1 =",
+        "text_equal": true,
+        "token_ids_equal": true
+      },
+      {
+        "prompt": "The quick brown fox",
+        "text_equal": true,
+        "token_ids_equal": true
+      },
+      {
+        "prompt": "Python code to sort a list:",
+        "text_equal": true,
+        "token_ids_equal": true
+      },
+      {
+        "prompt": "RWKV is",
+        "text_equal": true,
+        "token_ids_equal": true
+      }
+    ],
+    "text_mismatch": 0,
+    "token_ids_mismatch": 0,
+    "top1_disagreement": 0,
+    "common_logprob_count": 2560,
+    "max_common_logprob_error": 0.0
+  },
+  "performance": {
+    "c1_baseline_tps": 28.908266077197574,
+    "c1_candidate_tps": 28.99734125780147,
+    "c1_change_percent": 0.3081304854674727,
+    "aggregate_change_percent": {
+      "2": 1.2513269521961856,
+      "8": 0.07087536708738629,
+      "32": -0.02009422462230237
+    }
+  },
+  "full_decode_cuda_graph": "Captured successfully for sizes 1,2,4,8,16,32,64,128 during candidate service startup.",
+  "decision": "rejected: strict accuracy and graph capture passed, but C=1 gain (+0.31%) is below the 1% materiality gate and C=8/C=32 aggregate throughput is unchanged within noise. Source and service configuration were restored to the previous strict baseline."
+}

@@ -597,3 +597,20 @@ curl -fsS http://192.168.10.121:3000/
 - [x] 为避免因 sparse CMix 的小误差过早放弃，先做 source-backed strict dense GEMV schedule 重建：覆盖 64/128/256 threads-per-row、2/4/8 FP32 accumulators、explicit `__fmaf_rn` / `__fadd_rn`、warp/serial cross-warp tree 与 volatile accumulator，共 16 个 BF16 M=1 kernel 变体；以 FFN-down normal/SqReLU sparse 和 FFN-up 的四个 seed 逐个对比 `F.linear`。
 - [x] **不保留且未进入模型**：最佳 FFN-down normal 与 SqReLU sparse 仍分别有 2 个 BF16 element 不同；FFN-up 最佳仍有 3 个不同。临时历史 object 在相同 12 个 synthetic case 可 `torch.equal`，证明目标 contract 可达，但它没有可提交 source，绝不能成为 build/runtime 依赖。
 - [x] 结论：Albatross 的 FP16 atomic tiled sparse reduction 与简单 scalar/warp-tree BF16 重建均不满足 strict contract；下一次必须从已 source-backed、对该 PyTorch/CUTLASS 版本 `torch.equal` 的 dense schedule 出发，再做保持相同 schedule 的 zero skip。记录：`benchmark_records/20260821_dense_bf16_gemv_reduction_mapping_rejected/`。
+
+### 2026-08-21 strict BF16 W/A LoRA rank-in batched BMM（拒绝）
+
+- [x] 继续沿 Albatross “减少 B=1 小 GEMV launch”方向，不直接降低精度：目标 XiaoKe
+  checkpoint 的 W/A rank-in 均为 `[192,4096]`。在 layer 0/1/10 的实际 checkpoint
+  权重、每层 4 个 BF16 seed 上，`torch.bmm([2,1,4096],[2,4096,192])` 与两次既有
+  `F.linear` 均逐元素 `torch.equal`；layer 0 isolated latency 为 `18.207 → 8.074 µs`
+  （约 `2.25×`）。
+- [x] 实现过 post-load 无常驻复制的 adjacent-storage layout：W/A Parameter 对象仍保留，
+  仅重绑至同一 `[2,192,4096]` storage view；C=1 的 rank-in 使用一个 BMM，C>1 fallback
+  为原 strict path。focused CUDA tests `2 passed`，candidate Full Decode graph
+  `1,2,4,8,16,32,64,128` 均 capture 成功；8 prompts × 16、`logprobs=20` 服务 trace
+  逐字节相同（2,560 common logprobs max error `0.0`）。
+- [x] **不保留**：稳定 HTTP C=1 `28.9083 → 28.9973 TPS`（`+0.31%`，低于 1% 门槛），
+  C=2 aggregate `+1.25%` 但 C=8 `+0.07%`、C=32 `-0.02%`，说明 W/A saving 已被既有
+  K+W+A child stream 的较长 critical path 隐藏。候选源码与启动 flag 已恢复严格基线；
+  记录：`benchmark_records/20260821_batched_wa_rank_in_bmm_rejected/`。

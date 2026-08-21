@@ -1,0 +1,49 @@
+{
+  "rows": [
+    {
+      "prompt": "Hello, how are you?",
+      "text_equal": true,
+      "token_ids_equal": true
+    },
+    {
+      "prompt": "The capital of France is",
+      "text_equal": true,
+      "token_ids_equal": true
+    },
+    {
+      "prompt": "Write a short poem about CUDA.",
+      "text_equal": true,
+      "token_ids_equal": true
+    },
+    {
+      "prompt": "Explain attention briefly.",
+      "text_equal": true,
+      "token_ids_equal": true
+    },
+    {
+      "prompt": "1 + 1 =",
+      "text_equal": true,
+      "token_ids_equal": true
+    },
+    {
+      "prompt": "The quick brown fox",
+      "text_equal": true,
+      "token_ids_equal": true
+    },
+    {
+      "prompt": "Python code to sort a list:",
+      "text_equal": true,
+      "token_ids_equal": true
+    },
+    {
+      "prompt": "RWKV is",
+      "text_equal": true,
+      "token_ids_equal": true
+    }
+  ],
+  "text_mismatch": 0,
+  "token_ids_mismatch": 0,
+  "top1_disagreement": 0,
+  "common_logprob_count": 2560,
+  "max_common_logprob_error": 0.0
+}
