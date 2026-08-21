@@ -1,0 +1,38 @@
+{
+  "device": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "dtype": "bfloat16",
+  "shape": {
+    "input": [
+      1,
+      4096
+    ],
+    "weight": [
+      16384,
+      4096
+    ],
+    "output": [
+      1,
+      16384
+    ]
+  },
+  "seeds": [
+    2026082100,
+    2026082101,
+    2026082102,
+    2026082103
+  ],
+  "accuracy": {
+    "native_gemv_vs_torch_linear": "torch.equal for all 4 seeds",
+    "native_gemv_then_relu2_vs_torch_linear_then_relu2": "torch.equal for all 4 seeds",
+    "different_elements": 0
+  },
+  "timing_us": {
+    "torch_linear_then_relu2_mean": 157.8783905506134,
+    "native_gemv_then_relu2_mean": 166.48667812347412,
+    "native_gemv_only_mean": 164.268159866333,
+    "relu2_only_mean": 3.62272996455431,
+    "native_gemv_then_relu2_change_percent": 5.452479939045896,
+    "best_possible_fused_native_gemv_relu2_change_percent": 4.047272900005372
+  },
+  "decision": "rejected before model integration: even a zero-cost ReLU2 epilogue cannot overcome the exact native GEMV deficit."
+}

@@ -577,3 +577,17 @@ curl -fsS http://192.168.10.121:3000/
 - [x] 试验 `RWKV7_USE_FUSED_W_SCALE_CAST=1`：把 direct CUDA path 中 `w = LOG_DECAY_SCALE * sigmoid(w_lora(...))` 的 BF16 标量乘并入已保留的 `rwkv7_cast_kk_pre` Triton kernel。kernel 明确执行 FP32 multiply → BF16 writeback语义 → FP32 recurrent input，避免直接 FP32 multiply 改变 eager BF16 materialization；每个 projection、sigmoid、state/reduction 与 Full Decode CUDA Graph 路径均保持不变。
 - [x] 精度门禁通过：B=1/8/128 `rwkv7_cast_kk_pre` 与 attention recurrent-input bundle 均 `torch.equal`；focused CUDA tests `6 passed`；8 prompts × 16 greedy、`logprobs=20` 服务 JSON trace byte-identical。
 - [x] **不保留**：C=1 32-token `28.9459 → 28.9515 TPS`（+0.019%）；idle-GPU repeat 的 C=128 aggregate `1609.28 → 1606.44 TPS`（-0.177%）。首个 candidate C=128 sample 被外部干扰污染（873.55 TPS）并保留原始记录但不用于结论。该操作虽严格正确，省掉的单个 scale launch 对完整 graph 无材料级收益；源码/服务已恢复稳定配置。证据：`benchmark_records/20260821_fused_w_scale_cast_rejected/`。
+
+### 2026-08-21 strict BF16 FFN-up + ReLU² epilogue feasibility（拒绝）
+
+- [x] 没有因 ReLU² 融合的想法直接接入服务；先用历史 strict native BF16 out-GEMV 对
+  `F.linear([1,4096]→[1,16384])` 做 isolated gate。4 个独立 BF16 seed 中 GEMV 输出与
+  `F.linear` 均 `torch.equal`，随后现有 native `relu2` 后也全量 `torch.equal`，因此精度
+  合约本身可保留。
+- [x] 但 steady CUDA-event 平均为 current `F.linear → relu2` **157.878 µs**，strict
+  native GEMV → `relu2` **166.487 µs**；即假定将 ReLU² 完美零成本融入 native GEMV，
+  下限仍为 **164.268 µs（+4.05% 更慢）**。这说明 native GEMV deficit 大于可省掉的
+  `relu2` ~3.62 µs；不进入 model/Full Graph/service，避免无价值重启。
+- [x] 后续 FFN 主线收紧为：先使 dense BF16 GEMV 自身快于 current CUTLASS，再谈
+  exact activation epilogue；不再重复“仅附加 ReLU² epilogue”的 row-oriented native
+  GEMV 路线。记录：`benchmark_records/20260821_ffn_up_exact_epilogue_feasibility/`。
