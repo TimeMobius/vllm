@@ -385,3 +385,20 @@ curl -fsS http://192.168.10.121:3000/
   layer 0 为 12 个，layers 1–60 各 14 个（另不含最终 lm-head/sampling）。
   C=1 到 50+ TPS 的唯一高收益主线仍是保持输出 contract 的 M=1 BF16 GEMV；
   metadata、cache 和纯 event 调度只能提供个位数百分比空间。
+
+### 2026-08-21 BF16 M=1 GEMV shape baseline / output-row split（拒绝）
+
+- [x] 停止服务释放 GPU 后，建立目标 RTX 4090 D / SM89 的 exact isolated
+  `F.linear` 基线：`4096×4096` attention R/K/V/O 约 `17.32 µs`；FFN up
+  `16384×4096` 约 `155.97 µs`；FFN down `4096×16384` 约 `157.64 µs`；128/192/
+  384-rank LoRA 各段约 `7.72–7.89 µs`。852 个 block-internal projection 的
+  shape 加权下界约 `29 ms/token`，与 C=1 服务约 28.5 TPS 相符。
+- [x] 测试严格的 output-row split（不拆单个 dot-product reduction）：部分二分
+  路径可 `torch.equal`，但仍回退——FFN up `133.17 → 136.01 µs`、FFN down
+  `157.20 → 160.23 µs`、attention `16.08 → 57.50 µs`；四分 FFN-up 已不再
+  bit-exact（不同 output shape 选中不同 BF16 GEMV reduction）。不接入。
+- [x] 这给出 50 TPS 的量化下限：20 ms/token 目标下，即便剩余非 projection
+  约 6 ms 完全不变，也必须将 projection 约 29 ms 压到约 14 ms，需 **约 52%
+  reduction**。因此下一项必须是少 launch 的 shape-specialized BF16 GEMV/
+  projection backend；单纯 row split、event、metadata 或 cache 优化均不足。
+  记录：`benchmark_records/20260821_bf16_gemv_shape_baseline/`。
