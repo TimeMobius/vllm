@@ -1,0 +1,21 @@
+{
+  "date": "2026-08-21",
+  "candidate": "--max-num-batched-tokens 4096",
+  "status": "rejected",
+  "baseline": {
+    "max_num_batched_tokens": 2048,
+    "c1_32_token_output_tps": 28.454041098506792,
+    "c128_aggregate_output_tps": 1568.1516530403574
+  },
+  "candidate_performance": {
+    "c1_32_token_output_tps": 28.46987671257523,
+    "c1_percent_change": 0.055650985420320764,
+    "c128_aggregate_output_tps": 1560.4526911212633,
+    "c128_percent_change": -0.49097001079048975
+  },
+  "correctness": {
+    "service_trace": "8 prompts x 16 greedy decode with logprobs=20 is byte-identical to the strict baseline",
+    "full_decode_graph": "all configured sizes 1,2,4,8,16,32,64,128 captured successfully"
+  },
+  "decision": "The intermediate 4096-token budget regresses fixed C=128 throughput more than the 8192 trial. Restore the default 2048 budget."
+}

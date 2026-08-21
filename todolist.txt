@@ -85,6 +85,11 @@ screen -ls
 - [x] 为排查高并发 scheduler 是否受默认 2048 token budget 限制，测试 `--max-num-batched-tokens 8192`（128 请求 × 49 prompt tokens = 6,272 prompt tokens）。数学路径未变：8×16 `logprobs=20` service trace byte-identical，Full Decode graph `1..128` capture 成功。
 - [x] 固定负载 C=1 `28.4540 → 28.4827 TPS`（+0.10%，噪声），C=128 aggregate `1568.15 → 1565.60 TPS`（-0.16%）。scheduler budget 不是当前高并发瓶颈；已移除启动 override，保持默认 2048。证据：`benchmark_records/20260821_max_num_batched_tokens_8192_rejected/`。
 
+### 2026-08-21 `--max-num-batched-tokens 4096`（拒绝）
+
+- [x] 在 8192 已轻微回退后补测中间 scheduler budget `4096`，确认不是极端 buffer 配置才导致回退；8×16 `logprobs=20` trace byte-identical，Full Decode graph `1..128` capture 成功。
+- [x] C=1 `28.4540 → 28.4699 TPS`（+0.06%，噪声），C=128 aggregate `1568.15 → 1560.45 TPS`（-0.49%）。2048/4096/8192 三点均证实默认 2048 是本固定 128 并发 workload 的最佳 tested scheduler budget；已恢复启动命令默认值。证据：`benchmark_records/20260821_max_num_batched_tokens_4096_rejected/`。
+
 ### 2026-08-21 C=1 multi-stream R/K/V projection（已保留）
 
 - [x] 新增显式开关 `RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1`：仅对 TP=1、direct linear、**decode batch=1** 的独立 R/K/V BF16 `F.linear`，在三个 lazy CUDA child streams 并行提交。main stream 先 record readiness event，三个 branch 完成后全部 wait 才进入 recurrence；F.linear 的 input / weight / bias / dtype / reduction contract 完全不变。batch > 1 回退稳定单 stream，避免把 stream synchronization 开销带到高并发 graph replay。
