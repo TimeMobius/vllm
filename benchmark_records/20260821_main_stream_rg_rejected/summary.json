@@ -1,0 +1,18 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_USE_MAIN_R_G_PROJECTIONS=1",
+  "status": "rejected",
+  "implementation": "Use the current stream for the independent R+G group while retaining two child streams for K+W+A and V+V-gate. This removes one child-stream fork/join pair per layer without changing any branch arithmetic.",
+  "correctness": {
+    "service_trace": "8 prompts x 16 greedy decode with logprobs=20 is byte-identical to the strict baseline",
+    "full_decode_graph": "all configured sizes 1,2,4,8,16,32,64,128 captured successfully"
+  },
+  "performance": {
+    "c1_32_token_output_tps": {
+      "three_child_stream_baseline": 28.4557709040041,
+      "main_r_g_two_child_streams": 28.44880745366553,
+      "percent_change": -0.024469552017926112
+    },
+    "decision": "The candidate is slightly slower and below the materiality threshold. Source and startup flag were restored; retain the three-child-stream schedule."
+  }
+}
