@@ -1,0 +1,37 @@
+{
+  "ffn_down_normal": {
+    "minimum_differing_bf16_elements_over_4_seeds": 2,
+    "best_variants": [
+      4,
+      5,
+      10,
+      11,
+      14
+    ]
+  },
+  "ffn_down_sparse_relu2": {
+    "minimum_differing_bf16_elements_over_4_seeds": 2,
+    "best_variants": [
+      9,
+      10
+    ]
+  },
+  "ffn_up_normal": {
+    "minimum_differing_bf16_elements_over_4_seeds": 3,
+    "best_variants": [
+      14
+    ]
+  },
+  "historical_oracle": {
+    "scope": "temporary diagnostic fragment linked to a prior local object only",
+    "synthetic_cases": [
+      "ffn_down_normal",
+      "ffn_down_sparse_relu2",
+      "ffn_up_normal"
+    ],
+    "seeds_per_case": 4,
+    "torch_equal": true,
+    "production_decision": "Do not retain or depend on the prebuilt object; no source is present in this repository."
+  },
+  "decision": "Reject before model integration: all 16 source-backed scalar BF16/FP32 reduction-tree reconstructions have nonzero BF16 output differences."
+}

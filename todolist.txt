@@ -591,3 +591,9 @@ curl -fsS http://192.168.10.121:3000/
 - [x] 后续 FFN 主线收紧为：先使 dense BF16 GEMV 自身快于 current CUTLASS，再谈
   exact activation epilogue；不再重复“仅附加 ReLU² epilogue”的 row-oriented native
   GEMV 路线。记录：`benchmark_records/20260821_ffn_up_exact_epilogue_feasibility/`。
+
+### 2026-08-21 BF16 dense GEMV reduction-tree reconstruction（拒绝）
+
+- [x] 为避免因 sparse CMix 的小误差过早放弃，先做 source-backed strict dense GEMV schedule 重建：覆盖 64/128/256 threads-per-row、2/4/8 FP32 accumulators、explicit `__fmaf_rn` / `__fadd_rn`、warp/serial cross-warp tree 与 volatile accumulator，共 16 个 BF16 M=1 kernel 变体；以 FFN-down normal/SqReLU sparse 和 FFN-up 的四个 seed 逐个对比 `F.linear`。
+- [x] **不保留且未进入模型**：最佳 FFN-down normal 与 SqReLU sparse 仍分别有 2 个 BF16 element 不同；FFN-up 最佳仍有 3 个不同。临时历史 object 在相同 12 个 synthetic case 可 `torch.equal`，证明目标 contract 可达，但它没有可提交 source，绝不能成为 build/runtime 依赖。
+- [x] 结论：Albatross 的 FP16 atomic tiled sparse reduction 与简单 scalar/warp-tree BF16 重建均不满足 strict contract；下一次必须从已 source-backed、对该 PyTorch/CUTLASS 版本 `torch.equal` 的 dense schedule 出发，再做保持相同 schedule 的 zero skip。记录：`benchmark_records/20260821_dense_bf16_gemv_reduction_mapping_rejected/`。
