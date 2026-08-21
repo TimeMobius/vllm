@@ -223,6 +223,7 @@ screen -ls
 - [x] **最大收益瓶颈**：C=128 七次 graph replay 中 BF16 CUTLASS decoder projections 为 `339.377 ms`（约 **48.48 ms/graph**），exact FP32 direct-cache recurrent full fusion 为 `155.119 ms`（约 **22.16 ms/graph**）。C=1 graph GPU span 约 `35.27 ms/token`，projection 仍是关键路径；host `execute_context` 约 4 ms，单做 scheduler/K-step host 优化不足以到严格 C=1 50+ TPS。
 - [x] **Albatross sparse CMix 精度继续尝试（未接入）**：临时 tiled active-index prototype 在 synthetic 94% zero 的 isolated down GEMV `166.82 → 118.36 us`（1.41x），但仍有 `2 / 4096` BF16 输出不同、max abs `2.44140625e-4`。它复现了已拒绝 ordered sparse CMix 的 reduction-contract 问题，未进入服务/仓库；下一次必须先做到 dense BF16 GEMV reduction-compatible，再进入单层→服务 logprob→Full Graph 测试链。
 - [x] **upstream 审查**：已 fetch `upstream/main`，但当前 RWKV7 branch/state lifecycle 大幅分叉；MTP/speculative、attention/KV residency 等近期改动依赖模型特定 draft/KV 合同，不能 blind merge。保留可借鉴的固定 GPU metadata、graph padding/warmup/fallback 设计，不引入不等价模型代码。
+- [x] **FP32 recurrent cache `float4` load/store follow-up（2026-08-21，拒绝）**：针对 profile 中第二大项，临时把 full-fusion 内每线程四个相邻 state scalar load/store 改为对齐 `float4`，并保留源码级 scalar `__fmul_rn` / `__fadd_rn` 与 reduction tree；但 8×16 service gate 出现 **8/8 text/token** 分歧、selected max `3.4346485`、common Top-K max `11.6421452`、120 个 selected logprob 非零差异。未跑 throughput 即回退源码/`.so`，恢复后 trace byte-identical。说明 recursive contract 对 compiler-visible vectorization 同样敏感；以后必须先通过 B=1/8/128 multi-step full-cache `torch.equal`。
 - [x] 证据：`benchmark_records/20260821_full_decode_profile_and_sparse_followup/`。
 
 ## 4. 当前性能判断

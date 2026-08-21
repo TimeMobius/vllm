@@ -118,3 +118,27 @@ all are already present in the retained RWKV7 path.
   reduction schedule sufficiently to make a tile-sparse CMix down projection
   bit-exact, then run isolated -> layer -> 8x16 logprob -> Full Graph -> C=1
   and C=128 gates.
+
+## Follow-up: vectorized FP32 recurrent-state load/store (rejected)
+
+After the profile identified the exact recurrent kernel as the second-largest
+C=128 cost, an additional candidate was tested: replace each thread's four
+adjacent scalar FP32 cache loads/stores in
+`rwkv7_recurrent_t1_exact_cache_full_fusion_kernel` with aligned `float4`
+loads/stores, while retaining the same scalar `__fmul_rn` / `__fadd_rn`
+operations and reduction tree. The intent was to reduce instruction count
+without changing the explicit arithmetic contract.
+
+It did **not** satisfy the actual contract. The 8 prompts x 16 greedy,
+`logprobs=20` service gate produced 8/8 text and token divergences, maximum
+selected-logprob error `3.4346485435962677`, maximum common Top-K error
+`11.642145156860352`, and 120 nonzero selected-logprob differences. The
+candidate was rejected before throughput measurement and the source/binary
+were restored. The subsequent stable service trace was byte-identical to the
+baseline.
+
+This is a useful negative result: compiler-visible vectorization can change
+observable recursive decode behavior even when the source-level scalar FMA and
+reduction expression appears unchanged. Future recurrent bandwidth work must
+first prove whole-cache `torch.equal` across B=1/8/128 and multi-step state
+updates before it can enter the service benchmark gate.
