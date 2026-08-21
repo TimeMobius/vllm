@@ -13,7 +13,7 @@
 - [x] Full Decode CUDA Graph 已验证并运行：capture sizes 为 `1,2,4,8,16,32,64,128`。
 - [x] 当前稳定服务在 `http://127.0.0.1:8030`（局域网地址：`http://192.168.10.121:8030`）。
 - [x] `2026-08-21` 已验证 `/health` 返回 HTTP 200，`/v1/models` 返回 `xiaoke-5`。
-- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；最近已于 `2026-08-21 13:47:38` 成功完成 8 条记录，full-fusion 服务的新一轮 POST 已发起并将在完成后再记录。其 1→128 sweep 的每请求输出速度不能与本地 C=128 closed-loop aggregate TPS 直接混用。
+- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；full-fusion 服务已在 `2026-08-21 14:17:24` POST 回归成功、保存 8 条记录：C=1 输出/整体 `39.5 / 38.8 t/s`，C=128 每请求输出/整体 `17.5 / 16.9 t/s`，全点成功率 100%。该 1→128 sweep 的每请求输出速度不能与本地 C=128 closed-loop aggregate TPS 直接混用。
 - [x] 使用 NVIDIA GeForce RTX 4090 D（sm89）、BF16 projection、FP32 recurrent state；Python 统一使用 vllm-sp 环境。
 
 ### 稳定启动命令
@@ -106,7 +106,7 @@ screen -ls
 
 默认开关不变：`RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1`；同样设为 `0` 可回退整个 direct-cache fast path。
 
-### 2.5 精确 direct-cache `sa + update + output` full fusion（新增，待提交）
+### 2.5 精确 direct-cache `sa + update + output` full fusion（`e5b1afd8c`）
 
 - [x] 将 retained direct-cache 的 `sa` cache reduction 与 update/output-reduction 继续合为一个 `32 x 4` CTA CUDA kernel：每个 FP32 recurrent state element 仅从 global cache 读取一次、写回一次；original state 暂存 shared memory，避免 64-value register array 的 256-byte stack spill。
 - [x] 保持严格算术合约：`sa` 与 output 仍使用既有的四路 partial accumulators、`4 -> 2 -> 1` shared-memory tree 和 FP32 round-to-nearest multiply/add；graph padding lane 仅从 slot 0 读取被丢弃输出、绝不写 cache。此路径默认启用；可设置 `RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION=0` 回退到 2.4 的两 kernel direct-cache 路径。
