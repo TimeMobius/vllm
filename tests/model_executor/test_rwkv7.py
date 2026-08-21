@@ -2291,7 +2291,10 @@ def test_rwkv7_pp_runtime_falls_back_to_hf_dtype_without_model_config():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_rwkv7_full_cudagraph_c128_padding_engine_integration(monkeypatch):
+@pytest.mark.parametrize("full_compile", [False, True])
+def test_rwkv7_full_cudagraph_c128_padding_engine_integration(
+    monkeypatch, full_compile: bool
+):
     """Exercise a real 127-request decode replay padded to the C=128 graph.
 
     This is intentionally opt-in because it loads the external production
@@ -2306,6 +2309,10 @@ def test_rwkv7_full_cudagraph_c128_padding_engine_integration(monkeypatch):
         pytest.skip(f"RWKV7 engine model path does not exist: {model_path}")
 
     monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    if full_compile:
+        monkeypatch.setenv("RWKV7_COMPILE_WITH_FULL_CUDAGRAPH", "1")
+    else:
+        monkeypatch.delenv("RWKV7_COMPILE_WITH_FULL_CUDAGRAPH", raising=False)
     engine = None
     try:
         engine_args = EngineArgs(
