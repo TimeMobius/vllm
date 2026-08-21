@@ -1,0 +1,20 @@
+{
+  "date": "2026-08-21",
+  "candidate": "temporary rwkv7exp historical BF16 out-variant; W LoRA + A LoRA first projection only",
+  "accuracy": {
+    "byte_identical": true,
+    "text_mismatches": 0,
+    "token_mismatches": 0,
+    "top1_disagreements": 0,
+    "max_selected_logprob_error": 0.0,
+    "max_common_topk_logprob_error": 0.0
+  },
+  "throughput": {
+    "candidate_c1_output_tps": 28.057209931735997,
+    "stable_c1_output_tps": 28.45341641848785,
+    "c1_percent_change": -1.392474313920438,
+    "candidate_c128_aggregate_tps": 1569.8958700705532,
+    "stable_c128_aggregate_tps": 1562.2814936896461
+  },
+  "decision": "rejected; source and service restored"
+}

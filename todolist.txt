@@ -510,3 +510,17 @@ curl -fsS http://192.168.10.121:3000/
   aggregate 仅 `+0.173%`。低于 1% 保留门槛且增加第四套 stream/event topology，不能实际
   推进 50+ TPS，已将源码/测试恢复为三路稳定路径。记录：
   `benchmark_records/20260821_multistream_aux_4way_candidate/`。
+
+### 2026-08-21 selective native LoRA-input GEMV（W+A，严格通过、拒绝）
+
+- [x] 为继续定位而非笼统放弃此前 strict native LoRA-input GEMV，恢复其临时
+  out-variant 并只启用于原本最可能是关键路径的 `K+W+A` child stream：W/A 的
+  `4096→192` 第一段 BF16 projection；G/V 和所有第二段 projection 均保持 `F.linear`。
+  临时 fragment 仅从 `/tmp` 显式加载，绝不进入生产启动命令。
+- [x] Full Decode Graph `1..128` 正常；8×16 `logprobs=20` 服务 trace 完全字节一致：
+  text/token/Top-1/selected/common Top-K 全为零差异。
+- [x] 但 C=1 `28.4534 → 28.0572 TPS`（**-1.39%**）。C=128 路径不触发 M=1 op，
+  数值不能归因。它证明不是 G/V 支路或 all-module 选择造成此前回退，而是 native
+  out-op 在真实 graph/stream 上的 integration 成本本身超过 isolated GEMV 节省；已恢复
+  源码和严格稳定服务。记录：
+  `benchmark_records/20260821_selective_native_lora_wa_candidate/`。
