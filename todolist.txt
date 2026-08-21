@@ -483,3 +483,16 @@ curl -fsS http://192.168.10.121:3000/
   complete producer-consumer 融合必须实际减少 launch 或中间读写，同时逐 dot-product
   保持 BF16 reduction contract。记录：
   `benchmark_records/20260821_ffn_compile_fusion_feasibility/`。
+
+### 2026-08-21 外部 dashboard 回归（严格 BF16 服务）
+
+- [x] 已在恢复 strict BF16 Full Decode CUDA Graph 服务后 POST
+  `http://192.168.10.121:3000/api/run-test`。最终 GET `/api/status` 为
+  `running=false`、`progress=1.0`、`Test completed: 8 records saved`，完成时刻为
+  **2026-08-21 18:27:59**，C=1…128 八个点全部 100% success。
+- [x] dashboard 的 C=1 输出/整体为 `39.1 / 38.5 t/s`；C=128 的**每请求**输出/整体为
+  `17.9 / 17.3 t/s`，TTFT `1477 ms`。同一 C=128 区间 vLLM engine 的 10 秒窗口
+  aggregate generation 达约 `1.69–1.70k tokens/s`。每请求指标会随并发共享 GPU 而下降，
+  不应与固定 payload 的 C=128 **aggregate** `~1563 TPS` 混为一个口径。
+- [x] HTML、最终状态及口径说明：
+  `benchmark_records/20260821_dashboard_bf16_restore/`。
