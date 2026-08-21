@@ -1,0 +1,26 @@
+{
+  "native_expression_equal_current_relu2": true,
+  "compiled_equal_current_relu2": true,
+  "max_abs_native": 0.0,
+  "max_abs_compiled": 0.0
+}
+{
+  "eager_current": {
+    "mean_ms": 0.32584128141403196,
+    "median_ms": 0.3256320059299469,
+    "min_ms": 0.3235839903354645,
+    "max_ms": 0.3389439880847931
+  },
+  "eager_native_expr": {
+    "mean_ms": 0.3266406440734863,
+    "median_ms": 0.32608000934123993,
+    "min_ms": 0.3246079981327057,
+    "max_ms": 0.33689600229263306
+  },
+  "compiled_native_expr": {
+    "mean_ms": 0.35719040036201477,
+    "median_ms": 0.3563520014286041,
+    "min_ms": 0.35225600004196167,
+    "max_ms": 0.37676799297332764
+  }
+}

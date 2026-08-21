@@ -468,3 +468,18 @@ curl -fsS http://192.168.10.121:3000/
   custom reduction + fast-math mega-kernel 与本仓库 BF16 projection + FP32 recurrent
   的 strict output contract 不兼容，不能直接作为默认路径。若未来增加 non-strict
   precision tier，必须显式分离、默认关闭并报告 token/logprob 误差。
+
+### 2026-08-21 FFN producer-consumer `torch.compile` 可行性（拒绝）
+
+- [x] 在修改模型前先单独验证了目前最小的严格 FFN fusion 假设：`F.linear(4096→16384)
+  → relu² → F.linear(16384→4096)`。native `torch.relu().square()` 与当前 vLLM C++
+  `relu2` CUDA custom op 输出 `torch.equal`；`torch.compile(fullgraph=True)` 输出也
+  `torch.equal`，因此没有因数值误差提前放弃。
+- [x] 但 RTX 4090 D / SM89 的 50 次 steady CUDA-event 测量为：当前 eager custom path
+  `0.32584 ms`，native expression `0.32664 ms`，compiled expression `0.35719 ms`
+  （**+9.62% 更慢**）。Inductor 没有把两个 cuBLAS BF16 GEMV 与 activation 降成有利的
+  fused execution，且当前全模型 graph 已消除了大部分 host launch 成本。
+- [x] 因此不在模型中添加 compile flag，也不重复全模型 compile 的无收益路径。下一项
+  complete producer-consumer 融合必须实际减少 launch 或中间读写，同时逐 dot-product
+  保持 BF16 reduction contract。记录：
+  `benchmark_records/20260821_ffn_compile_fusion_feasibility/`。
