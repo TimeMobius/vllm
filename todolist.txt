@@ -1,7 +1,8 @@
 # RWKV7 vLLM-SP 性能优化追踪
 
-> **最后核对：2026-08-21（Asia/Shanghai，exact direct-cache full fusion 已验证）**
-> 2026-08-21：保留 strict direct-cache `sa + update + output` single-state-read fusion：服务精度为零差异，C=128 aggregate TPS `1365.38 → 1541.71`（+12.91%）。稳定服务为该 full-fusion 路径。
+> **最后核对：2026-08-21（Asia/Shanghai，x=32 exact direct-cache full fusion 为稳定路径）**
+> 2026-08-21：保留 strict direct-cache `sa + update + output` single-state-read fusion：服务精度为零差异，C=128 aggregate TPS `1365.38 → 1541.71`（+12.91%）。
+> 同日完成 x=16 CTA 精度/性能调优：算子与服务均零差异，但同会话 C=128 仅 +0.48%、C=1 仅 +0.06%，不保留；稳定服务继续使用 x=32 full-fusion 路径。
 > 工作目录：`/mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast`
 > 分支：`codex/rwkv7-sp-fast`
 > 目标：在严格数值对齐和回归测试门禁下，提高 RWKV7 的 **Full Decode CUDA Graph** 和高并发 decode 吞吐。
@@ -56,6 +57,12 @@ curl -fsS http://127.0.0.1:8030/health
 curl -fsS http://127.0.0.1:8030/v1/models
 screen -ls
 ```
+
+### 2026-08-21 Full-fusion CTA 资源调优（已拒绝，不影响稳定服务）
+
+- [x] 将 full-fusion recurrent CTA 从 `32 x 4` 做了**一致的** `16 x 4` 改写（kernel 内部和 launch 同时修改），使一个 CTA 覆盖一个 `[B,H,64]` 输出向量；shared memory `34,816 B → 17,408 B`（-50%），寄存器仍为 64/thread。
+- [x] 严格精度仍通过：direct-cache B=1/8/128、十步 recurrence 均为 output/full-cache `torch.equal`；focused suite `82 passed, 4 skipped`；8×16 service `logprobs=20` 全 trace byte-identical。
+- [x] **未保留**：同会话成对基准 C=128 `1537.02 → 1544.47 TPS`（+0.48%）、C=1 `27.37 → 27.38 TPS`（+0.06%），没有材料级服务收益。源码、二进制、8030 服务已恢复至 x=32 stable kernel。证据：`benchmark_records/20260821_exact_recurrent_t1_full_fusion_cta16_rejected/`。
 
 ## 2. 已保留优化（默认稳定路径）
 
@@ -246,3 +253,11 @@ curl -fsS http://192.168.10.121:3000/
 - C++/CUDA 变更前使用 vllm-sp 的 compiler/CUDA 变量，并通过既有 `/tmp/vllm-rwkv7-exact-build` 构建 `_C.abi3.so`；构建后再运行所有精度和服务测试。
 - 任何候选的默认开关必须可显式关闭并在不满足 layout/dtype/device guard 时 fallback。
 - 提交前检查 `git status --short`、focused suite、精度 A/B、C=128 benchmark 和 `benchmark_records` 完整性。
+
+
+## 8. 下一步优先级（2026-08-21 upstream/混合线性模型复核）
+
+1. [ ] **最高优先：C=1 BF16 projection/GEMV 的 strict-compatible 方案**。C=1 CUDA trace 中 `internal::gemvx` 约占 GPU 时间 82%，约 426 个 projection/step；recurrent cache 已不是 50+ TPS 的主瓶颈。任何 grouped/low-rank launch 编排必须逐 projection `torch.equal`，不得改变现有 BF16 GEMV reduction/cast/materialization 合约；完成后再做 8×16 service logprob 与 C=1/C=128 成对基准。
+2. [ ] **`mamba_cache_mode=all` 的 RWKV src/dst direct-cache recurrence**。借鉴 Mamba `state_batch_indices`/`dst_state_batch_indices` 与 Kimi KDA `initial_state + state_indices` 接口：从 source persistent FP32 row 做既有 exact recurrence，写 destination row；必须覆盖 src=dst、src≠dst、outer stride、padding 只读 slot 0/绝不写、duplicate dst guard。预期只改善 cache-all/prefix/跨 block 场景，不宣传为当前 align steady decode 提速。
+3. [ ] **GPU-only state migration / complex graph metadata**。已 fetch `upstream/main=5ee84d3c5207bd59faa53e19e60fa82e34961444`（2026-08-21 10:14:52 -0400）；可研究 `vllm/v1/worker/gpu/model_states/mamba_hybrid.py`、`vllm/v1/worker/mamba_utils.py` 的 byte-copy align-state 生命周期，以及 GDN/KDA 的 persistent GPU metadata staging。当前分支相对 upstream 为 local-only 161 / upstream-only 4,999，禁止盲目 merge/rebase；GDN/KDA recurrence 数学与 RWKV7 不同，不能移植其 kernel。
+4. [x] **Albatross sparse CMix 结论**：有 C=1 性能信号但当前 BF16 ordered sparse reduction 仍不 exact（服务 token/logprob 分歧），继续保持拒绝。只有 isolated `torch.equal(sparse, dense F.linear)`、multi-token full-cache 和服务 gate 全部为零差异才可重启该方向。

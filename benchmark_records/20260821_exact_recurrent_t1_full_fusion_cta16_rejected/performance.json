@@ -1,0 +1,30 @@
+{
+  "hardware": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf (xiaoke-5)",
+  "runtime": "vllm-sp; BF16 projections, FP32 recurrent state, Full Decode CUDA Graph",
+  "candidate": "full-fusion recurrent kernel with x=16/y=4 CTA; each CTA covers one [B,H,64] output vector",
+  "baseline": "retained full-fusion recurrence with x=32/y=4 CTA",
+  "resource_usage": {
+    "x32": {
+      "registers_per_thread": 64,
+      "shared_bytes": 34816
+    },
+    "x16": {
+      "registers_per_thread": 64,
+      "shared_bytes": 17408
+    },
+    "shared_memory_reduction_percent": 50.0
+  },
+  "c128": {
+    "baseline_aggregate_output_tps": 1537.021355520441,
+    "candidate_aggregate_output_tps": 1544.4670774788776,
+    "relative_change_percent": 0.48442540708326653,
+    "workload": "same-session paired: 128 closed-loop completion requests x 32 tokens, two post-warmup rounds"
+  },
+  "c1": {
+    "baseline_output_tps": 27.366676760084804,
+    "candidate_output_tps": 27.384024680725098,
+    "relative_change_percent": 0.06339067323510861,
+    "workload": "same-session paired: one completion request x 32 tokens, four post-warmup rounds"
+  }
+}

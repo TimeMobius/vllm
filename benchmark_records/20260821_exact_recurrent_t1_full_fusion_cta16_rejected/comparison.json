@@ -1,0 +1,18 @@
+{
+  "accuracy_gate_passed": true,
+  "performance_gate_passed": false,
+  "retained": false,
+  "reason": "Although x=16 halves shared memory, the paired gains are below the project materiality threshold and C=1 is unchanged. Keep the proven x=32 kernel to avoid a more fragmented CTA layout without a measurable serving benefit.",
+  "primary_result": {
+    "baseline_aggregate_output_tps": 1537.021355520441,
+    "candidate_aggregate_output_tps": 1544.4670774788776,
+    "relative_change_percent": 0.48442540708326653,
+    "workload": "same-session paired: 128 closed-loop completion requests x 32 tokens, two post-warmup rounds"
+  },
+  "secondary_result": {
+    "baseline_output_tps": 27.366676760084804,
+    "candidate_output_tps": 27.384024680725098,
+    "relative_change_percent": 0.06339067323510861,
+    "workload": "same-session paired: one completion request x 32 tokens, four post-warmup rounds"
+  }
+}

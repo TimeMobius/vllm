@@ -1,0 +1,27 @@
+{
+  "comparison": "x=16 full-fusion CTA vs retained x=32 full-fusion direct-cache recurrence",
+  "operator_gate": {
+    "unit_test_command": "tests/model_executor/test_rwkv7.py::test_rwkv7_recurrent_t1_exact_direct_cache_matches_reference + test_rwkv7_recurrent_t1_exact_direct_cache_full_fusion_matches_over_steps",
+    "result": "9 passed",
+    "batch_sizes": [
+      1,
+      8,
+      128
+    ],
+    "single_step_seeds_per_case": 3,
+    "recurrent_steps": 10,
+    "comparison": "valid output and whole cache torch.equal"
+  },
+  "focused_rwkv7_suite": {
+    "command": "tests/model_executor/test_rwkv7.py",
+    "result": "82 passed, 4 skipped"
+  },
+  "service_gate": {
+    "workload": "8 prompts x 16 decode steps, greedy, logprobs=20, Full Decode CUDA Graph",
+    "text_mismatch": 0,
+    "token_mismatch": 0,
+    "selected_logprob_max_abs_error": 0.0,
+    "common_topk_logprob_max_abs_error": 0.0,
+    "strict_equal_full_trace": true
+  }
+}
