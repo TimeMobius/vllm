@@ -80,6 +80,11 @@ screen -ls
 - [x] 试验 `RWKV7_USE_MAIN_R_G_PROJECTIONS=1`：把 `R+G` 留在 current stream、只用两个 child streams 执行 `K+W+A` 和 `V+V-gate`，以减少每层一组 fork/join；不改变 BF16 `F.linear`、LoRA activation、dtype 或 reduction。服务 8×16 `logprobs=20` trace byte-identical，Full Decode graph `1..128` capture 成功。
 - [x] C=1 32-token 却从 `28.4558 → 28.4488 TPS`（-0.024%）。减少 event 开销抵不过 launch concurrency 变化，低于 materiality gate；已完整 restore source 与启动 flag，继续保留三个 child streams 的稳定实现。证据：`benchmark_records/20260821_main_stream_rg_rejected/`。
 
+### 2026-08-21 `--max-num-batched-tokens 8192`（拒绝）
+
+- [x] 为排查高并发 scheduler 是否受默认 2048 token budget 限制，测试 `--max-num-batched-tokens 8192`（128 请求 × 49 prompt tokens = 6,272 prompt tokens）。数学路径未变：8×16 `logprobs=20` service trace byte-identical，Full Decode graph `1..128` capture 成功。
+- [x] 固定负载 C=1 `28.4540 → 28.4827 TPS`（+0.10%，噪声），C=128 aggregate `1568.15 → 1565.60 TPS`（-0.16%）。scheduler budget 不是当前高并发瓶颈；已移除启动 override，保持默认 2048。证据：`benchmark_records/20260821_max_num_batched_tokens_8192_rejected/`。
+
 ### 2026-08-21 C=1 multi-stream R/K/V projection（已保留）
 
 - [x] 新增显式开关 `RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1`：仅对 TP=1、direct linear、**decode batch=1** 的独立 R/K/V BF16 `F.linear`，在三个 lazy CUDA child streams 并行提交。main stream 先 record readiness event，三个 branch 完成后全部 wait 才进入 recurrence；F.linear 的 input / weight / bias / dtype / reduction contract 完全不变。batch > 1 回退稳定单 stream，避免把 stream synchronization 开销带到高并发 graph replay。

@@ -1,0 +1,21 @@
+{
+  "date": "2026-08-21",
+  "candidate": "--max-num-batched-tokens 8192",
+  "status": "rejected",
+  "baseline": {
+    "max_num_batched_tokens": 2048,
+    "c1_32_token_output_tps": 28.454041098506792,
+    "c128_aggregate_output_tps": 1568.1516530403574
+  },
+  "candidate_performance": {
+    "c1_32_token_output_tps": 28.482666790812942,
+    "c1_percent_change": 0.1006047117560719,
+    "c128_aggregate_output_tps": 1565.5950615726779,
+    "c128_percent_change": -0.16303239275137158
+  },
+  "correctness": {
+    "service_trace": "8 prompts x 16 greedy decode with logprobs=20 is byte-identical to the strict baseline",
+    "full_decode_graph": "all configured sizes 1,2,4,8,16,32,64,128 captured successfully"
+  },
+  "decision": "The 8192-token scheduler budget did not improve the fixed C=128 workload and is slightly slower. Restore the default 2048 budget."
+}
