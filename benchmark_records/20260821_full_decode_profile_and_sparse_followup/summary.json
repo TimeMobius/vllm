@@ -1,0 +1,33 @@
+{
+  "date": "2026-08-21",
+  "status": "profiled_stable_path_no_new_runtime_candidate_retained",
+  "device": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "stable_contract": "BF16 projections -> FP32 recurrent state -> exact direct-cache recurrent reduction/update -> Full Decode CUDA Graph",
+  "service_results": {
+    "c1_post_restore_tps": 28.451699795732885,
+    "c1_profiled_tps": 28.409917237042126,
+    "c128_profiled_aggregate_tps": 1532.886914389705,
+    "c128_idealized_per_request_tps": 11.975679
+  },
+  "profile": {
+    "c1_graph_gpu_span_ms": 35.27,
+    "c1_projection_kernel_sum_ms_over_8_replays": 307.621,
+    "c128_generation_graph_gpu_span_ms": [73.904, 75.216],
+    "c128_projection_kernel_sum_ms_over_7_replays": 339.377,
+    "c128_projection_ms_per_graph": 48.482,
+    "c128_exact_recurrent_ms_per_graph": 22.160,
+    "c128_native_gather_store_ms_per_graph": 1.012
+  },
+  "sparse_followup": {
+    "scope": "temporary isolated prototype only; not linked into vLLM",
+    "synthetic_zero_fraction": 0.94,
+    "baseline_us": 166.8176,
+    "candidate_us": 118.3579,
+    "speedup": 1.4094,
+    "output_equal": false,
+    "different_bf16_elements": 2,
+    "max_abs_error": 0.000244140625,
+    "decision": "rejected_before_service_integration"
+  }
+}

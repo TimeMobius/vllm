@@ -215,6 +215,16 @@ screen -ls
 - [x] **ngram speculative decoding（2026-08-21，拒绝）**：尝试不改模型权重、由目标模型 verify 的 prompt-lookup ngram（4 speculative tokens，window 2–5），以评估是否能通过 speculative path 达到 C=1 目标。vLLM 会强制从 `FULL_DECODE_ONLY` 降级为 `PIECEWISE` CUDA Graph，并关闭 async scheduling；虽观测到 mean acceptance length `3.50`、draft acceptance `62.5%`，C=1 仍由稳定 `26.2068` 降至 `17.2220 TPS`（**-34.29%**）。8×16 greedy 文本/token 相同，但 selected logprob max `0.00190655`、common Top-K max `0.12647915`，不满足严格服务门禁。稳定服务已恢复。证据：`benchmark_records/20260821_ngram_speculative_rejected/`。
 - [x] **`--async-scheduling` 配置 A/B（2026-08-21，不保留）**：这是不改模型计算且仍保留 `FULL_DECODE_ONLY` graph 的低风险 scheduler 候选；8×16 `logprobs=20` 严格 0 差异。clean-restart paired 结果为 C=1 post-warmup `25.9699 → 25.9774 TPS`（+0.03%），C=128 aggregate `1251.4257 → 1253.2730 TPS`（+0.15%），都低于噪声/1%门限；稳定启动命令不添加该开关。证据：`benchmark_records/20260821_async_scheduler_no_gain/`。
 
+
+### 3.1 2026-08-21：稳定 Full Decode C=1/C=128 profile 与 sparse 精度后续
+
+- [x] **稳定 profile 已完成并已恢复服务**：仅在 dashboard `running=false` 的空闲窗口短暂启用 vLLM torch profiler，随后用 `/tmp/start_rwkv7_fullgraph_t1_direct_cache.sh` 恢复 8030；`/health` 200，8 prompts × 16 greedy / `logprobs=20` 与严格基线字节级零差，post-restore C=1 为 **28.4517 TPS**。
+- [x] **高并发“慢”的量化解释**：C=128 不是单请求吞吐；profiled closed-loop 是 **1532.89 aggregate TPS**，折算每活跃请求约 **11.98 TPS**。每个 `generation_128` Full Decode graph GPU span 为 **73.90–75.22 ms**，因此所有 128 请求必须共同等待这一 token step；不是 scheduler/HTTP 单点卡住。
+- [x] **最大收益瓶颈**：C=128 七次 graph replay 中 BF16 CUTLASS decoder projections 为 `339.377 ms`（约 **48.48 ms/graph**），exact FP32 direct-cache recurrent full fusion 为 `155.119 ms`（约 **22.16 ms/graph**）。C=1 graph GPU span 约 `35.27 ms/token`，projection 仍是关键路径；host `execute_context` 约 4 ms，单做 scheduler/K-step host 优化不足以到严格 C=1 50+ TPS。
+- [x] **Albatross sparse CMix 精度继续尝试（未接入）**：临时 tiled active-index prototype 在 synthetic 94% zero 的 isolated down GEMV `166.82 → 118.36 us`（1.41x），但仍有 `2 / 4096` BF16 输出不同、max abs `2.44140625e-4`。它复现了已拒绝 ordered sparse CMix 的 reduction-contract 问题，未进入服务/仓库；下一次必须先做到 dense BF16 GEMV reduction-compatible，再进入单层→服务 logprob→Full Graph 测试链。
+- [x] **upstream 审查**：已 fetch `upstream/main`，但当前 RWKV7 branch/state lifecycle 大幅分叉；MTP/speculative、attention/KV residency 等近期改动依赖模型特定 draft/KV 合同，不能 blind merge。保留可借鉴的固定 GPU metadata、graph padding/warmup/fallback 设计，不引入不等价模型代码。
+- [x] 证据：`benchmark_records/20260821_full_decode_profile_and_sparse_followup/`。
+
 ## 4. 当前性能判断
 
 ### 4.1 C=1 与 C=128 是不同目标
