@@ -1,0 +1,49 @@
+{
+  "date": "2026-08-21",
+  "reference": "strict direct-cache Full Decode CUDA Graph service trace (/tmp/rwkv7_t1_exact_output_trace.json)",
+  "workload": {
+    "requests": 8,
+    "decode_tokens_per_request": 16,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "ignore_eos": true,
+    "logprobs": 20
+  },
+  "candidate": "recovered prebuilt BF16 sparse CMix-down object, one FFN layer allowlisted at a time",
+  "layers": {
+    "0": {
+      "text_mismatch": 0,
+      "token_ids_mismatch": 0,
+      "selected_logprob_max_abs_error": 0.11367213726043701,
+      "selected_logprob_mean_abs_error": 0.0013592755026365921,
+      "common_topk_logprob_max_abs_error": 0.37485313415527344,
+      "common_topk_logprob_mean_abs_error": 0.006151468516587256
+    },
+    "1": {
+      "text_mismatch": 1,
+      "token_ids_mismatch": 1,
+      "selected_logprob_max_abs_error": 1.017645239830017,
+      "selected_logprob_mean_abs_error": 0.02611555109785968,
+      "common_topk_logprob_max_abs_error": 11.437089443847071,
+      "common_topk_logprob_mean_abs_error": 0.01368507183926215
+    },
+    "30": {
+      "text_mismatch": 1,
+      "token_ids_mismatch": 1,
+      "selected_logprob_max_abs_error": 1.8161127865314484,
+      "selected_logprob_mean_abs_error": 0.05600559305909769,
+      "common_topk_logprob_max_abs_error": 14.175958514213562,
+      "common_topk_logprob_mean_abs_error": 0.03455404404971018
+    },
+    "60": {
+      "text_mismatch": 0,
+      "token_ids_mismatch": 0,
+      "selected_logprob_max_abs_error": 0.000012159347534179688,
+      "selected_logprob_mean_abs_error": 0.00000017453749023843557,
+      "common_topk_logprob_max_abs_error": 0.015616416931152344,
+      "common_topk_logprob_mean_abs_error": 0.00004285161421648809
+    }
+  },
+  "decision": "Reject for the strict default path: every scanned layer has nonzero logprob error; layers 1 and 30 also cause greedy-token divergence."
+}

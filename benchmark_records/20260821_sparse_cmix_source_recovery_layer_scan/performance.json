@@ -1,0 +1,28 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp / Python 3.11.15 / PyTorch 2.11.0+cu130",
+  "workload": {
+    "endpoint": "/v1/completions",
+    "model": "xiaoke-5",
+    "concurrency": 1,
+    "num_requests": 1,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "ignore_eos": true,
+    "cudagraph_mode": "FULL_DECODE_ONLY"
+  },
+  "candidate": {
+    "sparse_cmix_down_layer": 60,
+    "aggregate_output_tps": [25.973172358468553, 26.25400191610286, 26.176278019177357],
+    "post_warmup_mean_aggregate_output_tps": 26.21513996764011
+  },
+  "strict_direct_cache_reference": {
+    "aggregate_output_tps": [25.95368551459087, 26.22430746300917, 26.189387288902385],
+    "post_warmup_mean_aggregate_output_tps": 26.206847375955775
+  },
+  "post_warmup_speedup_percent": 0.03164209559560875,
+  "decision": "No material endpoint speedup from a one-layer allowlist; it also misses strict logprob parity."
+}
