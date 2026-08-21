@@ -1,0 +1,14 @@
+{
+  "date": "2026-08-21",
+  "candidate": "fused BF16-to-FP32 cast and k/kk preparation",
+  "flag": "RWKV7_USE_FUSED_CAST_KK_PRE=1",
+  "isolated_exact_batches": [1, 8, 128],
+  "focused_regression": "92 passed, 4 skipped",
+  "service_accuracy": "byte-identical (8 prompts x 16, logprobs=20)",
+  "c1_candidate_mean_tps": 28.903504070028724,
+  "c128_candidate_tps": [1603.2530773139495, 1608.442143523658, 1605.467939320079, 1599.02036595329],
+  "c128_candidate_mean_tps": 1604.0458815277443,
+  "prior_retained_bulk_stream_mean_tps": 1584.9967112906647,
+  "c128_incremental_speedup_percent": 1.201291863213003,
+  "decision": "retained"
+}

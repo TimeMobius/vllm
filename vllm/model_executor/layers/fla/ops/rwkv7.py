@@ -660,6 +660,83 @@ def rwkv7_kk_pre(
 
 
 @triton.jit
+def rwkv7_cast_kk_pre_fwd_kernel(
+    r, w, k, a, v, k_k, k_a,
+    r_out, w_out, k_out, v_out, kk_out, a_out,
+    num_rows, num_heads, head_dim, eps,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    if row >= num_rows:
+        return
+    offsets = tl.arange(0, BLOCK_SIZE)
+    mask = offsets < head_dim
+    row_offset = row * head_dim
+    head_offset = (row % num_heads) * head_dim
+    r_vals = tl.load(r + row_offset + offsets, mask=mask, other=0).to(tl.float32)
+    w_vals = tl.load(w + row_offset + offsets, mask=mask, other=0).to(tl.float32)
+    k_vals = tl.load(k + row_offset + offsets, mask=mask, other=0).to(tl.float32)
+    a_vals = tl.load(a + row_offset + offsets, mask=mask, other=0).to(tl.float32)
+    v_vals = tl.load(v + row_offset + offsets, mask=mask, other=0).to(tl.float32)
+    k_k_vals = tl.load(k_k + head_offset + offsets, mask=mask, other=0).to(tl.float32)
+    k_a_vals = tl.load(k_a + head_offset + offsets, mask=mask, other=0).to(tl.float32)
+    kk_raw = k_vals * k_k_vals
+    kk_vals = kk_raw * tl.rsqrt(tl.sum(kk_raw * kk_raw, axis=0) + eps)
+    k_adj = k_vals * (1 + (a_vals - 1) * k_a_vals)
+    tl.store(r_out + row_offset + offsets, r_vals, mask=mask)
+    tl.store(w_out + row_offset + offsets, w_vals, mask=mask)
+    tl.store(k_out + row_offset + offsets, k_adj, mask=mask)
+    tl.store(v_out + row_offset + offsets, v_vals, mask=mask)
+    tl.store(kk_out + row_offset + offsets, kk_vals, mask=mask)
+    tl.store(a_out + row_offset + offsets, a_vals, mask=mask)
+
+
+def rwkv7_cast_kk_pre(
+    r: torch.Tensor,
+    w: torch.Tensor,
+    k: torch.Tensor,
+    a: torch.Tensor,
+    v: torch.Tensor,
+    k_k: torch.Tensor,
+    k_a: torch.Tensor,
+    *,
+    eps: float = 1e-12,
+) -> tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+]:
+    """Fuse exact BF16->FP32 casts with RWKV7's k/kk preparation.
+
+    The specialized path is intentionally limited to equal 64-wide R/W/K/A/V
+    head layouts. It preserves the existing Triton kk-pre expression and only
+    removes materialized FP32 k/a intermediates and separate cast kernels.
+    """
+    tensors = (r, w, k, a, v)
+    if (
+        not HAS_TRITON
+        or any(x.device.type != "cuda" or x.dtype != torch.bfloat16 for x in tensors)
+        or any(x.ndim != 3 or not x.is_contiguous() for x in tensors)
+        or r.shape != w.shape or r.shape != k.shape or r.shape != a.shape
+        or r.shape != v.shape or r.shape[-1] != 64
+        or k_k.shape != k_a.shape or k_k.shape != r.shape[1:]
+    ):
+        r32, w32, k32, a32, v32 = (x.to(torch.float32) for x in tensors)
+        k32, kk = rwkv7_kk_pre(k32, k_k, a32, k_a, eps=eps)
+        return r32, w32, k32, v32, kk, a32
+    r_out, w_out, k_out, v_out, kk_out, a_out = (
+        torch.empty_like(x, dtype=torch.float32) for x in (r, w, k, v, k, a)
+    )
+    num_rows = r.shape[0] * r.shape[1]
+    rwkv7_cast_kk_pre_fwd_kernel[(num_rows,)](
+        r, w, k, a, v, k_k, k_a,
+        r_out, w_out, k_out, v_out, kk_out, a_out,
+        num_rows, r.shape[1], r.shape[2], eps,
+        BLOCK_SIZE=64,
+        num_warps=4,
+    )
+    return r_out, w_out, k_out, v_out, kk_out, a_out
+
+
+@triton.jit
 def rwkv7_lnx_rkvres_xg_fwd_kernel(
     recurrent_output,
     r,

@@ -29,6 +29,7 @@ from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7_with_checkpoints,
     rwkv7_alt_recurrent,
     rwkv7_alt_recurrent_available,
+    rwkv7_cast_kk_pre,
     rwkv7_kk_pre,
     rwkv7_kk_pre_reference,
     rwkv7_lnx_rkvres_xg,
@@ -1386,13 +1387,26 @@ class RWKV7Attention(nn.Module):
             a = self.a_lora(xa).sigmoid()
             g = self.g_lora(xg)
 
-        r = r.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        w = w.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        k = k.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        a = a.view(-1, self.local_num_heads, self.head_dim).to(torch.float32)
-        v = v.view(-1, self.local_num_heads, self.head_v_dim).to(torch.float32)
+        r = r.view(-1, self.local_num_heads, self.head_dim)
+        w = w.view(-1, self.local_num_heads, self.head_dim)
+        k = k.view(-1, self.local_num_heads, self.head_dim)
+        a = a.view(-1, self.local_num_heads, self.head_dim)
+        v = v.view(-1, self.local_num_heads, self.head_v_dim)
 
-        k, kk = self._prepare_recurrent_key_terms(k, a)
+        if (
+            _rwkv7_env_flag_enabled("RWKV7_USE_FUSED_CAST_KK_PRE", default=False)
+            and self.head_dim == self.head_v_dim == 64
+        ):
+            r, w, k, v, kk, a = rwkv7_cast_kk_pre(
+                r, w, k, a, v, *self._get_local_key_constants_fp32()
+            )
+        else:
+            r = r.to(torch.float32)
+            w = w.to(torch.float32)
+            k = k.to(torch.float32)
+            a = a.to(torch.float32)
+            v = v.to(torch.float32)
+            k, kk = self._prepare_recurrent_key_terms(k, a)
         return r, w, k, v, kk, a, g, v_first_out
 
     def _run_recurrent_sequence(

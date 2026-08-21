@@ -38,6 +38,7 @@ RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE=1 \
 RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1 \
 RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS=1 \
 RWKV7_USE_MULTISTREAM_BULK_DECODE=1 \
+RWKV7_USE_FUSED_CAST_KK_PRE=1 \
 /mnt/data/anaconda3/envs/vllm-sp/bin/vllm serve \
   /hikscale/models/XiaoKe/rwkv-0-hf \
   --served-model-name xiaoke-5 \
@@ -216,6 +217,12 @@ screen -ls
 - [x] **ngram speculative decoding（2026-08-21，拒绝）**：尝试不改模型权重、由目标模型 verify 的 prompt-lookup ngram（4 speculative tokens，window 2–5），以评估是否能通过 speculative path 达到 C=1 目标。vLLM 会强制从 `FULL_DECODE_ONLY` 降级为 `PIECEWISE` CUDA Graph，并关闭 async scheduling；虽观测到 mean acceptance length `3.50`、draft acceptance `62.5%`，C=1 仍由稳定 `26.2068` 降至 `17.2220 TPS`（**-34.29%**）。8×16 greedy 文本/token 相同，但 selected logprob max `0.00190655`、common Top-K max `0.12647915`，不满足严格服务门禁。稳定服务已恢复。证据：`benchmark_records/20260821_ngram_speculative_rejected/`。
 - [x] **`--async-scheduling` 配置 A/B（2026-08-21，不保留）**：这是不改模型计算且仍保留 `FULL_DECODE_ONLY` graph 的低风险 scheduler 候选；8×16 `logprobs=20` 严格 0 差异。clean-restart paired 结果为 C=1 post-warmup `25.9699 → 25.9774 TPS`（+0.03%），C=128 aggregate `1251.4257 → 1253.2730 TPS`（+0.15%），都低于噪声/1%门限；稳定启动命令不添加该开关。证据：`benchmark_records/20260821_async_scheduler_no_gain/`。
 
+
+### 2.9 2026-08-21：fused BF16→FP32 recurrent preparation（已保留）
+
+- [x] 新增 `RWKV7_USE_FUSED_CAST_KK_PRE=1`：将 R/W/K/A/V 的 BF16→FP32 materialization 与既有 exact Triton `k` adjust/`kk` normalize 合并，限 equal 64-wide layout；其余 layout 自动 fallback，算术表达式保持现有 kk-pre 合同。
+- [x] isolated B=1/8/128 六个输出均 `torch.equal`，服务 8×16 `logprobs=20` byte-identical，Full Decode graph `1..128` 成功；focused regression **92 passed, 4 skipped**。C=1 `28.904 TPS`，C=128 四样本 **1604.05 aggregate TPS**，相对已保留 bulk stream `1584.997` 再增 **+1.20%**。
+- [x] 稳定启动脚本已加入此开关；证据：`benchmark_records/20260821_fused_cast_kk_pre_retained/`。
 
 ### 3.0 2026-08-21：C=128 projection bulk multistream（已保留）
 

@@ -36,6 +36,7 @@ from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
     rwkv7_alt_recurrent,
+    rwkv7_cast_kk_pre,
     rwkv7_kk_pre,
     rwkv7_kk_pre_reference,
     rwkv7_lnx_rkvres_xg,
@@ -960,6 +961,35 @@ def test_rwkv7_kk_pre_triton_matches_reference():
 
     torch.testing.assert_close(actual_k, expected_k, atol=1e-6, rtol=1e-6)
     torch.testing.assert_close(actual_kk, expected_kk, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("batch_size", [1, 8, 128])
+def test_rwkv7_cast_kk_pre_matches_separate_exact_path(batch_size):
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("bfloat16 is not supported on this CUDA device.")
+
+    generator = torch.Generator(device="cuda").manual_seed(20260821 + batch_size)
+    inputs = tuple(
+        torch.randn(
+            batch_size, 8, 64, device="cuda", dtype=torch.bfloat16,
+            generator=generator,
+        )
+        for _ in range(5)
+    )
+    k_k = torch.randn(8, 64, device="cuda", generator=generator)
+    k_a = torch.randn(8, 64, device="cuda", generator=generator)
+    r, w, k, a, v = inputs
+    expected_r, expected_w, expected_k, expected_a, expected_v = (
+        x.to(torch.float32) for x in inputs
+    )
+    expected_k, expected_kk = rwkv7_kk_pre(expected_k, k_k, expected_a, k_a)
+    actual = rwkv7_cast_kk_pre(r, w, k, a, v, k_k, k_a)
+    expected = (
+        expected_r, expected_w, expected_k, expected_v, expected_kk, expected_a
+    )
+    for output, reference in zip(actual, expected, strict=True):
+        assert torch.equal(output, reference)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
