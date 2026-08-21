@@ -1,0 +1,26 @@
+{
+  "date": "2026-08-21",
+  "candidate": "--dtype float16; otherwise identical to stable Full Decode CUDA Graph service",
+  "strict_accuracy_gate": {
+    "reference": "/tmp/rwkv7_service_trace_before_aux.json",
+    "prompts": 8,
+    "decode_steps_per_prompt": 16,
+    "text_mismatches": 2,
+    "token_mismatches": 2,
+    "top1_disagreements": 25,
+    "total_decode_positions": 128,
+    "max_selected_logprob_error": 2.7019357681274414,
+    "mean_selected_logprob_error": 0.18231092476891497,
+    "max_common_topk_logprob_error": 10.360044971108437,
+    "mean_common_topk_logprob_error": 0.10048168203302041
+  },
+  "throughput": {
+    "fp16_c1_output_tps": 28.458065696397902,
+    "bf16_c1_output_tps": 28.45389896366714,
+    "c1_percent_change": 0.014643802369862513,
+    "fp16_c128_aggregate_output_tps": 1557.3262935342602,
+    "bf16_c128_aggregate_output_tps": 1562.6168519747025,
+    "c128_percent_change": -0.33857042011011806
+  },
+  "decision": "rejected; strict BF16 service restored"
+}

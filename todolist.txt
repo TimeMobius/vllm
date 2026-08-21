@@ -437,3 +437,34 @@ curl -fsS http://192.168.10.121:3000/
   replacement，必须尝试同时减少 launch 的 complete producer-consumer fusion，
   且保持原 BF16 reduction/activation rounding contract。记录：
   `benchmark_records/20260821_native_bf16_lora_input_gemv_persistent_candidate/`。
+
+### 2026-08-21 FP16 model-dtype candidate（拒绝，BF16 严格服务已恢复）
+
+- [x] 为按 Albatross 的 FP16 方向继续压低精度误差而不是直接假设不可行，保持所有
+  Full Decode CUDA Graph、exact FP32 direct-cache recurrent、native gather/store 与多
+  stream 开关不变，仅将服务模型 dtype 从 `bfloat16` 改为 `float16` 做了完整服务级
+  A/B。
+- [x] 8 prompts × 16 greedy、`logprobs=20` 对严格 BF16 基线出现 **2/8** text/token
+  分歧、`25/128` Top-1 分歧；selected-token logprob 最大误差 `2.70193577`，common
+  Top-K 最大误差 `10.36004497`。这不是可通过轻微阈值放宽接受的误差：递归 decode
+  已发生 token 路径改变。
+- [x] paired HTTP 性能也没有收益：C=1 `28.4581 TPS` 对恢复后的严格 BF16
+  `28.4539 TPS`（`+0.01%`）；C=128 aggregate `1557.3263` 对 `1562.6169 TPS`
+  （`-0.34%`）。因此 FP16 既不满足精度，也不能提升当前 vLLM graph 路径。
+- [x] 已恢复稳定 BF16 服务，恢复后 trace 与 `/tmp/rwkv7_service_trace_before_aux.json`
+  **byte-identical**。证据：`benchmark_records/20260821_fp16_model_dtype_candidate/`。
+
+### 当前下一主线（2026-08-21）
+
+- [ ] 目标 C=1 50+ TPS 需要从当前约 `28.45 TPS` 缩短约 `35.1 → 20 ms/token`。61 层
+  direct-linear 路径的约 852 个 block-internal BF16 `F.linear` 是主耗时；严格
+  direct-cache/metadata/stream-only 路线已经接近个位数百分比上限。
+- [ ] 不重复已拒绝的 standalone LoRA-input GEMV。优先评估能保留单个 GEMV
+  reduction contract、但减少跨算子 launch/中间读写的 **complete producer-consumer
+  fusion**：先从 FFN `key → SqReLU → value` 和 LoRA `linear → activation → linear`
+  的 compile/fusion feasibility 开始，必须按 isolated `torch.equal`、模型张量、长
+  decode、服务 logprob、Full Graph、C=1/C=128 逐层门禁。
+- [ ] Albatross 仅作为 B=1/T=1 的 tile、数据驻留和 launch 编排参考；其 FP16 +
+  custom reduction + fast-math mega-kernel 与本仓库 BF16 projection + FP32 recurrent
+  的 strict output contract 不兼容，不能直接作为默认路径。若未来增加 non-strict
+  precision tier，必须显式分离、默认关闭并报告 token/logprob 误差。
