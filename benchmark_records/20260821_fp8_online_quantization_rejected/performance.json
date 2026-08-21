@@ -1,0 +1,23 @@
+{
+  "candidate": "vLLM online FP8 weights + dynamic FP8 activation",
+  "platform": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "full_decode_cudagraph": true,
+  "mamba_cache_mode": "align",
+  "c1_tps_runs": [
+    30.620569472301895,
+    31.03787303980778,
+    30.746214241758636
+  ],
+  "c1_tps_mean_last_two": 30.892043640783207,
+  "c1_reference_strict_direct_cache_long_decode_tps": 27.181,
+  "c1_change_percent_vs_long_decode_reference": 13.653079874850826,
+  "c128_tps_runs": [
+    1199.9654051023913,
+    1222.5200761014646,
+    1214.6411683334964
+  ],
+  "c128_tps_mean_last_two": 1218.5806222174806,
+  "c128_reference_strict_direct_cache_tps": 1205.23,
+  "c128_change_percent_vs_direct_cache": 1.1077240209321548
+}

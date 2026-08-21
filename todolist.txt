@@ -12,7 +12,7 @@
 - [x] Full Decode CUDA Graph 已验证并运行：capture sizes 为 `1,2,4,8,16,32,64,128`。
 - [x] 当前稳定服务在 `http://127.0.0.1:8030`（局域网地址：`http://192.168.10.121:8030`）。
 - [x] `2026-08-21` 已验证 `/health` 返回 HTTP 200，`/v1/models` 返回 `xiaoke-5`。
-- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；同日 `/api/status` 返回最近一次测试成功，保存 8 条记录。
+- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；`2026-08-21 20:10:34` 重新 POST 测试完成、成功保存 8 条记录。该 sweep 报告 C=1 `37.3 t/s`、C=128 `13.8 t/s`（后者是每请求而非 aggregate；128 并发 aggregate 约 `1766 t/s` 的 dashboard 口径，不能与本地 128 closed-loop、32-token 基准直接混用）。
 - [x] 使用 NVIDIA GeForce RTX 4090 D（sm89）、BF16 projection、FP32 recurrent state；Python 统一使用 vllm-sp 环境。
 
 ### 稳定启动命令
@@ -84,7 +84,7 @@ screen -ls
   `benchmark_records/20260821_exact_recurrent_t1_output_reduction_full_graph/`。
 
 默认开关：`RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1`；回退：设为 `0`。
-### 2.3 精确 T=1 直接更新 persistent recurrent cache（新增）
+### 2.3 精确 T=1 直接更新 persistent recurrent cache（新增，`15330b229`）
 
 - [x] `2026-08-21` 新增 `rwkv7_recurrent_t1_exact_direct_cache`：对 Full Decode CUDA Graph 的 `mamba_cache_mode=align`，直接读取、严格更新并写回 persistent FP32 recurrent cache，消除每层 `[B,H,64,64]` recurrent state 的 gather 与 store。
 - [x] 支持实际 vLLM cache 的 strided `[slots,H,64,64]` view（slot stride 可大于一个 state row）；仅接受内部 `(4096,64,1)` 连续布局。`slot_id=-1` 的 graph padding lane 可读取 slot 0 但绝不写 cache；`cache_all`、prefill、eager、CPU、非 FP32、非兼容 layout 自动 fallback。
@@ -204,12 +204,15 @@ curl -fsS http://192.168.10.121:3000/
 
 ## 6. 下一阶段优先级
 
+
 1. [ ] **保持 dense BF16 reduction contract 的 sparse/structured CMix（最高优先级，C=1）**：已验证 ordered FP32 sparse GEMV 有 +6.40% 服务潜力但仍发生 recursive token divergence，不能重复接入。下一次只探索能复用/匹配 CUTLASS tensor-core reduction 的结构化稀疏、或在不改变每个 dense projection reduction 的前提下融合/减少 projection launch；先做 `torch.equal` 与 8×16 service gate。
 2. [ ] **小 projection 调度/融合（C=1）**：profile 显示约 426 个 small linear/step。优先探索可 CUDA-graph-capture 的 grouped/low-rank projection dispatch；不得拼接 r/k/v 改变数学矩阵形状。`cublasGemmBatchedEx`/strided batched 目前在 M=1 或 M=128 输出不 strict exact，不能直接接入。
 3. [x] **cublasLt isolated algorithm profiling**：已覆盖 decoder/FFN `M=1/8/32/128`、0/4/8/32/64/256 MiB workspace；strict exact 候选在 C=128 与 PyTorch/CUTLASS 持平量级，未接入。
 4. [x] **C=128 Full Decode trace（2026-08-21）**：10 个 `generation_128` graph replay 为 `173.95 ms/graph`（约 735.8 raw aggregate tok/s）；CUTLASS projection 23.94%、ATen elementwise 21.83%、ATen reductions 14.54%、大 FP32 recurrent-state gather/store 合计 20.28%、exact state update 9.84%。idle API 三轮为 `704.10 / 708.56 / 706.67 TPS`，后两轮均值 `707.61`；与外部 dashboard 的 1→128 sweep 重叠会显著污染 client TPS，不能混用。`uint4` copy-only A/B 不稳定且无收益，未接入。证据：`benchmark_records/20260821_c128_full_decode_profile/`。
-5. [ ] 保持追踪官方 upstream：2026-08-21 已 `git fetch upstream main` 到 `36bad1b90`（当前分支落后 4,993 commits，不能盲目 merge）。重点阅读 Kimi K3/KDA fused decode 与 Qwen3.5 GDN/linear-attention 的 state layout、native fused decode/graph guard；只有可独立、数值安全的实现才 backport。
+5. [x] **官方 upstream 审查（2026-08-21）**：已 fetch 且核实远端 `upstream/main=a60c66e3d`（同日官方 tip）；当前分支相对其为本地独有 153、upstream 独有 4,996 commits，不能盲目 merge/rebase。已审阅 Kimi K3/KDA、Qwen3.5 GDN、Mamba hybrid cache：借鉴 decode-only guard、persistent-state 原地 mutation、固定输出 buffer、warm-up 和 fallback；不移植其不同数学的 recurrent kernels。官方当前没有名为 Qwen3.6 或 Qwen3.8 的同名 model implementation。
 6. [ ] 将每个有效改动按阶段提交：有意义的 commit message、`Assisted-by: Codex` trailer、完整测试与 benchmark record；不要 push remote。
+8. [x] **online FP8 量化探索（拒绝）**：`--quantization fp8` 仍可 Full Decode CUDA Graph，C=1 `30.89 TPS`（约 +17.9%）且 C=128 `1218.58 TPS`（约 +1.11%）；但相对严格服务 8×16 gate 出现 `5/8` text/token 分歧、selected logprob max `3.20997`、common Top-K max `13.64159`。这是模型质量变化，不是可接受的末位误差；稳定 BF16 服务已恢复。证据：`benchmark_records/20260821_fp8_online_quantization_rejected/`。
+7. [x] **稳定服务 / 外部复测（2026-08-21）**：`15330b229` 服务已在 `127.0.0.1:8030` 以 direct-cache 开关启动，`/health` 与 `/v1/models` 成功；外部 dashboard POST 在 `20:10:34` 成功结束。另以 512 decode tokens × 3 的真实 OpenAI completions 复测 steady C=1 为 `27.181 / 27.199 / 27.188 TPS`，说明 32-token 基准的约 26 TPS 并不是主要由首 token 启动开销造成。
 
 ## 7. 构建约束
 
