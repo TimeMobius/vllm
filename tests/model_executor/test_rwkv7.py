@@ -61,6 +61,7 @@ from vllm.model_executor.models.rwkv7 import (
     RWKV7PerfFlags,
     _load_rwkv7_perf_flags,
     _rwkv7_should_compile,
+    rwkv7_final_norm,
 )
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
@@ -2256,8 +2257,16 @@ def test_rwkv7_pp_runtime_falls_back_to_hf_dtype_without_model_config():
     assert RWKV7Model._get_effective_model_dtype(dummy_model) == torch.float32
 
 
-def test_rwkv7_disables_model_compile_for_full_cudagraphs():
+def test_rwkv7_full_cudagraph_compile_requires_explicit_opt_in(monkeypatch):
     assert not _rwkv7_should_compile(
+        SimpleNamespace(
+            compilation_config=SimpleNamespace(
+                cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY
+            )
+        )
+    )
+    monkeypatch.setenv("RWKV7_COMPILE_WITH_FULL_CUDAGRAPH", "1")
+    assert _rwkv7_should_compile(
         SimpleNamespace(
             compilation_config=SimpleNamespace(
                 cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY
@@ -2268,6 +2277,21 @@ def test_rwkv7_disables_model_compile_for_full_cudagraphs():
         SimpleNamespace(
             compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.PIECEWISE)
         )
+    )
+
+
+def test_rwkv7_final_norm_matches_native_layer_norm():
+    torch.manual_seed(0)
+    hidden_states = torch.randn(4, 16, dtype=torch.float32)
+    weight = torch.randn(16, dtype=torch.float32)
+    bias = torch.randn(16, dtype=torch.float32)
+    output = torch.empty_like(hidden_states)
+
+    rwkv7_final_norm(hidden_states, weight, bias, output, 1e-5)
+
+    torch.testing.assert_close(
+        output,
+        F.layer_norm(hidden_states, weight.shape, weight, bias, 1e-5),
     )
 
 

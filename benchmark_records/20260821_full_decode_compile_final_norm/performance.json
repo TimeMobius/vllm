@@ -1,0 +1,30 @@
+{
+  "workload": {
+    "endpoint": "/v1/completions",
+    "prompt_set": "default benchmark prompts",
+    "num_requests": 16,
+    "concurrency": 8,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "return_token_ids": true
+  },
+  "reference": {
+    "mode": "FULL_DECODE_ONLY CUDA Graph without model torch.compile",
+    "aggregate_output_tps": 129.76929944580056,
+    "active_output_tps": 129.77205292542106,
+    "request_throughput_rps": 4.237364879862875,
+    "success_count": 16,
+    "raw_summary": "/tmp/rwkv7_full_compile_bench/baseline_fullgraph_no_compile/summary.json"
+  },
+  "candidate": {
+    "mode": "FULL_DECODE_ONLY CUDA Graph with RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1",
+    "aggregate_output_tps": 138.70440966174087,
+    "active_output_tps": 138.7076309172339,
+    "request_throughput_rps": 4.377259476504643,
+    "success_count": 16,
+    "raw_summary": "/tmp/rwkv7_full_compile_bench/candidate_fullgraph_compile_final_norm/summary.json"
+  },
+  "aggregate_output_tps_speedup_percent": 6.885377781609317
+}

@@ -1,0 +1,19 @@
+{
+  "reference_mode": "FULL_DECODE_ONLY CUDA Graph without model torch.compile",
+  "candidate_mode": "FULL_DECODE_ONLY CUDA Graph with RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "served_model_name": "xiaoke-5",
+  "prompts": 8,
+  "decode_steps_per_prompt": 16,
+  "step_count": 128,
+  "text_mismatch_count": 0,
+  "top1_disagreement_count": 0,
+  "top1_disagreement_rate": 0.0,
+  "max_common_topk_abs_error": 0.0,
+  "mean_common_topk_abs_error": 0.0,
+  "max_selected_logprob_abs_error": 0.0,
+  "mean_selected_logprob_abs_error": 0.0,
+  "raw_reference_trace": "/tmp/rwkv7_full_graph_no_compile_final_norm_8.json",
+  "raw_candidate_trace": "/tmp/rwkv7_full_graph_compile_final_norm_8_rerun.json",
+  "raw_comparison": "/tmp/rwkv7_full_graph_compile_final_norm_8_comparison.json"
+}

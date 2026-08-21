@@ -648,6 +648,42 @@ direct_register_custom_op(
 )
 
 
+def rwkv7_final_norm(
+    hidden_states: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None,
+    output: torch.Tensor,
+    eps: float,
+) -> None:
+    """Run native LayerNorm behind a compile-opaque boundary.
+
+    Inductor may lower ``nn.LayerNorm`` into a reduction graph whose rounding
+    differs from PyTorch's native CUDA kernel. A single Top-1 difference can
+    compound through RWKV's recurrent state on later decode steps. Keeping the
+    final norm opaque preserves eager numerics while allowing CUDA Graph
+    capture of the native kernel.
+    """
+    output.copy_(F.layer_norm(hidden_states, weight.shape, weight, bias, eps))
+
+
+def rwkv7_final_norm_fake(
+    hidden_states: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None,
+    output: torch.Tensor,
+    eps: float,
+) -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="rwkv7_final_norm",
+    op_func=rwkv7_final_norm,
+    mutates_args=["output"],
+    fake_impl=rwkv7_final_norm_fake,
+)
+
+
 class RWKV7LoRA(nn.Module):
     def __init__(
         self,
@@ -2505,8 +2541,16 @@ class RWKV7Block(nn.Module, MambaBase):
 
 
 def _rwkv7_should_compile(vllm_config: VllmConfig) -> bool:
-    """Keep stateful RWKV7 cache handoff outside FULL CUDA graph compile."""
-    return not vllm_config.compilation_config.cudagraph_mode.has_full_cudagraphs()
+    """Gate experimental full-graph compile behind an explicit opt-in.
+
+    ``rwkv7_final_norm`` retains native LayerNorm numerics for the full-graph
+    compile candidate. The mode stays opt-in until service-level logits and
+    padded-batch state-cache regressions have passed for a deployment.
+    """
+    return (
+        not vllm_config.compilation_config.cudagraph_mode.has_full_cudagraphs()
+        or _rwkv7_env_flag_enabled("RWKV7_COMPILE_WITH_FULL_CUDAGRAPH")
+    )
 
 
 @support_torch_compile(
@@ -2570,6 +2614,9 @@ class RWKV7Model(nn.Module):
             )
             if get_pp_group().is_last_rank
             else PPMissingLayer()
+        )
+        self._uses_full_cudagraphs = (
+            vllm_config.compilation_config.cudagraph_mode.has_full_cudagraphs()
         )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -2666,7 +2713,19 @@ class RWKV7Model(nn.Module):
                 {"hidden_states": hidden_states, "v_first": v_first}
             )
 
-        hidden_states = self.norm(hidden_states)
+        if self._uses_full_cudagraphs and hidden_states.is_cuda:
+            assert isinstance(self.norm, nn.LayerNorm)
+            output = torch.empty_like(hidden_states)
+            torch.ops.vllm.rwkv7_final_norm(
+                hidden_states,
+                self.norm.weight,
+                self.norm.bias,
+                output,
+                self.norm.eps,
+            )
+            hidden_states = output
+        else:
+            hidden_states = self.norm(hidden_states)
         return hidden_states
 
 
