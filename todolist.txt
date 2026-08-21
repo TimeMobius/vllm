@@ -1,6 +1,6 @@
 # RWKV7 vLLM-SP 性能优化追踪
 
-> **最后核对：2026-08-21（Asia/Shanghai）**
+> **最后核对：2026-08-21（Asia/Shanghai，exact output-reduction 已验证）**
 > 工作目录：`/mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast`
 > 分支：`codex/rwkv7-sp-fast`
 > 目标：在严格数值对齐和回归测试门禁下，提高 RWKV7 的 **Full Decode CUDA Graph** 和高并发 decode 吞吐。
@@ -24,6 +24,7 @@ CUDA_VISIBLE_DEVICES=0 \
 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
 VLLM_DISABLE_COMPILE_CACHE=1 \
 RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1 \
+RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1 \
 RWKV7_USE_NATIVE_STRIDED_GATHER=1 \
 RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1 \
 RWKV7_USE_TRITON_MASKED_STORE=1 \
@@ -65,6 +66,23 @@ screen -ls
 - [x] 证据：`benchmark_records/20260821_exact_recurrent_t1_update_full_graph/`。
 
 回退开关：`RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=0`。
+
+### 2.2 精确 T=1 recurrent output-reduction（新增）
+
+- [x] 新增 native CUDA `rwkv7_reduce_d64_atten_exact`：精确匹配本环境 PyTorch
+  `reduce_kernel<128,4>` 的 FP32 D=64 output-reduction 线程布局和 `4 -> 2 -> 1`
+  shared-memory 加法顺序；同时保留 eager `aten::mul` 的 FP32 rounding contract。
+- [x] 去掉每层 `final_state * r.unsqueeze(-1)` 的 `[B,H,64,64]` 临时张量及一个
+  eager CUDA launch；只用于 strict CUDA/FP32/contiguous/[B,H,64,64] guard，其他
+  布局自动 fallback。
+- [x] isolated B=1/8/128、每个 5 seeds 均 `torch.equal`；服务精度 gate（8 prompts
+  ×16 token、greedy、logprobs=20）为 text/token/Top-K logprob **0 difference**。
+- [x] 成对服务 C=128 benchmark（每 mode 三轮，后两轮均值）:
+  `706.63 → 793.18 TPS`，**+12.25%**；C=1 `25.94 → 26.00 TPS`（+0.23%，不作为
+  单请求收益宣称）。证据：
+  `benchmark_records/20260821_exact_recurrent_t1_output_reduction_full_graph/`。
+
+默认开关：`RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1`；回退：设为 `0`。
 
 ### 2.2 Full-graph state cache 的 native strided gather/store
 

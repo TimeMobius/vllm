@@ -29,6 +29,11 @@ def _rwkv7_exact_recurrent_t1_update_enabled() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _rwkv7_exact_recurrent_t1_output_reduction_enabled() -> bool:
+    value = os.getenv("RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION", "1")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _rwkv7_recurrent_t1_reference(
     recurrent_state: torch.Tensor,
     w: torch.Tensor,
@@ -245,6 +250,37 @@ def rwkv7_recurrent_t1_exact_update_available() -> bool:
     )
 
 
+def rwkv7_recurrent_t1_exact_output_reduction_available() -> bool:
+    return hasattr(torch.ops, "_C") and hasattr(
+        torch.ops._C, "rwkv7_reduce_d64_atten_exact"
+    )
+
+
+def rwkv7_recurrent_t1_exact_output_reduction(
+    recurrent_state: torch.Tensor, r: torch.Tensor
+) -> torch.Tensor:
+    """Exactly reproduce RWKV7's FP32 D=64 output reduction on CUDA.
+
+    This mirrors ATen's observed ``reduce_kernel<128, 4>`` launch and its
+    per-thread/shared-memory addition order. It removes the materialized output
+    multiply and one launch without changing greedy-decode numerics.
+    """
+    if (
+        not _rwkv7_exact_recurrent_t1_output_reduction_enabled()
+        or not rwkv7_recurrent_t1_exact_output_reduction_available()
+        or recurrent_state.device.type != "cuda"
+        or recurrent_state.ndim != 4
+        or recurrent_state.shape[-2:] != (64, 64)
+        or r.shape != recurrent_state.shape[:-1]
+        or recurrent_state.dtype != torch.float32
+        or r.dtype != torch.float32
+        or not recurrent_state.is_contiguous()
+        or not r.is_contiguous()
+    ):
+        return (recurrent_state * r.unsqueeze(-1)).sum(dim=-2)
+    return custom_ops.rwkv7_reduce_d64_atten_exact(recurrent_state, r)
+
+
 def rwkv7_recurrent_t1_exact_update(
     recurrent_state: torch.Tensor,
     w: torch.Tensor,
@@ -256,10 +292,10 @@ def rwkv7_recurrent_t1_exact_update(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Exactly reproduce the reference T=1 recurrence with fewer state ops.
 
-    ``sa`` and the final output reduction remain native ATen operations, whose
-    reduction order is part of the greedy-decode numerical contract. The CUDA
-    kernel only replaces the three FP32 state products and two additions after
-    their eager scalar terms have been materialized.
+    ``sa`` remains native ATen because its reduction order is part of the
+    greedy-decode numerical contract. The state update and final D=64 output
+    reduction use native CUDA only when their separately verified ATen contracts
+    are available.
     """
     tensors = (recurrent_state, w, kk, a, k, v, r)
     if (
@@ -281,7 +317,7 @@ def rwkv7_recurrent_t1_exact_update(
     final_state = custom_ops.rwkv7_recurrent_t1_exact_update(
         recurrent_state, exp_w, kk_a, k, v, sa
     )
-    recurrent_output = (final_state * r.unsqueeze(-1)).sum(dim=-2)
+    recurrent_output = rwkv7_recurrent_t1_exact_output_reduction(final_state, r)
     return final_state, recurrent_output
 
 

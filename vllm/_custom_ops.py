@@ -124,6 +124,16 @@ if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_alt_recurrent"):
         return torch.empty_like(v, dtype=torch.float32), final_state
 
 
+if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_reduce_d64_atten_exact"):
+
+    @register_fake("_C::rwkv7_reduce_d64_atten_exact")
+    def _rwkv7_reduce_d64_atten_exact_fake(
+        state: torch.Tensor,
+        vector: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.empty_like(vector)
+
+
 if hasattr(torch.ops, "_C") and hasattr(
     torch.ops._C, "rwkv7_recurrent_t1_exact_update"
 ):
@@ -191,6 +201,13 @@ def rwkv7_alt_recurrent(
     initial_state: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.ops._C.rwkv7_alt_recurrent(r, w, k, v, kk, a, initial_state)
+
+
+def rwkv7_reduce_d64_atten_exact(
+    state: torch.Tensor,
+    vector: torch.Tensor,
+) -> torch.Tensor:
+    return torch.ops._C.rwkv7_reduce_d64_atten_exact(state, vector)
 
 
 def rwkv7_recurrent_t1_exact_update(

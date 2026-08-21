@@ -1,0 +1,12 @@
+{
+  "algorithm_id": "exact-recurrent-t1-output-reduction-full-graph",
+  "parent_id": "exact-recurrent-t1-state-update-full-graph",
+  "baseline_avg_tps": 706.6308709189027,
+  "heuristic_avg_tps": 793.1767695927608,
+  "speedup_percent": 12.247681531563126,
+  "prompt_tokens": "mixed fixed prompts; 128 requests / C=128",
+  "output_tokens_per_round": 4096,
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "accuracy_record": "benchmark_records/20260821_exact_recurrent_t1_output_reduction_full_graph/accuracy.json",
+  "notes": "Same rebuilt _C binary; only RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION differs. The kernel mirrors PyTorch 2.11 reduce_kernel<128,4> FP32 D=64 reduction addition order."
+}

@@ -1,0 +1,24 @@
+{
+  "reference_mode": "FULL_DECODE_ONLY CUDA Graph with RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=0",
+  "candidate_mode": "FULL_DECODE_ONLY CUDA Graph with RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "served_model_name": "xiaoke-5",
+  "prompts": 8,
+  "decode_steps_per_prompt": 16,
+  "step_count": 128,
+  "text_mismatch_count": 0,
+  "top1_disagreement_count": 0,
+  "top1_disagreement_rate": 0.0,
+  "max_common_topk_abs_error": 0.0,
+  "mean_common_topk_abs_error": 0.0,
+  "max_selected_logprob_abs_error": 0.0,
+  "mean_selected_logprob_abs_error": 0.0,
+  "isolated_operator": {
+    "shape": "[B, 64, 64, 64] FP32 state and [B, 64, 64] FP32 vector",
+    "batch_sizes": [1, 8, 128],
+    "random_seeds_per_batch": 5,
+    "torch_equal": true
+  },
+  "raw_reference_trace": "/tmp/rwkv7_native_state_final_trace.json",
+  "raw_candidate_trace": "/tmp/rwkv7_t1_exact_output_trace.json"
+}

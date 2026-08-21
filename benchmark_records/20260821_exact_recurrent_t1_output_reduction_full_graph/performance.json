@@ -1,0 +1,75 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp / Python 3.11.15 / PyTorch 2.11.0+cu130",
+  "binary": "same rebuilt vllm/_C.abi3.so for baseline and candidate",
+  "workload": {
+    "endpoint": "/v1/completions",
+    "model": "xiaoke-5",
+    "num_requests": 128,
+    "concurrency": 128,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "return_token_ids": true,
+    "ignore_eos": true,
+    "completed_tokens_per_run": 4096,
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128
+    ]
+  },
+  "reference": {
+    "mode": "RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=0",
+    "aggregate_output_tps": [
+      709.2583819828747,
+      706.6873246075904,
+      706.574417230215
+    ],
+    "post_warmup_mean_aggregate_output_tps": 706.6308709189027,
+    "raw_summaries": [
+      "raw/baseline_c128_1.summary.json",
+      "raw/baseline_c128_2.summary.json",
+      "raw/baseline_c128_3.summary.json"
+    ]
+  },
+  "candidate": {
+    "mode": "RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1",
+    "aggregate_output_tps": [
+      779.3057099904815,
+      793.968595651708,
+      792.3849435338137
+    ],
+    "post_warmup_mean_aggregate_output_tps": 793.1767695927608,
+    "raw_summaries": [
+      "raw/candidate_c128_1.summary.json",
+      "raw/candidate_c128_2.summary.json",
+      "raw/candidate_c128_3.summary.json"
+    ]
+  },
+  "c128_post_warmup_speedup_percent": 12.247681531563126,
+  "c1_secondary": {
+    "reference_tps": [
+      25.007578855575613,
+      25.947354915598776,
+      25.927228879876207
+    ],
+    "candidate_tps": [
+      25.78137161963201,
+      25.992547208215093,
+      26.000029487103138
+    ],
+    "reference_post_warmup_mean_tps": 25.93729189773749,
+    "candidate_post_warmup_mean_tps": 25.996288347659117,
+    "speedup_percent": 0.2274580174145724
+  },
+  "conclusion": "Retain: the custom native CUDA output reduction exactly matches ATen and gives a stable material C=128 service gain. C=1 is effectively neutral."
+}

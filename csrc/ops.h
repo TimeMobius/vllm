@@ -197,10 +197,15 @@ std::tuple<torch::Tensor, torch::Tensor> rwkv7_alt_recurrent(
     const torch::Tensor& v, const torch::Tensor& kk, const torch::Tensor& a,
     const std::optional<torch::Tensor>& initial_state);
 
-torch::Tensor rwkv7_recurrent_t1_exact_update(
-    const torch::Tensor& state, const torch::Tensor& exp_w,
-    const torch::Tensor& kk_a, const torch::Tensor& k,
-    const torch::Tensor& v, const torch::Tensor& sa);
+torch::Tensor rwkv7_reduce_d64_atten_exact(const torch::Tensor& state,
+                                           const torch::Tensor& vector);
+
+torch::Tensor rwkv7_recurrent_t1_exact_update(const torch::Tensor& state,
+                                              const torch::Tensor& exp_w,
+                                              const torch::Tensor& kk_a,
+                                              const torch::Tensor& k,
+                                              const torch::Tensor& v,
+                                              const torch::Tensor& sa);
 
 void rwkv7_masked_store(torch::Tensor& cache, const torch::Tensor& values,
                         const torch::Tensor& slot_ids);
