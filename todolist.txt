@@ -1,7 +1,7 @@
 # RWKV7 vLLM-SP 性能优化追踪
 
-> **最后核对：2026-08-21（Asia/Shanghai，exact direct-cache update 已验证）**
-> 2026-08-21：补充 recovered sparse CMix 单层精度扫描；临时对象依赖已撤销，稳定服务仍为 exact direct-cache。
+> **最后核对：2026-08-21（Asia/Shanghai，exact direct-cache update/reduce fusion 已验证）**
+> 2026-08-21：保留 strict direct-cache state update + output-reduction fusion：服务精度为零差异，C=128 aggregate TPS `1252.19 → 1365.23`（+9.03%）。稳定服务仍为 exact direct-cache。
 > 工作目录：`/mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast`
 > 分支：`codex/rwkv7-sp-fast`
 > 目标：在严格数值对齐和回归测试门禁下，提高 RWKV7 的 **Full Decode CUDA Graph** 和高并发 decode 吞吐。
@@ -95,8 +95,17 @@ screen -ls
 
 默认开关：`RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1`；回退：设为 `0`。
 
+### 2.4 精确 direct-cache state update + output-reduction fusion（新增，待提交）
 
-### 2.4 Full-graph state cache 的 native strided gather/store
+- [x] 在 `rwkv7_recurrent_t1_exact_direct_cache` 的 direct persistent-cache fast path 中，将原先独立的 exact state-update 和 exact output-reduction 合为一个 native CUDA kernel；敏感的 `sa` reduction 保持独立且不改变。
+- [x] 新 kernel 刻意复刻既有 output reduction 的 `32 x 4` CTA、四路 FP32 accumulator 与 `4 -> 2 -> 1` shared-memory 加法树；state update 继续使用显式 round-to-nearest FP32 multiply/add 次序。对 padded graph lane，slot 0 仅用于被丢弃的读输出，永不写入 cache。
+- [x] 最终服务精度 gate（8 prompts × 16 decode、greedy、`logprobs=20`）为 text/token/selected/common Top-K **0 差异**；direct-cache isolated unit B=1/8/128、3 seeds **3 passed**；完整 RWKV7 focused suite **78 passed, 2 skipped**。
+- [x] clean-restart 成对服务 benchmark：C=128（128 closed-loop requests、每请求 32 token、四个非 warm-up 样本）`1252.19 → 1365.23 TPS`，**+9.03%**；C=1（首轮剔除）`26.08 → 26.22 TPS`（+0.54%，仅作 secondary）。它减少每层一个 graph node 和一次 state read/write synchronization，但 C=1 仍由 small BF16 projection 主导。
+- [x] 证据：`benchmark_records/20260821_exact_recurrent_t1_direct_cache_update_reduce_full_graph/`。
+
+默认开关不变：`RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1`；同样设为 `0` 可回退整个 direct-cache fast path。
+
+### 2.5 Full-graph state cache 的 native strided gather/store
 
 - [x] 提交：`b30e12944 RWKV7: accelerate strided full graph state cache`。
 - [x] 在 Full Decode graph 中，以 CUDA 行拷贝 gather 替换 RWKV7 block 的 state-cache `index_select`；native masked store 支持 graph replay 的 padded row stride。
@@ -107,7 +116,7 @@ screen -ls
 
 回退开关：`RWKV7_USE_NATIVE_STRIDED_GATHER=0`、`RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=0`。
 
-### 2.5 编译/图模式的现状
+### 2.6 编译/图模式的现状
 
 - [x] `FULL_DECODE_ONLY` CUDA Graph 已通过真实 C=128 padded engine integration，测试覆盖普通 full decode graph 与 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 路径。
 - [x] **C=1 full-model compile复测（2026-08-21）**：完整 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 服务精度仍为 text/token/logprob 0 差异，但 C=1 post-warmup `25.852 TPS` 对严格稳定路径 `25.961 TPS`（-0.42%），无稳定收益，继续保持 opt-in 不启用。证据：`benchmark_records/20260821_full_decode_compile_c1_rejected/`。

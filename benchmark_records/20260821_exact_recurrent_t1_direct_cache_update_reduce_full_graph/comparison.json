@@ -1,0 +1,9 @@
+{
+  "baseline": "exact direct-cache recurrence: separate cache update and exact output-reduction kernels",
+  "candidate": "exact direct-cache recurrence: fused cache update and exact output-reduction kernel",
+  "accuracy_gate_passed": true,
+  "performance_gate_passed": true,
+  "retained": true,
+  "primary_result": {"metric": "C=128 aggregate output TPS", "baseline": 1252.1922954132633, "candidate": 1365.2304490573024, "relative_change_percent": 9.02722002507872},
+  "secondary_result": {"metric": "C=1 output TPS", "baseline": 26.079500768099564, "candidate": 26.22141893205016, "relative_change_percent": 0.5441751558534103}
+}

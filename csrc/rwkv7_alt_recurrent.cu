@@ -478,6 +478,96 @@ __global__ void rwkv7_recurrent_t1_exact_cache_update_kernel(
   cache[cache_idx] = __fadd_rn(partial, key_value);
 }
 
+__global__ void rwkv7_recurrent_t1_exact_cache_update_reduce_kernel(
+    float* __restrict__ cache, const int64_t* __restrict__ slot_ids,
+    const float* __restrict__ exp_w, const float* __restrict__ kk_a,
+    const float* __restrict__ k, const float* __restrict__ v,
+    const float* __restrict__ sa, const float* __restrict__ r,
+    float* __restrict__ out, const int64_t output_numel,
+    const int64_t num_heads, const int64_t cache_row_stride) {
+  // Fuse only the independent pointwise state update with the exact output
+  // reduction. The CTA layout, four partial accumulators, and shared-memory
+  // tree below deliberately mirror rwkv7_recurrent_t1_exact_cache_reduce_kernel
+  // so the observable FP32 reduction contract remains unchanged.
+  constexpr int kOutputVector = 4;
+  constexpr int kHeadDim = 64;
+  constexpr int kThreadsX = 32;
+  constexpr int kThreadsY = 4;
+  __shared__ float shared[kThreadsY][kThreadsX][kOutputVector];
+
+  const int64_t output_base =
+      (static_cast<int64_t>(blockIdx.x) * kThreadsX + threadIdx.x) *
+      kOutputVector;
+  if (output_base >= output_numel) {
+    return;
+  }
+  const int64_t batch_head = output_base / kHeadDim;
+  const int64_t batch_idx = batch_head / num_heads;
+  const int64_t head_idx = batch_head - batch_idx * num_heads;
+  const int64_t slot_id = slot_ids[batch_idx];
+  // Match the existing padded Full CUDA Graph behavior: an invalid lane reads
+  // slot zero for its ignored output but never mutates cache state.
+  const int64_t safe_slot = slot_id < 0 ? 0 : slot_id;
+  const int64_t value_base = output_base - batch_head * kHeadDim;
+  float* state_base = cache + safe_slot * cache_row_stride +
+                      head_idx * kHeadDim * kHeadDim + value_base;
+  const float* scalar_base = exp_w + batch_head * kHeadDim;
+  const float* kk_a_base = kk_a + batch_head * kHeadDim;
+  const float* k_base = k + batch_head * kHeadDim;
+  const float* v_base = v + batch_head * kHeadDim + value_base;
+  const float* sa_base = sa + batch_head * kHeadDim + value_base;
+  const float* r_base = r + batch_head * kHeadDim;
+
+  float accum[kOutputVector][kThreadsY] = {};
+#pragma unroll
+  for (int d_base = threadIdx.y; d_base < kHeadDim; d_base += 16) {
+#pragma unroll
+    for (int i = 0; i < kThreadsY; ++i) {
+      const int d = d_base + i * kThreadsY;
+#pragma unroll
+      for (int lane = 0; lane < kOutputVector; ++lane) {
+        const int64_t state_offset = d * kHeadDim + lane;
+        const float state = state_base[state_offset];
+        volatile float state_decay = __fmul_rn(scalar_base[d], state);
+        volatile float key_sa = __fmul_rn(kk_a_base[d], sa_base[lane]);
+        volatile float key_value = __fmul_rn(k_base[d], v_base[lane]);
+        volatile float partial = __fadd_rn(state_decay, key_sa);
+        volatile float updated_state = __fadd_rn(partial, key_value);
+        if (slot_id >= 0) {
+          state_base[state_offset] = updated_state;
+        }
+        accum[lane][i] =
+            __fadd_rn(accum[lane][i], __fmul_rn(updated_state, r_base[d]));
+      }
+    }
+  }
+
+#pragma unroll
+  for (int lane = 0; lane < kOutputVector; ++lane) {
+    float combined = __fadd_rn(accum[lane][0], accum[lane][1]);
+    combined = __fadd_rn(combined, accum[lane][2]);
+    shared[threadIdx.y][threadIdx.x][lane] =
+        __fadd_rn(combined, accum[lane][3]);
+  }
+  __syncthreads();
+  if (threadIdx.y < 2) {
+#pragma unroll
+    for (int lane = 0; lane < kOutputVector; ++lane) {
+      shared[threadIdx.y][threadIdx.x][lane] =
+          __fadd_rn(shared[threadIdx.y][threadIdx.x][lane],
+                    shared[threadIdx.y + 2][threadIdx.x][lane]);
+    }
+  }
+  __syncthreads();
+  if (threadIdx.y == 0) {
+#pragma unroll
+    for (int lane = 0; lane < kOutputVector; ++lane) {
+      out[output_base + lane] =
+          __fadd_rn(shared[0][threadIdx.x][lane], shared[1][threadIdx.x][lane]);
+    }
+  }
+}
+
 torch::Tensor rwkv7_recurrent_t1_exact_direct_cache(
     torch::Tensor& cache, const torch::Tensor& slot_ids,
     const torch::Tensor& exp_w, const torch::Tensor& kk,
@@ -533,21 +623,12 @@ torch::Tensor rwkv7_recurrent_t1_exact_direct_cache(
       kk.data_ptr<float>(), sa.data_ptr<float>(), output_numel, num_heads,
       cache.stride(0), true);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
-  constexpr int kThreads = 256;
-  const int64_t state_numel =
-      batch_size * num_heads * kRWKV7AltHeadDim * kRWKV7AltHeadDim;
-  rwkv7_recurrent_t1_exact_cache_update_kernel<<<
-      (state_numel + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-      cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
-      exp_w.data_ptr<float>(), kk_a.data_ptr<float>(), k.data_ptr<float>(),
-      v.data_ptr<float>(), sa.data_ptr<float>(), state_numel, num_heads,
-      cache.stride(0));
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-  rwkv7_recurrent_t1_exact_cache_reduce_kernel<<<
+  rwkv7_recurrent_t1_exact_cache_update_reduce_kernel<<<
       reduce_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
       cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
-      r.data_ptr<float>(), out.data_ptr<float>(), output_numel, num_heads,
-      cache.stride(0), false);
+      exp_w.data_ptr<float>(), kk_a.data_ptr<float>(), k.data_ptr<float>(),
+      v.data_ptr<float>(), sa.data_ptr<float>(), r.data_ptr<float>(),
+      out.data_ptr<float>(), output_numel, num_heads, cache.stride(0));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return out;
 }

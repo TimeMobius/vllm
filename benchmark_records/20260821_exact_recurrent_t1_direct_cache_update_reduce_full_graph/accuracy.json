@@ -1,0 +1,6 @@
+{
+  "comparison": "candidate fused direct-cache update/output-reduction vs strict direct-cache reference",
+  "workload": {"prompts": 8, "decode_steps": 16, "sampling": "greedy", "logprobs": 20, "runtime": "Full Decode CUDA Graph"},
+  "result": {"text_mismatch": 0, "token_mismatch": 0, "selected_logprob_max_abs_error": 0.0, "common_topk_logprob_max_abs_error": 0.0},
+  "traces": ["raw/first_accuracy_trace.json", "raw/final_accuracy_trace.json"]
+}
