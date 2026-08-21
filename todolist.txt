@@ -67,6 +67,11 @@ screen -ls
 - [x] fixed payload 成对 A/B：C=1 `27.3938 → 27.6030 TPS`（+0.76%），C=128 aggregate `1542.5043 → 1566.2303 TPS`（+1.54%；final restart 为 1572.816）；每 state slot 节省 999,424 B（128 slots 为 122 MiB）。这是 Full Decode graph 的严格有效高并发优化，已启用到 8030 启动命令。C=1 仍受约 82% dense BF16 GEMV 时间限制，不能将该项误述为 50 TPS 方案。证据：`benchmark_records/20260821_model_dtype_shift_cache_full_graph/`。
 - [x] 外部 dashboard POST（`2026-08-21 15:29:59`）成功完成并保存 8 条记录，C=1/2/4/8/16/32/64/128 全部 100% success；每请求输出 TPS 为 `37.8/33.0/34.3/33.7/31.5/26.8/22.7/17.8`，整体 TPS 为 `37.2/32.4/33.4/32.9/30.7/26.0/21.9/17.2`。它是 OpenAI API 并发稳定性门禁；因生成 token 数变化，禁止和 fixed-payload C=128 aggregate TPS 直接比较。
 
+### 2026-08-21 paired shift-cache gather/store（已拒绝）
+
+- [x] 尝试将 attention-shift 与 FFN-shift 的同 dtype/same-shape native gather 合并为一个 CUDA copy kernel，并将两个 masked store 合并；FP32 recurrent matrix 不参与。CUDA FP32/BF16、padded outer stride、Full Graph padding-slot unit 均通过，真实 8×16 `logprobs=20` service trace byte-identical。
+- [x] **不保留**：paired fixed-payload A/B 为 C=1 `27.613 → 27.609 TPS`（-0.01%）、C=128 aggregate `1569.19 → 1571.26 TPS`（+0.13%），低于噪声/1% materiality 门限。源码和运行开关已撤出稳定路径；结论是继续压缩 shift copy launch 不是当前吞吐主杠杆。证据：`benchmark_records/20260821_shift_pair_cache_rejected/`。
+
 ### 2026-08-21 RWKV tokenizer invalid-UTF-8 panic preflight（已保留）
 
 - [x] 真实 checkpoint vocab 的 65,534 个 base token 中有 486 个 UTF-8 byte fragment。旧 `pyrwkv_tokenizer` 对不完整 byte stream 会先 Rust panic、再 warning、最后才走原有 Python replacement-character fallback；此前 dashboard 一轮出现 778 次 warning。

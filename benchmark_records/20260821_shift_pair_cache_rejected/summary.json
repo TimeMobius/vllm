@@ -1,0 +1,27 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_USE_NATIVE_SHIFT_PAIR_CACHE=1",
+  "status": "rejected",
+  "implementation": "Fused the two same-dtype token-shift state gathers into one copy kernel and the two masked shift-state stores into one copy kernel. FP32 recurrent state was not changed.",
+  "strict_accuracy": {
+    "unit": "CUDA float32/BF16 contiguous and padded-stride pair gather/store tests passed; padded full-graph block routing test passed",
+    "service": "8 prompts x 16 greedy decode with logprobs=20; baseline and candidate trace files byte-identical"
+  },
+  "fixed_payload_performance": {
+    "c1_output_tps": {
+      "baseline": 27.613246076404174,
+      "candidate": 27.609177853526326,
+      "percent_change": -0.014732867213773648
+    },
+    "c128_aggregate_output_tps": {
+      "baseline": 1569.1921439837827,
+      "candidate": 1571.2599907123408,
+      "percent_change": 0.13177779002311318
+    }
+  },
+  "decision": "Do not retain. The sub-1% C=128 change is below noise/materiality and C=1 is unchanged. The stable service is restored without the feature.",
+  "tests": {
+    "isolated_pair_kernel": "5 passed",
+    "service_trace": "byte-identical"
+  }
+}

@@ -1,0 +1,1 @@
+strict trace files are byte-identical
