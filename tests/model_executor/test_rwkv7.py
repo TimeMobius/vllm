@@ -2892,6 +2892,162 @@ def test_rwkv7_block_uses_fp32_runtime_state_dtype():
             cleanup_dist_env_and_memory()
 
 
+@pytest.mark.parametrize("model_dtype", [torch.bfloat16, torch.float16])
+def test_rwkv7_block_can_use_model_dtype_shift_cache(monkeypatch, model_dtype):
+    """Narrow only token-shift cache entries under the explicit opt-in.
+
+    The recurrent state is deliberately kept FP32: changing it would alter
+    the recurrent operator's arithmetic contract rather than only eliminate
+    the lossless shift-state conversion.
+    """
+    monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "1")
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            block = RWKV7Block(config=config, layer_idx=0, prefix="model.layers.0")
+            block.to(dtype=model_dtype)
+            assert block.get_state_dtype() == (
+                model_dtype,
+                torch.float32,
+                model_dtype,
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+def test_rwkv7_model_dtype_shift_cache_preserves_decode_bits(monkeypatch):
+    """BF16 shift storage is bitwise equivalent to the legacy FP32 round trip."""
+    monkeypatch.delenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", raising=False)
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            reference = RWKV7Block(
+                config=config, layer_idx=0, prefix="model.layers.reference"
+            ).to(dtype=torch.bfloat16)
+            _initialize_module_parameters(reference)
+            reference.kv_cache = (
+                torch.randn(1, config.hidden_size, dtype=torch.bfloat16).float(),
+                torch.randn(
+                    1,
+                    config.num_heads,
+                    config.head_dim,
+                    config.head_dim,
+                    dtype=torch.float32,
+                ),
+                torch.randn(1, config.hidden_size, dtype=torch.bfloat16).float(),
+            )
+
+            monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "1")
+            candidate = RWKV7Block(
+                config=config, layer_idx=0, prefix="model.layers.candidate"
+            ).to(dtype=torch.bfloat16)
+            candidate.load_state_dict(reference.state_dict())
+            candidate.kv_cache = (
+                reference.kv_cache[0].to(torch.bfloat16).clone(),
+                reference.kv_cache[1].clone(),
+                reference.kv_cache[2].to(torch.bfloat16).clone(),
+            )
+
+            generator = torch.Generator().manual_seed(17)
+            for _ in range(4):
+                hidden_states = torch.randn(
+                    1,
+                    config.hidden_size,
+                    generator=generator,
+                    dtype=torch.bfloat16,
+                )
+                ref_out = reference._run_decode_batch(
+                    hidden_states,
+                    None,
+                    *reference._get_kv_state(0, use_initial_state=True),
+                )
+                candidate_out = candidate._run_decode_batch(
+                    hidden_states,
+                    None,
+                    *candidate._get_kv_state(0, use_initial_state=True),
+                )
+                for actual, expected in zip(candidate_out, ref_out, strict=True):
+                    assert actual is not None and expected is not None
+                    assert torch.equal(actual, expected)
+                reference._store_kv_state(
+                    0,
+                    ref_out[2].squeeze(0),
+                    ref_out[3].squeeze(0),
+                    ref_out[4].squeeze(0),
+                )
+                candidate._store_kv_state(
+                    0,
+                    candidate_out[2].squeeze(0),
+                    candidate_out[3].squeeze(0),
+                    candidate_out[4].squeeze(0),
+                )
+
+            assert torch.equal(
+                candidate.kv_cache[0], reference.kv_cache[0].to(torch.bfloat16)
+            )
+            assert torch.equal(candidate.kv_cache[1], reference.kv_cache[1])
+            assert torch.equal(
+                candidate.kv_cache[2], reference.kv_cache[2].to(torch.bfloat16)
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
+@pytest.mark.parametrize("model_dtype", [torch.bfloat16, torch.float16])
+def test_rwkv7_mamba_state_spec_uses_model_dtype_shift_cache(monkeypatch, model_dtype):
+    """The pre-allocation cache spec must match the live block's layout."""
+    monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "1")
+    vllm_config = SimpleNamespace(model_config=SimpleNamespace(dtype=model_dtype))
+    assert RWKV7ForCausalLM.get_mamba_state_dtype_from_config(vllm_config) == (
+        model_dtype,
+        torch.float32,
+        model_dtype,
+    )
+
+
+def test_rwkv7_block_model_dtype_shift_cache_rejects_fp32(monkeypatch):
+    """The opt-in remains all-FP32 for models without a narrow activation."""
+    monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "1")
+    config = _make_config()
+    vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
+    with set_current_vllm_config(vllm_config):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=0,
+            distributed_init_method=f"tcp://127.0.0.1:{get_open_port()}",
+            backend="gloo",
+        )
+        ensure_model_parallel_initialized(1, 1, backend="gloo")
+        try:
+            block = RWKV7Block(config=config, layer_idx=0, prefix="model.layers.0")
+            assert block.get_state_dtype() == (
+                torch.float32,
+                torch.float32,
+                torch.float32,
+            )
+        finally:
+            cleanup_dist_env_and_memory()
+
+
 def test_rwkv7_block_cache_all_prefill_writes_aligned_states():
     config = _make_config()
     block_size = 8

@@ -378,6 +378,21 @@ def _rwkv7_env_flag_enabled(name: str, *, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _rwkv7_shift_cache_dtype(model_dtype: torch.dtype) -> torch.dtype:
+    """Choose the storage dtype for lossless token-shift cache entries.
+
+    The previous activation is consumed at ``hidden_states.dtype`` on the next
+    token.  BF16/FP16 storage is consequently bitwise lossless for this state,
+    unlike the FP32 recurrent matrix state.  Keep this opt-in because the cache
+    layout is fixed during engine initialization.
+    """
+    if _rwkv7_env_flag_enabled(
+        "RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", default=False
+    ) and model_dtype in (torch.bfloat16, torch.float16):
+        return model_dtype
+    return RWKV7_STATE_DTYPE
+
+
 def _load_rwkv7_perf_flags() -> RWKV7PerfFlags:
     return RWKV7PerfFlags(
         use_fused_mix6=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_MIX6", default=True),
@@ -1779,6 +1794,13 @@ class RWKV7Block(nn.Module, MambaBase):
         self._uses_full_cudagraphs = (
             compilation_config.cudagraph_mode.has_full_cudagraphs()
         )
+        # The cache specification is selected from ModelConfig before the
+        # model cache is allocated. Preserve that dtype here so the live block
+        # cannot disagree with get_mamba_state_dtype_from_config() merely
+        # because its parameters have not been cast/loaded yet.
+        self._state_model_dtype = getattr(
+            get_current_vllm_config().model_config, "dtype", None
+        )
 
         self.kv_cache = (
             torch.tensor([]),
@@ -1791,10 +1813,19 @@ class RWKV7Block(nn.Module, MambaBase):
         return "linear_attention"
 
     def get_state_dtype(self) -> tuple[torch.dtype, ...]:
+        # The token-shift values are always the previous token's model-dtype
+        # activation. Keeping them in FP32 therefore performs an exact but
+        # unnecessary BF16/FP16 -> FP32 -> BF16 round trip on every decode.
+        # Keep the historical all-FP32 layout as the default while the mixed
+        # layout is benchmarked independently. The recurrent matrix is not a
+        # token-shift value: its FP32 storage is part of the RWKV7 numerical
+        # contract and must never be narrowed here.
+        model_dtype = self._state_model_dtype or self.attn.x_r.dtype
+        shift_state_dtype = _rwkv7_shift_cache_dtype(model_dtype)
         return (
+            shift_state_dtype,
             RWKV7_STATE_DTYPE,
-            RWKV7_STATE_DTYPE,
-            RWKV7_STATE_DTYPE,
+            shift_state_dtype,
         )
 
     def get_state_shape(self) -> tuple[tuple[int, ...], ...]:
@@ -2923,10 +2954,13 @@ class RWKV7ForCausalLM(
     def get_mamba_state_dtype_from_config(
         cls, vllm_config: VllmConfig
     ) -> tuple[torch.dtype, ...]:
+        # This layout is calculated before the model cache is allocated, so it
+        # must stay in lock-step with RWKV7Block.get_state_dtype().
+        shift_state_dtype = _rwkv7_shift_cache_dtype(vllm_config.model_config.dtype)
         return (
+            shift_state_dtype,
             RWKV7_STATE_DTYPE,
-            RWKV7_STATE_DTYPE,
-            RWKV7_STATE_DTYPE,
+            shift_state_dtype,
         )
 
     @classmethod

@@ -1,0 +1,91 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE=1",
+  "status": "retained",
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+    "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+    "model_dtype": "bfloat16",
+    "recurrent_state_dtype": "float32",
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128
+    ]
+  },
+  "implementation": {
+    "shift_state_cache_dtype": "model dtype (BF16/FP16 only, explicit env opt-in)",
+    "recurrent_cache_dtype": "float32 (unchanged)",
+    "reason": "The shift state is the previous model-dtype activation, so BF16 cache storage removes a lossless BF16->FP32->BF16 conversion and halves its cache traffic/storage."
+  },
+  "strict_accuracy": {
+    "service_gate": "8 prompts x 16 greedy decode, logprobs=20",
+    "trace_files_byte_identical": true,
+    "text_mismatches": 0,
+    "token_id_mismatches": 0,
+    "selected_logprob_error": 0.0,
+    "common_topk_logprob_error": 0.0,
+    "isolated_bf16_decode_steps": 4,
+    "isolated_output_and_cache": "torch.equal"
+  },
+  "fixed_payload_performance": {
+    "c1_output_tps": {
+      "baseline": 27.393778070881304,
+      "candidate": 27.60297197274651,
+      "percent_change": 0.7636548026486834
+    },
+    "c128_aggregate_output_tps": {
+      "baseline": 1542.5042707686957,
+      "candidate": 1566.230267142092,
+      "percent_change": 1.5381478562501938
+    },
+    "final_restart_candidate": {
+      "c1_output_tps": 27.58845155185726,
+      "c128_aggregate_output_tps": 1572.8162903719785,
+      "strict_trace_files_byte_identical": true
+    }
+  },
+  "memory": {
+    "layers": 61,
+    "hidden_size": 4096,
+    "bytes_saved_per_state_slot": 999424,
+    "mib_saved_per_128_slots": 122.0,
+    "mib_saved_per_4096_slots": 3904.0
+  },
+  "tests": {
+    "focused_rwkv": "92 passed, 5 skipped",
+    "ruff": "check and format --check passed"
+  },
+  "dashboard": {
+    "post_endpoint": "http://192.168.10.121:3000/api/run-test",
+    "last_run": "2026-08-21 15:29:59",
+    "result": "success; 8 records saved; all concurrency points achieved 100% success",
+    "per_request_output_tps": {
+      "1": 37.8,
+      "2": 33.0,
+      "4": 34.3,
+      "8": 33.7,
+      "16": 31.5,
+      "32": 26.8,
+      "64": 22.7,
+      "128": 17.8
+    },
+    "per_request_overall_tps": {
+      "1": 37.2,
+      "2": 32.4,
+      "4": 33.4,
+      "8": 32.9,
+      "16": 30.7,
+      "32": 26.0,
+      "64": 21.9,
+      "128": 17.2
+    },
+    "note": "The dashboard measurement has variable generated-token counts and reports per-request TPS, so it is a service stability/latency regression gate and must not be compared directly with the fixed-payload C=128 aggregate TPS."
+  }
+}
