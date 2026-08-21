@@ -1,0 +1,59 @@
+op _C.rwkv7_bf16_gemv_out
+schema _C::rwkv7_bf16_gemv_out(Tensor(a!) output, Tensor input, Tensor weight) -> ()
+[
+  {
+    "name": "attn",
+    "n": 4096,
+    "k": 4096,
+    "equal": false,
+    "different": 2,
+    "max_abs": 0.0078125,
+    "baseline_us": 26.069759652018547,
+    "candidate_us": 15.127679891884327,
+    "speedup": 1.7233151308287802
+  },
+  {
+    "name": "ffn_up",
+    "n": 16384,
+    "k": 4096,
+    "equal": true,
+    "different": 0,
+    "max_abs": 0.0,
+    "baseline_us": 165.30176013708115,
+    "candidate_us": 167.70816028118134,
+    "speedup": 0.9856512638379338
+  },
+  {
+    "name": "ffn_down",
+    "n": 4096,
+    "k": 16384,
+    "equal": true,
+    "different": 0,
+    "max_abs": 0.0,
+    "baseline_us": 166.78079932928085,
+    "candidate_us": 173.11616241931915,
+    "speedup": 0.9634039768355488
+  },
+  {
+    "name": "lora_in_192",
+    "n": 192,
+    "k": 4096,
+    "equal": true,
+    "different": 0,
+    "max_abs": 0.0,
+    "baseline_us": 15.733759794384241,
+    "candidate_us": 10.009599924087524,
+    "speedup": 1.571866999051766
+  },
+  {
+    "name": "lora_out_192",
+    "n": 4096,
+    "k": 192,
+    "equal": true,
+    "different": 0,
+    "max_abs": 0.0,
+    "baseline_us": 15.711999833583832,
+    "candidate_us": 9.748480040580034,
+    "speedup": 1.6117384215979753
+  }
+]

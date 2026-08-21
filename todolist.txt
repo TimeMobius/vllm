@@ -524,3 +524,18 @@ curl -fsS http://192.168.10.121:3000/
   out-op 在真实 graph/stream 上的 integration 成本本身超过 isolated GEMV 节省；已恢复
   源码和严格稳定服务。记录：
   `benchmark_records/20260821_selective_native_lora_wa_candidate/`。
+
+### 2026-08-21 FFN sparse exact-reduction feasibility（拒绝）
+
+- [x] 针对此前 sparse CMix 的精度问题继续做了“先降误差”实验：恢复历史 strict
+  native BF16 GEMV object 并确认其 FFN up/down 可与 PyTorch `F.linear` 逐元素一致，
+  但 dense FFN up `165.30→167.71 µs`、down `166.78→173.12 µs` 均更慢，不能作为
+  dense replacement。
+- [x] 随后实现仅临时使用的 FFN-down skip-zero BF16/FP32-FMA CUDA prototype，试图在
+  保持相同 reduction 前提下利用 SqReLU 稀疏性。约 94% zero 时仍有 2 个 BF16 element
+  不同且 `159.74→218.65 µs`，甚至 90% zero 也 `160.11→235.51 µs`；只有极端约 98%
+  zero 才接近平局。因此既不稳定 exact，也不够快，未接入模型。
+- [x] 这进一步缩小路径：要利用 Albatross CMix 稀疏性，必须同时重建 PyTorch/cuBLAS
+  reduction tree 和高效 multi-output tile；简单 warp-per-row 或跳过 zero 权重读取无法
+  达标。临时 extension/代码均未进入仓库。记录：
+  `benchmark_records/20260821_ffn_sparse_exact_reduction_probe/`。
