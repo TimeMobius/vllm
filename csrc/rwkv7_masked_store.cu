@@ -14,7 +14,8 @@ constexpr int kRWKV7MaskedStoreThreads = 256;
 template <typename scalar_t>
 __global__ void rwkv7_masked_store_kernel(
     scalar_t* __restrict__ cache, const scalar_t* __restrict__ values,
-    const int64_t* __restrict__ slot_ids, const int64_t row_numel) {
+    const int64_t* __restrict__ slot_ids, const int64_t cache_row_stride,
+    const int64_t values_row_stride, const int64_t row_numel) {
   const int64_t value_row = blockIdx.y;
   const int64_t slot_id = slot_ids[value_row];
   if (slot_id < 0) {
@@ -27,7 +28,24 @@ __global__ void rwkv7_masked_store_kernel(
     return;
   }
 
-  cache[slot_id * row_numel + offset] = values[value_row * row_numel + offset];
+  cache[slot_id * cache_row_stride + offset] =
+      values[value_row * values_row_stride + offset];
+}
+
+bool has_contiguous_rows(const torch::Tensor& tensor) {
+  if (tensor.dim() == 0) {
+    return false;
+  }
+  int64_t expected_stride = 1;
+  for (int64_t dim = tensor.dim() - 1; dim >= 1; --dim) {
+    // A size-one dimension contributes no address variation within a row, so
+    // its stride may be arbitrary while the row remains linearly addressable.
+    if (tensor.size(dim) > 1 && tensor.stride(dim) != expected_stride) {
+      return false;
+    }
+    expected_stride *= tensor.size(dim);
+  }
+  return tensor.stride(0) >= expected_stride;
 }
 
 }  // namespace
@@ -41,8 +59,10 @@ void rwkv7_masked_store(torch::Tensor& cache, const torch::Tensor& values,
               "`cache` and `values` must have the same dtype.");
   TORCH_CHECK(slot_ids.scalar_type() == torch::kInt64,
               "`slot_ids` must have dtype int64.");
-  TORCH_CHECK(cache.is_contiguous(), "`cache` must be contiguous.");
-  TORCH_CHECK(values.is_contiguous(), "`values` must be contiguous.");
+  TORCH_CHECK(has_contiguous_rows(cache),
+              "`cache` must have contiguous rows.");
+  TORCH_CHECK(has_contiguous_rows(values),
+              "`values` must have contiguous rows.");
   TORCH_CHECK(slot_ids.is_contiguous(), "`slot_ids` must be contiguous.");
   TORCH_CHECK(cache.dim() >= 1 && values.dim() == cache.dim(),
               "`cache` and `values` must have the same rank >= 1.");
@@ -57,6 +77,8 @@ void rwkv7_masked_store(torch::Tensor& cache, const torch::Tensor& values,
   }
 
   const auto row_numel = values.numel() / batch_size;
+  const auto cache_row_stride = cache.stride(0);
+  const auto values_row_stride = values.stride(0);
   const dim3 block(kRWKV7MaskedStoreThreads);
   const dim3 grid((row_numel + kRWKV7MaskedStoreThreads - 1) /
                       kRWKV7MaskedStoreThreads,
@@ -68,7 +90,8 @@ void rwkv7_masked_store(torch::Tensor& cache, const torch::Tensor& values,
       at::kHalf, at::kBFloat16, values.scalar_type(), "rwkv7_masked_store", [&] {
         rwkv7_masked_store_kernel<scalar_t><<<grid, block, 0, stream>>>(
             cache.data_ptr<scalar_t>(), values.data_ptr<scalar_t>(),
-            slot_ids.data_ptr<int64_t>(), row_numel);
+            slot_ids.data_ptr<int64_t>(), cache_row_stride, values_row_stride,
+            row_numel);
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

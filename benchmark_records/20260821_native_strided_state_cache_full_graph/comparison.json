@@ -1,0 +1,15 @@
+{
+  "algorithm_id": "native-strided-state-cache",
+  "parent_id": "exact-decode-state-update",
+  "status": "verified",
+  "baseline_avg_tps": 700.6747515468628,
+  "heuristic_avg_tps": 708.385037878178,
+  "speedup_percent": 1.1004104556661027,
+  "prompt_tokens": "8 short fixed prompts x 128 requests",
+  "output_tokens_per_round": 4096,
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "accuracy_record": "benchmark_records/20260821_native_strided_state_cache_full_graph/accuracy.json",
+  "baseline_command_mode": "FULL_DECODE_ONLY, capture sizes [1,2,4,8,16,32,64,128], C=128, exact recurrent, ATen cache index_select + Triton masked store",
+  "candidate_command_mode": "same workload and flags, native rwkv7_strided_gather + stride-aware rwkv7_masked_store",
+  "notes": "Warmup round excluded from each sequence. Baseline measured 701.679 and 699.671 aggregate output TPS (mean 700.675); candidate measured 708.135, 708.625 and 708.395 TPS (mean 708.385), a +1.10% stable service-level improvement. Native gather alone is sub-1%; this retained record covers the combined cache read/write path. The rejected exact KKA fusion was not retained because it showed no measurable end-to-end gain despite bit-exact unit parity."
+}

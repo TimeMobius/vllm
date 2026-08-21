@@ -1753,14 +1753,23 @@ def test_rwkv7_triton_masked_store_skips_padding_slots(dtype):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_rwkv7_masked_store_skips_padding_slots(dtype):
+@pytest.mark.parametrize("strided_rows", [False, True])
+def test_rwkv7_masked_store_skips_padding_slots(dtype, strided_rows):
     if dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
         pytest.skip("bfloat16 is not supported on this CUDA device.")
     if not hasattr(torch.ops, "_C") or not hasattr(torch.ops._C, "rwkv7_masked_store"):
         pytest.skip("RWKV7 masked-store CUDA extension is not built.")
 
-    cache = torch.full((4, 2, 3), -7, device="cuda", dtype=dtype)
-    values = torch.arange(2 * 2 * 3, device="cuda", dtype=dtype).reshape(2, 2, 3)
+    if strided_rows:
+        cache = torch.empty_strided((4, 2, 3), (8, 3, 1), device="cuda", dtype=dtype)
+        cache.fill_(-7)
+        values = torch.empty_strided((2, 2, 3), (8, 3, 1), device="cuda", dtype=dtype)
+        values.copy_(
+            torch.arange(2 * 2 * 3, device="cuda", dtype=dtype).reshape(2, 2, 3)
+        )
+    else:
+        cache = torch.full((4, 2, 3), -7, device="cuda", dtype=dtype)
+        values = torch.arange(2 * 2 * 3, device="cuda", dtype=dtype).reshape(2, 2, 3)
     slot_ids = torch.tensor([2, -1], device="cuda", dtype=torch.long)
 
     custom_ops.rwkv7_masked_store(cache, values, slot_ids)
@@ -1769,6 +1778,34 @@ def test_rwkv7_masked_store_skips_padding_slots(dtype):
     expected = torch.full_like(cache, -7)
     expected[2] = values[0]
     torch.testing.assert_close(cache, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("strided_rows", [False, True])
+def test_rwkv7_strided_gather_matches_index_select(dtype, strided_rows):
+    if dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("bfloat16 is not supported on this CUDA device.")
+    if not hasattr(torch.ops, "_C") or not hasattr(
+        torch.ops._C, "rwkv7_strided_gather"
+    ):
+        pytest.skip("RWKV7 strided-gather CUDA extension is not built.")
+
+    if strided_rows:
+        cache = torch.empty_strided((5, 4, 16), (80, 16, 1), device="cuda", dtype=dtype)
+        cache.copy_(
+            torch.arange(5 * 4 * 16, device="cuda", dtype=dtype).reshape(5, 4, 16)
+        )
+    else:
+        cache = torch.arange(5 * 4 * 16, device="cuda", dtype=dtype).reshape(5, 4, 16)
+    slot_ids = torch.tensor([4, 0, 4, 2], device="cuda", dtype=torch.long)
+
+    actual = custom_ops.rwkv7_strided_gather(cache, slot_ids)
+    expected = cache.index_select(0, slot_ids)
+    torch.cuda.synchronize()
+
+    assert actual.is_contiguous()
+    assert torch.equal(actual, expected)
 
 
 def test_rwkv7_alt_recurrent_matches_reference():

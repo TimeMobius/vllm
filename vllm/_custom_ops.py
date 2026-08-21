@@ -151,6 +151,20 @@ if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_masked_store"):
         return None
 
 
+if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_strided_gather"):
+
+    @register_fake("_C::rwkv7_strided_gather")
+    def _rwkv7_strided_gather_fake(
+        cache: torch.Tensor,
+        slot_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.empty(
+            (slot_ids.shape[0], *cache.shape[1:]),
+            device=cache.device,
+            dtype=cache.dtype,
+        )
+
+
 # page attention ops
 def rwkv7_masked_store(
     cache: torch.Tensor,
@@ -158,6 +172,13 @@ def rwkv7_masked_store(
     slot_ids: torch.Tensor,
 ) -> None:
     torch.ops._C.rwkv7_masked_store(cache, values, slot_ids)
+
+
+def rwkv7_strided_gather(
+    cache: torch.Tensor,
+    slot_ids: torch.Tensor,
+) -> torch.Tensor:
+    return torch.ops._C.rwkv7_strided_gather(cache, slot_ids)
 
 
 def rwkv7_alt_recurrent(

@@ -50,6 +50,9 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   ops.def("rwkv7_masked_store(Tensor(a!) cache, Tensor values, Tensor slot_ids) -> ()");
   ops.impl("rwkv7_masked_store", torch::kCUDA, &rwkv7_masked_store);
 
+  ops.def("rwkv7_strided_gather(Tensor cache, Tensor slot_ids) -> Tensor");
+  ops.impl("rwkv7_strided_gather", torch::kCUDA, &rwkv7_strided_gather);
+
   // Attention ops
   // Compute the attention between an input query and the cached
   // keys/values using PagedAttention.

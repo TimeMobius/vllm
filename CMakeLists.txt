@@ -305,6 +305,7 @@ set(VLLM_EXT_SRC
   "csrc/custom_all_reduce.cu"
   "csrc/rwkv7_alt_recurrent.cu"
   "csrc/rwkv7_masked_store.cu"
+  "csrc/rwkv7_strided_gather.cu"
   "csrc/torch_bindings.cpp")
 
 if(VLLM_GPU_LANG STREQUAL "CUDA")

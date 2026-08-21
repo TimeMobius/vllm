@@ -205,6 +205,9 @@ torch::Tensor rwkv7_recurrent_t1_exact_update(
 void rwkv7_masked_store(torch::Tensor& cache, const torch::Tensor& values,
                         const torch::Tensor& slot_ids);
 
+torch::Tensor rwkv7_strided_gather(const torch::Tensor& cache,
+                                   const torch::Tensor& slot_ids);
+
 #ifndef USE_ROCM
 
 torch::Tensor awq_gemm(torch::Tensor _in_feats, torch::Tensor _kernel,

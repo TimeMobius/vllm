@@ -1837,6 +1837,23 @@ class RWKV7Block(nn.Module, MambaBase):
         # _store_kv_states masks it so slot zero is never mutated.
         if self._uses_full_cudagraphs:
             slot_ids = slot_ids.clamp_min(0)
+        use_strided_gather = (
+            self._uses_full_cudagraphs
+            and _rwkv7_env_flag_enabled(
+                "RWKV7_USE_NATIVE_STRIDED_GATHER", default=True
+            )
+            and all(
+                cache.is_cuda and cache[0].is_contiguous() for cache in self.kv_cache
+            )
+            and hasattr(torch.ops, "_C")
+            and hasattr(torch.ops._C, "rwkv7_strided_gather")
+        )
+        if use_strided_gather:
+            return (
+                custom_ops.rwkv7_strided_gather(self.kv_cache[0], slot_ids),
+                custom_ops.rwkv7_strided_gather(self.kv_cache[1], slot_ids),
+                custom_ops.rwkv7_strided_gather(self.kv_cache[2], slot_ids),
+            )
         return (
             self.kv_cache[0].index_select(0, slot_ids),
             self.kv_cache[1].index_select(0, slot_ids),
@@ -1897,8 +1914,14 @@ class RWKV7Block(nn.Module, MambaBase):
     ) -> None:
         use_masked_store = (
             self._uses_full_cudagraphs
+            and _rwkv7_env_flag_enabled(
+                "RWKV7_USE_NATIVE_STRIDED_MASKED_STORE", default=True
+            )
             and self.kv_cache[0].is_cuda
-            and all(cache.is_contiguous() for cache in self.kv_cache)
+            and all(cache[0].is_contiguous() for cache in self.kv_cache)
+            and attn_shift_state.is_contiguous()
+            and recurrent_state.is_contiguous()
+            and ffn_shift_state.is_contiguous()
             and hasattr(torch.ops, "_C")
             and hasattr(torch.ops._C, "rwkv7_masked_store")
         )

@@ -1,0 +1,14 @@
+{
+  "reference_mode": "FULL_DECODE_ONLY CUDA graph; exact recurrent update; ATen index_select gather; Triton masked store",
+  "candidate_mode": "FULL_DECODE_ONLY CUDA graph; exact recurrent update; native strided cache gather and native strided masked store",
+  "service_workload": "8 fixed prompts x 16 generated tokens, temperature=0, top_p=1, seed=0, ignore_eos=true, logprobs=20",
+  "service_result": {
+    "prompt_count": 8,
+    "completion_tokens": 128,
+    "text_mismatch_count": 0,
+    "token_id_mismatch_count": 0,
+    "max_selected_logprob_abs_error": 0.0
+  },
+  "unit_result": "14 passed: native gather uses torch.equal against index_select for FP32/BF16 and contiguous/padded rows; native masked store validates PAD_SLOT_ID=-1 and padded row strides.",
+  "integration_result": "2 passed: real C=128 padded Full CUDA Graph engine integration for both normal graph replay and RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1."
+}
