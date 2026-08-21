@@ -230,6 +230,11 @@ screen -ls
 - [x] B=8 BF16 projection 单元测试 `torch.equal`，Full Decode graph sizes `1..128` 成功，服务 8×16 `logprobs=20` 与稳定 trace byte-identical；clean-restart paired C=128 `1569.495 → 1584.997 aggregate TPS`（**+0.99%**），C=1 `28.459 TPS` 无回退。
 - [x] 稳定启动脚本已加入此开关；证据：`benchmark_records/20260821_multistream_bulk_decode_retained/`。
 
+### 2.8 2026-08-21：LoRA chain torch.compile probe（拒绝）
+
+- [x] isolated BF16 LoRA `4096→192→4096` + tanh 在 B=1/B=128 均与 eager `torch.equal`，但 compiled `67.80/83.30 us` 对 eager `30.37/34.38 us` 分别约 -55%/-59%；Inductor 未实现有效 GEMM fusion，禁止接入单个 LoRA compile wrapper。
+- [x] 证据：`benchmark_records/20260821_lora_compile_probe_rejected/`。
+
 ### 3.1 2026-08-21：稳定 Full Decode C=1/C=128 profile 与 sparse 精度后续
 
 - [x] **稳定 profile 已完成并已恢复服务**：仅在 dashboard `running=false` 的空闲窗口短暂启用 vLLM torch profiler，随后用 `/tmp/start_rwkv7_fullgraph_t1_direct_cache.sh` 恢复 8030；`/health` 200，8 prompts × 16 greedy / `logprobs=20` 与严格基线字节级零差，post-restore C=1 为 **28.4517 TPS**。
