@@ -104,7 +104,7 @@ screen -ls
 - [x] 在同 checkpoint `/hikscale/models/XiaoKe/rwkv-0.pth` 和同 RTX 4090 D 上复现 Albatross C++：`--wkv32 --cmix-sparse off` 为 31.61 raw tok/s，默认 sparse CMix 为 41.15 raw tok/s（+30.2%）。它是 FP16 standalone graph，未经过 vLLM API/sampling 与 BF16 strict logprob 门禁；其 README 的 145+ TPS 是 RTX 5090 的 standalone 结果，不能直接与本机 vLLM C=1 比较。完整证据：`benchmark_records/20260821_single_decode_bottleneck_and_albatross/`。
 
 - [x] 历史 trace（`/tmp/rwkv7_exact_profile_20260821_1616/`）显示：BF16 GEMM/CUTLASS 约 24%，ATen elementwise 约 20%，ATen reductions 约 13%，旧 cache gather/store 约 20%，exact recurrent update 约 9%。
-- [x] cache-control 与 recurrent state update 的高价值安全优化已保留；下一瓶颈优先是 **decoder projection GEMM/调度**，而不是继续堆叠 cache 小算子。
+- [x] cache-control 与 recurrent state update 的高价值安全优化已保留；C=128 新 trace 证明大 recurrent state 的 gather/store 仍占约 20.28%，但 copy-only `uint4` 不提升带宽，不能继续堆叠小 cache 算子；下一瓶颈优先是 **decoder projection GEMM/调度** 以及严格 reduction-compatible 的 state materialization 消除。
 - [x] 高并发慢的主要风险不只是单个 kernel：C=128 graph replay 同时受 GEMM、逐层 launch/调度、memory traffic、padding/请求调度影响。任何优化必须以服务级 128 并发结果裁决。
 
 ## 5. 强制验证流程
@@ -175,7 +175,7 @@ curl -fsS http://192.168.10.121:3000/
 1. [ ] **保持 dense BF16 reduction contract 的 sparse/structured CMix（最高优先级，C=1）**：已验证 ordered FP32 sparse GEMV 有 +6.40% 服务潜力但仍发生 recursive token divergence，不能重复接入。下一次只探索能复用/匹配 CUTLASS tensor-core reduction 的结构化稀疏、或在不改变每个 dense projection reduction 的前提下融合/减少 projection launch；先做 `torch.equal` 与 8×16 service gate。
 2. [ ] **小 projection 调度/融合（C=1）**：profile 显示约 426 个 small linear/step。优先探索可 CUDA-graph-capture 的 grouped/low-rank projection dispatch；不得拼接 r/k/v 改变数学矩阵形状。`cublasGemmBatchedEx`/strided batched 目前在 M=1 或 M=128 输出不 strict exact，不能直接接入。
 3. [x] **cublasLt isolated algorithm profiling**：已覆盖 decoder/FFN `M=1/8/32/128`、0/4/8/32/64/256 MiB workspace；strict exact 候选在 C=128 与 PyTorch/CUTLASS 持平量级，未接入。
-4. [ ] 对 C=128 抓取新的 CUDA trace，并把 GEMM、reduction、launch/CPU schedule 占比与 C=1 profile 交叉验证；C=128 优化目标与 C=1 sparse FFN 优化分开裁决。
+4. [x] **C=128 Full Decode trace（2026-08-21）**：10 个 `generation_128` graph replay 为 `173.95 ms/graph`（约 735.8 raw aggregate tok/s）；CUTLASS projection 23.94%、ATen elementwise 21.83%、ATen reductions 14.54%、大 FP32 recurrent-state gather/store 合计 20.28%、exact state update 9.84%。idle API 三轮为 `704.10 / 708.56 / 706.67 TPS`，后两轮均值 `707.61`；与外部 dashboard 的 1→128 sweep 重叠会显著污染 client TPS，不能混用。`uint4` copy-only A/B 不稳定且无收益，未接入。证据：`benchmark_records/20260821_c128_full_decode_profile/`。
 5. [ ] 保持追踪官方 upstream：2026-08-21 已 `git fetch upstream main` 到 `36bad1b90`（当前分支落后 4,993 commits，不能盲目 merge）。重点阅读 Kimi K3/KDA fused decode 与 Qwen3.5 GDN/linear-attention 的 state layout、native fused decode/graph guard；只有可独立、数值安全的实现才 backport。
 6. [ ] 将每个有效改动按阶段提交：有意义的 commit message、`Assisted-by: Codex` trailer、完整测试与 benchmark record；不要 push remote。
 

@@ -1,0 +1,21 @@
+{
+  "date": "2026-08-21",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "device": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "mode": "FULL_DECODE_ONLY, capture size 128",
+  "profile_active_generation_graphs": 10,
+  "profile_generation_cuda_ms_total": 1739.5,
+  "profile_generation_cuda_ms_per_graph": 173.95,
+  "profile_raw_aggregate_tps": 735.84,
+  "idle_c128_api_tps": [704.0958219722525, 708.5555946430943, 706.6656226481815],
+  "idle_c128_api_tps_mean": 706.4396797545094,
+  "idle_c128_api_tps_post_warmup_mean": 707.6106086456379,
+  "cuda_breakdown_ms_per_graph": {
+    "bf16_cutlass_projection": 45.551,
+    "aten_elementwise": 41.526,
+    "aten_reduction": 27.658,
+    "recurrent_state_gather": 20.375,
+    "recurrent_state_store": 18.223,
+    "exact_recurrent_state_update": 18.719
+  }
+}
