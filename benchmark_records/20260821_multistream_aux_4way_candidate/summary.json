@@ -1,0 +1,19 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_USE_MULTISTREAM_AUX_4WAY=1",
+  "unit_test": "1 passed",
+  "service_accuracy": {
+    "byte_identical": true,
+    "text_mismatches": 0,
+    "token_mismatches": 0,
+    "top1_disagreements": 0,
+    "max_selected_logprob_error": 0.0,
+    "max_common_topk_logprob_error": 0.0
+  },
+  "paired_throughput": {
+    "c1_32": {"candidate": 28.68206093842605, "baseline": 28.45341641848785, "percent": 0.8035749260311587},
+    "c1_512": {"candidate": 28.791003958401635, "baseline": 28.562772421400517, "percent": 0.7990524646344088},
+    "c128": {"candidate": 1564.9875046385878, "baseline": 1562.2814936896461, "percent": 0.1732089229675715}
+  },
+  "decision": "rejected; three-way baseline restored"
+}

@@ -496,3 +496,17 @@ curl -fsS http://192.168.10.121:3000/
   不应与固定 payload 的 C=128 **aggregate** `~1563 TPS` 混为一个口径。
 - [x] HTML、最终状态及口径说明：
   `benchmark_records/20260821_dashboard_bf16_restore/`。
+
+### 2026-08-21 四路 auxiliary projection stream（严格通过、低收益拒绝）
+
+- [x] 继续榨取 C=1 独立 projection 的并发度，测试 `R+G | K+W | V+V-gate | A` 四条
+  persistent CUDA child streams；相比保留的三路拓扑，仅将完全独立的 A rank-192 LoRA
+  从 `K+W+A` 拆出。没有改变任何 BF16 GEMV 的 operand/dtype/reduction、activation、
+  cache 或 FP32 recurrence。
+- [x] 新增 layer 0/1 的 three-way/four-way `torch.equal` CUDA 测试并通过（`1 passed`）；
+  Full Decode Graph 完成；8×16 service `logprobs=20` 为字节级零差异。
+- [x] clean-restart paired throughput 确实有可复现 C=1 提升：32-token `28.4534 →
+  28.6821 TPS`（`+0.804%`）、512-token `28.5628 → 28.7910 TPS`（`+0.799%`）；但 C=128
+  aggregate 仅 `+0.173%`。低于 1% 保留门槛且增加第四套 stream/event topology，不能实际
+  推进 50+ TPS，已将源码/测试恢复为三路稳定路径。记录：
+  `benchmark_records/20260821_multistream_aux_4way_candidate/`。

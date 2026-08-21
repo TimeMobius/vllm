@@ -1,0 +1,30 @@
+{
+  "warmup": {
+    "wall_time_sec": 1.1980784768238664,
+    "completion_tokens": 32,
+    "output_tps": 26.709435666378663
+  },
+  "rounds": [
+    {
+      "wall_time_sec": 1.1159488847479224,
+      "completion_tokens": 32,
+      "output_tps": 28.675148510254896
+    },
+    {
+      "wall_time_sec": 1.1155667435377836,
+      "completion_tokens": 32,
+      "output_tps": 28.684971280623497
+    },
+    {
+      "wall_time_sec": 1.1158415647223592,
+      "completion_tokens": 32,
+      "output_tps": 28.677906444506892
+    },
+    {
+      "wall_time_sec": 1.1153627531602979,
+      "completion_tokens": 32,
+      "output_tps": 28.69021751831892
+    }
+  ],
+  "mean_output_tps": 28.68206093842605
+}
