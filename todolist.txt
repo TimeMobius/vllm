@@ -375,9 +375,11 @@ curl -fsS http://192.168.10.121:3000/
 
 ### 2026-08-21 官方 upstream / 混合线性模型审查
 
-- [x] 已 `git fetch upstream main --prune`；当前官方远端为
-  `fe76112ff2981e9373765d76687d53f94880f38e`（2026-08-21）。当前分支相对其
-  `ahead 173 / behind 5019`，禁止盲目 merge/rebase。
+- [x] 已于 2026-08-21 再次执行 `git fetch upstream --prune`；当前官方远端为
+  `0a3a4f7f35b7e6e70a1804742dec65b6bec1d2fa`。当前分支相对其
+  `ahead 191 / behind 5032`，禁止盲目 merge/rebase。该新增区间中仅发现一个
+  可借鉴但不直接适用于 RWKV7 的 K3 MXFP4 top-k finalization 融合；没有新的
+  RWKV7 / generic linear-attention decode kernel 可安全移植。
 - [x] 可借鉴的实现是 Bailing/Mamba/KDA 的 **persistent CUDA-Graph metadata、
   PAD slot 与 GPU state 生命周期**；不能直接复制 Kimi KDA/GDN recurrence 或
   Qwen merged projection，因为 RWKV7 必须保留 BF16 `F.linear` reduction
