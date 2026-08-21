@@ -363,3 +363,25 @@ curl -fsS http://192.168.10.121:3000/
   `PAD_SLOT_ID` 做端到端 gather/direct-cache 回归，覆盖 C=127→128、多 replay、
   slot 0 不写入；先验证现有 full-fusion/direct-cache 的 -1 slot contract，避免
   因纯性能改动引入隐患。
+
+### 2026-08-21 multistream K/A → kk-pre early release（拒绝，已恢复）
+
+- [x] 在已保留的 C=1 balanced auxiliary 三 child-stream 路径上验证了一个严格
+  event-DAG 候选：K→A 完成后记录 event，main stream 用原 BF16→FP32 cast 和原
+  `kk_pre` 与该 child stream 后续独立 W 工作、R+G/V+V-gate 工作重叠。没有改动
+  任一 `F.linear`、activation、dtype、reduction、recurrent/direct-cache 或 cache
+  写入；仅增加 `RWKV7_USE_MULTISTREAM_EARLY_KK_PRE=1` 的 A/B 路径。
+- [x] layer 0/1 strict tensor test 通过；Full Decode graph capture
+  `1,2,4,8,16,32,64,128` 完成；8×16 `logprobs=20` 服务 trace 字节级零差。
+- [x] restart-paired HTTP：C=1 `28.4527 → 28.6101 TPS`（+0.55%），C=128
+  aggregate `1564.9534 → 1569.4818 TPS`（+0.29%）；低于 1% gate，已恢复。
+  记录：`benchmark_records/20260821_multistream_early_kk_pre_candidate/`。
+
+### 瓶颈口径修正
+
+- [x] “约 426 个 linear-like profiler events/token”是历史 profile 的筛选后
+  kernel-event 口径，不应当成源码 `F.linear` 调用数。目标 61 层、C=4096 的
+  direct-linear block path 静态计数为 **852 个 block-internal F.linear/token**：
+  layer 0 为 12 个，layers 1–60 各 14 个（另不含最终 lm-head/sampling）。
+  C=1 到 50+ TPS 的唯一高收益主线仍是保持输出 contract 的 M=1 BF16 GEMV；
+  metadata、cache 和纯 event 调度只能提供个位数百分比空间。
