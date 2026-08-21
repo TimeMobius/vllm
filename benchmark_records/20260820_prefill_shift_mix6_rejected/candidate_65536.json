@@ -1,0 +1,145 @@
+{
+  "mode": "cold-unique-raw-token-prompts",
+  "prompt_tokens_per_request": 65536,
+  "concurrency": 1,
+  "max_tokens": 16,
+  "warmup": {
+    "wall_sec": 18.27563746459782,
+    "prompt_tokens": 65536,
+    "output_tokens": 16,
+    "prompt_tokens_per_sec": 3585.9761459457363,
+    "aggregate_output_tps": 0.8754824575062833,
+    "request_latencies": [
+      18.257930835708976
+    ],
+    "prompt_id_prefixes": [
+      "89a63cab9409"
+    ],
+    "output_token_ids": [
+      [
+        84,
+        47,
+        7272,
+        47,
+        1753,
+        47,
+        8401,
+        47,
+        1950,
+        47,
+        1976,
+        47,
+        1798,
+        47,
+        1948,
+        47
+      ]
+    ]
+  },
+  "rounds": [
+    {
+      "wall_sec": 18.34273931197822,
+      "prompt_tokens": 65536,
+      "output_tokens": 16,
+      "prompt_tokens_per_sec": 3572.857842296408,
+      "aggregate_output_tps": 0.8722797466543964,
+      "request_latencies": [
+        18.32541176211089
+      ],
+      "prompt_id_prefixes": [
+        "eed85bb742fd"
+      ],
+      "output_token_ids": [
+        [
+          101,
+          96,
+          25106,
+          96,
+          27200,
+          96,
+          34174,
+          96,
+          8706,
+          96,
+          8269,
+          96,
+          25984,
+          96,
+          35494,
+          96
+        ]
+      ],
+      "round": 0
+    },
+    {
+      "wall_sec": 18.357841092161834,
+      "prompt_tokens": 65536,
+      "output_tokens": 16,
+      "prompt_tokens_per_sec": 3569.9186887493875,
+      "aggregate_output_tps": 0.8715621798704559,
+      "request_latencies": [
+        18.341307145543396
+      ],
+      "prompt_id_prefixes": [
+        "b7d2e58582f5"
+      ],
+      "output_token_ids": [
+        [
+          94,
+          33,
+          226,
+          139,
+          161,
+          226,
+          137,
+          158,
+          226,
+          137,
+          175,
+          226,
+          138,
+          182,
+          33,
+          226
+        ]
+      ],
+      "round": 1
+    },
+    {
+      "wall_sec": 18.394328396767378,
+      "prompt_tokens": 65536,
+      "output_tokens": 16,
+      "prompt_tokens_per_sec": 3562.8373369433434,
+      "aggregate_output_tps": 0.8698333342146835,
+      "request_latencies": [
+        18.377647600136697
+      ],
+      "prompt_id_prefixes": [
+        "cb08b0c8adc9"
+      ],
+      "output_token_ids": [
+        [
+          1939,
+          47,
+          7621,
+          53681,
+          23799,
+          472,
+          44,
+          269,
+          261,
+          35,
+          11,
+          65531,
+          11,
+          65530,
+          11,
+          65533
+        ]
+      ],
+      "round": 2
+    }
+  ],
+  "average_prompt_tokens_per_sec": 3568.53795599638,
+  "average_aggregate_output_tps": 0.8712250869131787
+}

@@ -1,0 +1,20 @@
+{
+  "record_id": "20260820_prefill_shift_mix6_rejected",
+  "status": "rejected",
+  "gpu": "NVIDIA GeForce RTX 4090 D sm89",
+  "scope": "Opt-in native-BF16 Triton fusion of token shift and six mix6 projections, restricted to RWKV7 single-sequence cache-all prefill to avoid the rejected decode use case.",
+  "baseline": {"avg_tps": 2239.9181526577013, "record": "baseline_4096.json"},
+  "candidate": {"avg_tps": 2249.925933677574, "record": "candidate_4096.json"},
+  "speedup_percent": 0.4467922637261701,
+  "accuracy": {
+    "operator": "Exact BF16 parity for T=1/13/257 with and without [hidden] cached state; test_rwkv7_prefill_shift_mix6_matches_reference",
+    "service": "Fixed 4096 raw-token prompt generated 16/16 identical output token IDs against the retained path"
+  },
+  "workload": "cold unique raw-token prompt, B=1, 16 output tokens, two measured rounds after warmup; --enforce-eager --enable-prefix-caching --mamba-cache-mode align",
+  "experiments": {
+    "4096": {"baseline_prompt_tps": 2239.9181526577013, "candidate_prompt_tps": 2249.925933677574, "speedup_percent": 0.4467922637261701},
+    "16384": {"baseline_prompt_tps": 3223.94187569424, "candidate_prompt_tps": 3215.6203747629024, "speedup_percent": -0.25811572454437215},
+    "65536": {"baseline_prompt_tps": 3575.536829949202, "candidate_prompt_tps": 3568.53795599638, "speedup_percent": -0.1957443597312086}
+  },
+  "conclusion": "Rejected and reverted: the isolated fused operator was faster, but end-to-end cold prefill showed no stable benefit: +0.45% at 4K and regressions at 16K (-0.26%) and 64K (-0.20%). These deltas are within noise and do not meet the stable positive service-performance gate."
+}
