@@ -1,0 +1,19 @@
+{
+  "candidate": "--dtype float16, unquantized weights and exact FP32 recurrent state",
+  "c1_tps_runs": [
+    26.009999843136402,
+    26.13478453584809,
+    26.19886728899017
+  ],
+  "c1_tps_mean_last_two": 26.166825912419128,
+  "c1_reference_bf16_strict_direct_cache_tps": 26.21,
+  "c1_change_percent": -0.16472372217044562,
+  "c128_tps_runs": [
+    1170.570619132649,
+    1201.1853992350377,
+    1196.1419442782787
+  ],
+  "c128_tps_mean_last_two": 1198.6636717566582,
+  "c128_reference_bf16_strict_direct_cache_tps": 1205.23,
+  "c128_change_percent": -0.544819515224626
+}

@@ -212,6 +212,7 @@ curl -fsS http://192.168.10.121:3000/
 5. [x] **官方 upstream 审查（2026-08-21）**：已 fetch 且核实远端 `upstream/main=a60c66e3d`（同日官方 tip）；当前分支相对其为本地独有 153、upstream 独有 4,996 commits，不能盲目 merge/rebase。已审阅 Kimi K3/KDA、Qwen3.5 GDN、Mamba hybrid cache：借鉴 decode-only guard、persistent-state 原地 mutation、固定输出 buffer、warm-up 和 fallback；不移植其不同数学的 recurrent kernels。官方当前没有名为 Qwen3.6 或 Qwen3.8 的同名 model implementation。
 6. [ ] 将每个有效改动按阶段提交：有意义的 commit message、`Assisted-by: Codex` trailer、完整测试与 benchmark record；不要 push remote。
 8. [x] **online FP8 量化探索（拒绝）**：`--quantization fp8` 仍可 Full Decode CUDA Graph，C=1 `30.89 TPS`（约 +17.9%）且 C=128 `1218.58 TPS`（约 +1.11%）；但相对严格服务 8×16 gate 出现 `5/8` text/token 分歧、selected logprob max `3.20997`、common Top-K max `13.64159`。这是模型质量变化，不是可接受的末位误差；稳定 BF16 服务已恢复。证据：`benchmark_records/20260821_fp8_online_quantization_rejected/`。
+9. [x] **FP16 dtype 探索（拒绝）**：`--dtype float16` 相对 BF16 strict trace 仍有 `2/8` text/token 分歧（selected max `2.70194`），且没有速度收益：C=1 `26.17 TPS`（-0.16%）、C=128 `1198.66 TPS`（-0.55%）。Albatross 的 FP16 standalone 表现不能通过仅切换 vLLM dtype 获得。证据：`benchmark_records/20260821_fp16_dtype_rejected/`。
 7. [x] **稳定服务 / 外部复测（2026-08-21）**：`15330b229` 服务已在 `127.0.0.1:8030` 以 direct-cache 开关启动，`/health` 与 `/v1/models` 成功；外部 dashboard POST 在 `20:10:34` 成功结束。另以 512 decode tokens × 3 的真实 OpenAI completions 复测 steady C=1 为 `27.181 / 27.199 / 27.188 TPS`，说明 32-token 基准的约 26 TPS 并不是主要由首 token 启动开销造成。
 
 ## 7. 构建约束

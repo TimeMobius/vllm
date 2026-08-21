@@ -1,0 +1,15 @@
+{
+  "prompts": 8,
+  "decode_tokens_per_prompt": 16,
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 0,
+    "logprobs": 20
+  },
+  "text_mismatch_count": 2,
+  "token_id_mismatch_count": 2,
+  "selected_logprob_max_abs_error": 2.7019357681274414,
+  "common_topk_count": 2135,
+  "common_topk_logprob_max_abs_error": 10.360044971108437
+}
