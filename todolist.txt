@@ -1,6 +1,6 @@
 # RWKV7 vLLM-SP 性能优化追踪
 
-> **最后核对：2026-08-21（Asia/Shanghai，exact output-reduction 已验证）**
+> **最后核对：2026-08-21（Asia/Shanghai，exact direct-cache update 已验证）**
 > 工作目录：`/mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast`
 > 分支：`codex/rwkv7-sp-fast`
 > 目标：在严格数值对齐和回归测试门禁下，提高 RWKV7 的 **Full Decode CUDA Graph** 和高并发 decode 吞吐。
@@ -25,6 +25,7 @@ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
 VLLM_DISABLE_COMPILE_CACHE=1 \
 RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1 \
 RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1 \
+RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1 \
 RWKV7_USE_NATIVE_STRIDED_GATHER=1 \
 RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1 \
 RWKV7_USE_TRITON_MASKED_STORE=1 \
@@ -83,8 +84,18 @@ screen -ls
   `benchmark_records/20260821_exact_recurrent_t1_output_reduction_full_graph/`。
 
 默认开关：`RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1`；回退：设为 `0`。
+### 2.3 精确 T=1 直接更新 persistent recurrent cache（新增）
 
-### 2.2 Full-graph state cache 的 native strided gather/store
+- [x] `2026-08-21` 新增 `rwkv7_recurrent_t1_exact_direct_cache`：对 Full Decode CUDA Graph 的 `mamba_cache_mode=align`，直接读取、严格更新并写回 persistent FP32 recurrent cache，消除每层 `[B,H,64,64]` recurrent state 的 gather 与 store。
+- [x] 支持实际 vLLM cache 的 strided `[slots,H,64,64]` view（slot stride 可大于一个 state row）；仅接受内部 `(4096,64,1)` 连续布局。`slot_id=-1` 的 graph padding lane 可读取 slot 0 但绝不写 cache；`cache_all`、prefill、eager、CPU、非 FP32、非兼容 layout 自动 fallback。
+- [x] 保持 existing exact FP32 contract：`sa` 和 output reduction 匹配 PyTorch `reduce_kernel<128,4>`，state update 使用显式 round-to-nearest multiply/add 顺序。isolated strided-cache B=1/8/128、3 seeds、valid output 与完整 cache 均 `torch.equal`；服务 8 prompts × 16 decode tokens、greedy、`logprobs=20` 为 text/token/selected/common Top-K **0 差异**。
+- [x] 成对服务 benchmark（同一个 rebuilt `_C.abi3.so`、首轮 warm-up、后两轮均值）：C=128 `791.76 → 1205.23 TPS`，**+52.22%**；C=1 `25.91 → 26.21 TPS`（+1.13%）。这显著改善高并发，但 C=1 仍受 small BF16 projection 限制，尚未达到 50 TPS 目标。
+- [x] focused regression（开启 direct-cache）：**78 passed, 2 skipped**。证据：`benchmark_records/20260821_exact_recurrent_t1_direct_cache_full_graph/`。
+
+默认开关：`RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1`；回退：设为 `0`。
+
+
+### 2.4 Full-graph state cache 的 native strided gather/store
 
 - [x] 提交：`b30e12944 RWKV7: accelerate strided full graph state cache`。
 - [x] 在 Full Decode graph 中，以 CUDA 行拷贝 gather 替换 RWKV7 block 的 state-cache `index_select`；native masked store 支持 graph replay 的 padded row stride。
@@ -95,7 +106,7 @@ screen -ls
 
 回退开关：`RWKV7_USE_NATIVE_STRIDED_GATHER=0`、`RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=0`。
 
-### 2.3 编译/图模式的现状
+### 2.5 编译/图模式的现状
 
 - [x] `FULL_DECODE_ONLY` CUDA Graph 已通过真实 C=128 padded engine integration，测试覆盖普通 full decode graph 与 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 路径。
 - [x] **C=1 full-model compile复测（2026-08-21）**：完整 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 服务精度仍为 text/token/logprob 0 差异，但 C=1 post-warmup `25.852 TPS` 对严格稳定路径 `25.961 TPS`（-0.42%），无稳定收益，继续保持 opt-in 不启用。证据：`benchmark_records/20260821_full_decode_compile_c1_rejected/`。
@@ -134,6 +145,8 @@ screen -ls
 cd /mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast
 export VLLM_RWKV7_ENGINE_TEST_MODEL_PATH=/hikscale/models/XiaoKe/rwkv-0-hf
 export RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1
+export RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1
+export RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1
 export RWKV7_USE_NATIVE_STRIDED_GATHER=1
 export RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1
 
@@ -141,7 +154,7 @@ export RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1
   tests/model_executor/test_rwkv7.py -v
 ```
 
-当前最近完整 focused 结果：**72 passed, 2 skipped**。其中包含 C=128 padded Full CUDA Graph engine integration；skip 为既有的外部 reference runtime 依赖。
+当前最近完整 focused 结果（direct-cache 启用）：**78 passed, 2 skipped**。其中包含 C=128 padded Full CUDA Graph engine integration；skip 为既有的外部 reference runtime 依赖。
 
 ### 服务精度对齐
 
@@ -200,7 +213,7 @@ curl -fsS http://192.168.10.121:3000/
 
 ## 7. 构建约束
 
-- Python 只能用 `/mnt/data/anaconda3/envs/vllm-sp/bin/python`；不得使用系统 `python3` 或裸 `pip`。
+- Python 统一使用仓库 `.venv/bin/python`（当前链接至 vllm-sp 的 Python 3.12）；不得使用系统 `python3` 或裸 `pip`。服务启动沿用 vllm-sp 的 `/mnt/data/anaconda3/envs/vllm-sp/bin/vllm`。
 - C++/CUDA 变更前使用 vllm-sp 的 compiler/CUDA 变量，并通过既有 `/tmp/vllm-rwkv7-exact-build` 构建 `_C.abi3.so`；构建后再运行所有精度和服务测试。
 - 任何候选的默认开关必须可显式关闭并在不满足 layout/dtype/device guard 时 fallback。
 - 提交前检查 `git status --short`、focused suite、精度 A/B、C=128 benchmark 和 `benchmark_records` 完整性。

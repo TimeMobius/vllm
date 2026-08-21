@@ -54,6 +54,14 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
            &rwkv7_recurrent_t1_exact_update);
 
   ops.def(
+      "rwkv7_recurrent_t1_exact_direct_cache(Tensor(a!) cache, Tensor "
+      "slot_ids, "
+      "Tensor exp_w, Tensor kk, Tensor kk_a, Tensor k, Tensor v, Tensor r) -> "
+      "Tensor");
+  ops.impl("rwkv7_recurrent_t1_exact_direct_cache", torch::kCUDA,
+           &rwkv7_recurrent_t1_exact_direct_cache);
+
+  ops.def(
       "rwkv7_masked_store(Tensor(a!) cache, Tensor values, Tensor slot_ids) -> "
       "()");
   ops.impl("rwkv7_masked_store", torch::kCUDA, &rwkv7_masked_store);

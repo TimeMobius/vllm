@@ -46,6 +46,8 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_recurrent_reference,
     rwkv7_recurrent_reference_with_checkpoints,
     rwkv7_recurrent_t1,
+    rwkv7_recurrent_t1_exact_direct_cache,
+    rwkv7_recurrent_t1_exact_direct_cache_available,
     rwkv7_recurrent_t1_exact_output_reduction,
     rwkv7_recurrent_t1_exact_output_reduction_available,
     rwkv7_recurrent_t1_exact_update,
@@ -688,6 +690,71 @@ def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
 
     torch.testing.assert_close(actual_state, expected_state, rtol=5e-4, atol=5e-4)
     torch.testing.assert_close(actual_output, expected_output, rtol=5e-4, atol=5e-4)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(
+    not rwkv7_recurrent_t1_exact_direct_cache_available(),
+    reason="RWKV7 exact direct-cache CUDA op is unavailable",
+)
+@pytest.mark.parametrize("batch_size", [1, 8, 128])
+def test_rwkv7_recurrent_t1_exact_direct_cache_matches_reference(
+    monkeypatch, batch_size
+):
+    monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "1")
+    num_slots, num_heads, head_dim, value_dim = 257, 4, 64, 64
+    for seed in (13, 71, 173):
+        torch.manual_seed(seed + batch_size)
+        cache_backing = torch.randn(
+            num_slots,
+            3,
+            num_heads,
+            head_dim,
+            value_dim,
+            device="cuda",
+            dtype=torch.float32,
+        )
+        # RWKV's recurrent cache is a strided [slots, H, 64, 64] view of the
+        # global per-state backing allocation, not an ordinary contiguous tensor.
+        actual_cache = cache_backing[:, 1]
+        expected_cache = actual_cache.clone()
+        slot_ids = (
+            torch.randperm(num_slots, device="cuda")[:batch_size]
+            .to(dtype=torch.long)
+            .contiguous()
+        )
+        if batch_size > 1:
+            slot_ids[-1] = -1
+        w, kk, a, k, v, r = [
+            torch.randn(
+                batch_size,
+                num_heads,
+                head_dim,
+                device="cuda",
+                dtype=torch.float32,
+            ).contiguous()
+            for _ in range(6)
+        ]
+        expected_state = expected_cache.index_select(0, slot_ids.clamp_min(0))
+        expected_sa = (expected_state * (-kk).unsqueeze(-1)).sum(dim=-2)
+        expected_state = (
+            torch.exp(w).unsqueeze(-1) * expected_state
+            + (kk * a).unsqueeze(-1) * expected_sa.unsqueeze(-2)
+            + k.unsqueeze(-1) * v.unsqueeze(-2)
+        )
+        expected_output = (expected_state * r.unsqueeze(-1)).sum(dim=-2)
+        valid_slots = slot_ids >= 0
+        expected_cache.index_copy_(
+            0, slot_ids[valid_slots], expected_state[valid_slots]
+        )
+        actual_output = rwkv7_recurrent_t1_exact_direct_cache(
+            actual_cache, slot_ids, w, kk, a, k, v, r
+        )
+        # A padded graph lane has no observable output. If a valid request owns
+        # slot zero, its in-place update may happen before the padded lane reads
+        # the clamped slot-zero state; only valid lanes are part of the contract.
+        assert torch.equal(actual_output[valid_slots], expected_output[valid_slots])
+        assert torch.equal(actual_cache, expected_cache)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

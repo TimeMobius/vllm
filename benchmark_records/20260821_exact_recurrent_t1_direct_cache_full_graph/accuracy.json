@@ -1,0 +1,26 @@
+{
+  "reference_mode": "FULL_DECODE_ONLY CUDA Graph with exact state-update and exact output reduction, RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=0",
+  "candidate_mode": "same configuration with RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1 and mamba_cache_mode=align",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "served_model_name": "xiaoke-5",
+  "prompts": 8,
+  "decode_steps_per_prompt": 16,
+  "step_count": 128,
+  "text_mismatch_count": 0,
+  "top1_disagreement_count": 0,
+  "top1_disagreement_rate": 0.0,
+  "max_common_topk_abs_error": 0.0,
+  "mean_common_topk_abs_error": 0.0,
+  "max_selected_logprob_abs_error": 0.0,
+  "mean_selected_logprob_abs_error": 0.0,
+  "isolated_operator": {
+    "cache_layout": "strided [slots, H, 64, 64] view from [slots, 3, H, 64, 64] backing allocation",
+    "batch_sizes": [1, 8, 128],
+    "random_seeds_per_batch": 3,
+    "valid_lane_output_torch_equal": true,
+    "cache_torch_equal": true,
+    "pad_slot_minus_one_preserves_cache": true
+  },
+  "raw_reference_trace": "/tmp/rwkv7_t1_exact_output_trace.json",
+  "raw_candidate_trace": "/tmp/rwkv7_t1_direct_cache_trace.json"
+}

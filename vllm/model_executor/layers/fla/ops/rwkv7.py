@@ -34,6 +34,11 @@ def _rwkv7_exact_recurrent_t1_output_reduction_enabled() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _rwkv7_exact_recurrent_t1_direct_cache_enabled() -> bool:
+    value = os.getenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "0")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _rwkv7_recurrent_t1_reference(
     recurrent_state: torch.Tensor,
     w: torch.Tensor,
@@ -253,6 +258,56 @@ def rwkv7_recurrent_t1_exact_update_available() -> bool:
 def rwkv7_recurrent_t1_exact_output_reduction_available() -> bool:
     return hasattr(torch.ops, "_C") and hasattr(
         torch.ops._C, "rwkv7_reduce_d64_atten_exact"
+    )
+
+
+def rwkv7_recurrent_t1_exact_direct_cache_available() -> bool:
+    return hasattr(torch.ops, "_C") and hasattr(
+        torch.ops._C, "rwkv7_recurrent_t1_exact_direct_cache"
+    )
+
+
+def rwkv7_recurrent_t1_exact_direct_cache(
+    cache: torch.Tensor,
+    slot_ids: torch.Tensor,
+    w: torch.Tensor,
+    kk: torch.Tensor,
+    a: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    r: torch.Tensor,
+) -> torch.Tensor:
+    """Run an exact T=1 recurrence directly on persistent FP32 cache rows.
+
+    This is a narrow Full CUDA Graph decode path: it removes the recurrent
+    state gather and store while preserving the ATen FP32 ``sa`` and output
+    reduction orders. A padded ``slot_id=-1`` reads slot zero but does not
+    write it; its output is ignored by the graph's padded decode lane.
+    """
+    tensors = (w, kk, a, k, v, r)
+    if (
+        not _rwkv7_exact_recurrent_t1_direct_cache_enabled()
+        or not rwkv7_recurrent_t1_exact_direct_cache_available()
+        or cache.device.type != "cuda"
+        or cache.ndim != 4
+        or cache.shape[-2:] != (64, 64)
+        or slot_ids.device != cache.device
+        or slot_ids.dtype != torch.long
+        or slot_ids.ndim != 1
+        or slot_ids.numel() != r.shape[0]
+        or any(t.dtype != torch.float32 or not t.is_contiguous() for t in tensors)
+        or cache.dtype != torch.float32
+        or cache.stride(-1) != 1
+        or cache.stride(-2) != 64
+        or cache.stride(-3) != 64 * 64
+        or cache.stride(0) < cache.shape[1] * 64 * 64
+        or not slot_ids.is_contiguous()
+    ):
+        raise RuntimeError("RWKV7 exact direct-cache recurrent path is unsupported")
+    exp_w = torch.exp(w)
+    kk_a = kk * a
+    return custom_ops.rwkv7_recurrent_t1_exact_direct_cache(
+        cache, slot_ids, exp_w, kk, kk_a, k, v, r
     )
 
 

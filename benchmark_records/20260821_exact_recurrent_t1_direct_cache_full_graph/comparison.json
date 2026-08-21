@@ -1,0 +1,12 @@
+{
+  "algorithm_id": "exact-recurrent-t1-direct-persistent-cache-full-graph",
+  "parent_id": "exact-recurrent-t1-output-reduction-full-graph",
+  "baseline_avg_tps": 791.7633783459056,
+  "heuristic_avg_tps": 1205.2310230712665,
+  "speedup_percent": 52.22111252343438,
+  "prompt_tokens": "mixed fixed prompts; 128 requests / C=128",
+  "output_tokens_per_round": 4096,
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "accuracy_record": "benchmark_records/20260821_exact_recurrent_t1_direct_cache_full_graph/accuracy.json",
+  "notes": "Same rebuilt binary, only direct-cache flag differs. Valid for Full Decode CUDA Graph / align state cache; direct state-cache row stride is honored and padded slot -1 never writes."
+}

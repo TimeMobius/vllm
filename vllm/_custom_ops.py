@@ -150,6 +150,24 @@ if hasattr(torch.ops, "_C") and hasattr(
         return torch.empty_like(state)
 
 
+if hasattr(torch.ops, "_C") and hasattr(
+    torch.ops._C, "rwkv7_recurrent_t1_exact_direct_cache"
+):
+
+    @register_fake("_C::rwkv7_recurrent_t1_exact_direct_cache")
+    def _rwkv7_recurrent_t1_exact_direct_cache_fake(
+        cache: torch.Tensor,
+        slot_ids: torch.Tensor,
+        exp_w: torch.Tensor,
+        kk: torch.Tensor,
+        kk_a: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        r: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.empty_like(r)
+
+
 if hasattr(torch.ops, "_C") and hasattr(torch.ops._C, "rwkv7_masked_store"):
 
     @register_fake("_C::rwkv7_masked_store")
@@ -219,6 +237,21 @@ def rwkv7_recurrent_t1_exact_update(
     sa: torch.Tensor,
 ) -> torch.Tensor:
     return torch.ops._C.rwkv7_recurrent_t1_exact_update(state, exp_w, kk_a, k, v, sa)
+
+
+def rwkv7_recurrent_t1_exact_direct_cache(
+    cache: torch.Tensor,
+    slot_ids: torch.Tensor,
+    exp_w: torch.Tensor,
+    kk: torch.Tensor,
+    kk_a: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    r: torch.Tensor,
+) -> torch.Tensor:
+    return torch.ops._C.rwkv7_recurrent_t1_exact_direct_cache(
+        cache, slot_ids, exp_w, kk, kk_a, k, v, r
+    )
 
 
 def paged_attention_v1(

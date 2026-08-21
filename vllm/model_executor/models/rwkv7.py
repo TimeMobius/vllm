@@ -36,6 +36,8 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_mix6,
     rwkv7_mix6_reference,
     rwkv7_recurrent_t1,
+    rwkv7_recurrent_t1_exact_direct_cache,
+    rwkv7_recurrent_t1_exact_direct_cache_available,
     rwkv7_recurrent_t1_exact_update,
     rwkv7_recurrent_t1_exact_update_available,
 )
@@ -1501,9 +1503,11 @@ class RWKV7Attention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cached_shift_state: torch.Tensor,
-        recurrent_state: torch.Tensor,
+        recurrent_state: torch.Tensor | None,
         v_first: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        recurrent_cache: torch.Tensor | None = None,
+        recurrent_slot_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
         delta = cached_shift_state.to(hidden_states.dtype) - hidden_states
         final_shift_state = hidden_states
         r, w, k, v, kk, a, g, v_first_out = self._project_recurrent_inputs(
@@ -1511,18 +1515,36 @@ class RWKV7Attention(nn.Module):
             delta,
             v_first,
         )
-        recurrent_state = recurrent_state.to(torch.float32)
-
-        recurrent_output, final_recurrent_state = self._run_recurrent_decode_batch(
-            hidden_states=hidden_states,
-            r=r,
-            w=w,
-            k=k,
-            v=v,
-            kk=kk,
-            a=a,
-            recurrent_state=recurrent_state,
+        use_direct_cache = (
+            recurrent_cache is not None
+            and recurrent_slot_ids is not None
+            and rwkv7_recurrent_t1_exact_direct_cache_available()
         )
+        if use_direct_cache:
+            recurrent_output = rwkv7_recurrent_t1_exact_direct_cache(
+                recurrent_cache,
+                recurrent_slot_ids,
+                w,
+                kk,
+                a,
+                k,
+                v,
+                r,
+            )
+            final_recurrent_state = None
+        else:
+            assert recurrent_state is not None
+            recurrent_state = recurrent_state.to(torch.float32)
+            recurrent_output, final_recurrent_state = self._run_recurrent_decode_batch(
+                hidden_states=hidden_states,
+                r=r,
+                w=w,
+                k=k,
+                v=v,
+                kk=kk,
+                a=a,
+                recurrent_state=recurrent_state,
+            )
 
         output = self._finalize_attention_output(
             recurrent_output,
@@ -1830,8 +1852,8 @@ class RWKV7Block(nn.Module, MambaBase):
         )
 
     def _get_kv_states(
-        self, slot_ids: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, slot_ids: torch.Tensor, *, skip_recurrent_state: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         # Full CUDA graphs pad uniform decode batches with PAD_SLOT_ID=-1.
         # Gather padding from slot zero; its outputs are ignored and
         # _store_kv_states masks it so slot zero is never mutated.
@@ -1839,9 +1861,7 @@ class RWKV7Block(nn.Module, MambaBase):
             slot_ids = slot_ids.clamp_min(0)
         use_strided_gather = (
             self._uses_full_cudagraphs
-            and _rwkv7_env_flag_enabled(
-                "RWKV7_USE_NATIVE_STRIDED_GATHER", default=True
-            )
+            and _rwkv7_env_flag_enabled("RWKV7_USE_NATIVE_STRIDED_GATHER", default=True)
             and all(
                 cache.is_cuda and cache[0].is_contiguous() for cache in self.kv_cache
             )
@@ -1851,12 +1871,16 @@ class RWKV7Block(nn.Module, MambaBase):
         if use_strided_gather:
             return (
                 custom_ops.rwkv7_strided_gather(self.kv_cache[0], slot_ids),
-                custom_ops.rwkv7_strided_gather(self.kv_cache[1], slot_ids),
+                None
+                if skip_recurrent_state
+                else custom_ops.rwkv7_strided_gather(self.kv_cache[1], slot_ids),
                 custom_ops.rwkv7_strided_gather(self.kv_cache[2], slot_ids),
             )
         return (
             self.kv_cache[0].index_select(0, slot_ids),
-            self.kv_cache[1].index_select(0, slot_ids),
+            None
+            if skip_recurrent_state
+            else self.kv_cache[1].index_select(0, slot_ids),
             self.kv_cache[2].index_select(0, slot_ids),
         )
 
@@ -1868,6 +1892,7 @@ class RWKV7Block(nn.Module, MambaBase):
         attn_shift_state, recurrent_state, ffn_shift_state = self._get_kv_states(
             slot_ids
         )
+        assert recurrent_state is not None
         has_initial_state = has_initial_state.to(attn_shift_state.device)
         attn_shift_state = torch.where(
             has_initial_state[:, None],
@@ -1920,7 +1945,7 @@ class RWKV7Block(nn.Module, MambaBase):
             and self.kv_cache[0].is_cuda
             and all(cache[0].is_contiguous() for cache in self.kv_cache)
             and attn_shift_state.is_contiguous()
-            and recurrent_state.is_contiguous()
+            and (recurrent_state is None or recurrent_state.is_contiguous())
             and ffn_shift_state.is_contiguous()
             and hasattr(torch.ops, "_C")
             and hasattr(torch.ops._C, "rwkv7_masked_store")
@@ -1931,11 +1956,12 @@ class RWKV7Block(nn.Module, MambaBase):
                 attn_shift_state.to(self.kv_cache[0].dtype),
                 slot_ids,
             )
-            custom_ops.rwkv7_masked_store(
-                self.kv_cache[1],
-                recurrent_state.to(self.kv_cache[1].dtype),
-                slot_ids,
-            )
+            if recurrent_state is not None:
+                custom_ops.rwkv7_masked_store(
+                    self.kv_cache[1],
+                    recurrent_state.to(self.kv_cache[1].dtype),
+                    slot_ids,
+                )
             custom_ops.rwkv7_masked_store(
                 self.kv_cache[2],
                 ffn_shift_state.to(self.kv_cache[2].dtype),
@@ -1944,9 +1970,7 @@ class RWKV7Block(nn.Module, MambaBase):
             return
 
         if self._uses_full_cudagraphs:
-            if _rwkv7_env_flag_enabled(
-                "RWKV7_USE_TRITON_MASKED_STORE", default=True
-            ):
+            if _rwkv7_env_flag_enabled("RWKV7_USE_TRITON_MASKED_STORE", default=True):
                 # The extension is unavailable in this source checkout. Use a
                 # graph-safe Triton scatter that skips PAD_SLOT_ID=-1 directly.
                 rwkv7_masked_store_triton(
@@ -1954,11 +1978,12 @@ class RWKV7Block(nn.Module, MambaBase):
                     attn_shift_state.to(self.kv_cache[0].dtype),
                     slot_ids,
                 )
-                rwkv7_masked_store_triton(
-                    self.kv_cache[1],
-                    recurrent_state.to(self.kv_cache[1].dtype),
-                    slot_ids,
-                )
+                if recurrent_state is not None:
+                    rwkv7_masked_store_triton(
+                        self.kv_cache[1],
+                        recurrent_state.to(self.kv_cache[1].dtype),
+                        slot_ids,
+                    )
                 rwkv7_masked_store_triton(
                     self.kv_cache[2],
                     ffn_shift_state.to(self.kv_cache[2].dtype),
@@ -1985,9 +2010,12 @@ class RWKV7Block(nn.Module, MambaBase):
             self.kv_cache[0].index_copy_(
                 0, safe_slot_ids, masked_values(self.kv_cache[0], attn_shift_state)
             )
-            self.kv_cache[1].index_copy_(
-                0, safe_slot_ids, masked_values(self.kv_cache[1], recurrent_state)
-            )
+            if recurrent_state is not None:
+                self.kv_cache[1].index_copy_(
+                    0,
+                    safe_slot_ids,
+                    masked_values(self.kv_cache[1], recurrent_state),
+                )
             self.kv_cache[2].index_copy_(
                 0, safe_slot_ids, masked_values(self.kv_cache[2], ffn_shift_state)
             )
@@ -1996,9 +2024,10 @@ class RWKV7Block(nn.Module, MambaBase):
         self.kv_cache[0].index_copy_(
             0, slot_ids, attn_shift_state.to(self.kv_cache[0].dtype)
         )
-        self.kv_cache[1].index_copy_(
-            0, slot_ids, recurrent_state.to(self.kv_cache[1].dtype)
-        )
+        if recurrent_state is not None:
+            self.kv_cache[1].index_copy_(
+                0, slot_ids, recurrent_state.to(self.kv_cache[1].dtype)
+            )
         self.kv_cache[2].index_copy_(
             0, slot_ids, ffn_shift_state.to(self.kv_cache[2].dtype)
         )
@@ -2008,9 +2037,17 @@ class RWKV7Block(nn.Module, MambaBase):
         hidden_states: torch.Tensor,
         v_first: torch.Tensor | None,
         attn_shift_state: torch.Tensor,
-        recurrent_state: torch.Tensor,
+        recurrent_state: torch.Tensor | None,
         ffn_shift_state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        recurrent_cache: torch.Tensor | None = None,
+        recurrent_slot_ids: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor,
+    ]:
         residual = hidden_states
         if self.pre_norm is not None:
             residual = self.pre_norm(residual)
@@ -2022,6 +2059,8 @@ class RWKV7Block(nn.Module, MambaBase):
                 attn_shift_state,
                 recurrent_state,
                 v_first,
+                recurrent_cache,
+                recurrent_slot_ids,
             )
         )
         hidden_states = residual + attn_out
@@ -2314,11 +2353,37 @@ class RWKV7Block(nn.Module, MambaBase):
                 )
                 decode_output_slot_ids = decode_input_slot_ids
 
-            states = self._get_kv_states(decode_input_slot_ids)
+            recurrent_cache = self.kv_cache[1]
+            use_direct_recurrent_cache = (
+                self._uses_full_cudagraphs
+                and not cache_all
+                and _rwkv7_env_flag_enabled(
+                    "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", default=False
+                )
+                and rwkv7_recurrent_t1_exact_direct_cache_available()
+                and recurrent_cache.is_cuda
+                and recurrent_cache.dtype == RWKV7_STATE_DTYPE
+                and recurrent_cache.ndim == 4
+                and recurrent_cache.shape[-2:] == (64, 64)
+                and recurrent_cache.stride(-1) == 1
+                and recurrent_cache.stride(-2) == 64
+                and recurrent_cache.stride(-3) == 64 * 64
+                and recurrent_cache.stride(0) >= recurrent_cache.shape[1] * 64 * 64
+            )
+            states = self._get_kv_states(
+                decode_input_slot_ids,
+                skip_recurrent_state=use_direct_recurrent_cache,
+            )
             out, vf_out, attn_shift, recurrent, ffn_shift = self._run_decode_batch(
                 hidden_states[: attn_metadata.num_decode_tokens],
                 None if v_first is None else v_first[: attn_metadata.num_decode_tokens],
                 *states,
+                recurrent_cache=(
+                    recurrent_cache if use_direct_recurrent_cache else None
+                ),
+                recurrent_slot_ids=(
+                    decode_input_slot_ids if use_direct_recurrent_cache else None
+                ),
             )
             output_slice[: attn_metadata.num_decode_tokens] = out
             v_first_slice[: attn_metadata.num_decode_tokens] = vf_out

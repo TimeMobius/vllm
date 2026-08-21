@@ -1,0 +1,76 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp / Python 3.11.15 / PyTorch 2.11.0+cu130",
+  "binary": "same rebuilt vllm/_C.abi3.so for baseline and candidate",
+  "workload": {
+    "endpoint": "/v1/completions",
+    "model": "xiaoke-5",
+    "num_requests": 128,
+    "concurrency": 128,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "return_token_ids": true,
+    "ignore_eos": true,
+    "completed_tokens_per_run": 4096,
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128
+    ],
+    "mamba_cache_mode": "align"
+  },
+  "reference": {
+    "mode": "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=0",
+    "aggregate_output_tps": [
+      792.5097820105715,
+      792.0370105090402,
+      791.489746182771
+    ],
+    "post_warmup_mean_aggregate_output_tps": 791.7633783459056,
+    "raw_summaries": [
+      "raw/baseline_c128_1.summary.json",
+      "raw/baseline_c128_2.summary.json",
+      "raw/baseline_c128_3.summary.json"
+    ]
+  },
+  "candidate": {
+    "mode": "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1",
+    "aggregate_output_tps": [
+      1173.7861922626696,
+      1204.3580740246173,
+      1206.1039721179156
+    ],
+    "post_warmup_mean_aggregate_output_tps": 1205.2310230712665,
+    "raw_summaries": [
+      "raw/candidate_c128_1.summary.json",
+      "raw/candidate_c128_2.summary.json",
+      "raw/candidate_c128_3.summary.json"
+    ]
+  },
+  "c128_post_warmup_speedup_percent": 52.22111252343438,
+  "c1_secondary": {
+    "reference_tps": [
+      25.140425798907465,
+      26.017325724859326,
+      25.811766920518064
+    ],
+    "candidate_tps": [
+      25.95368551459087,
+      26.22430746300917,
+      26.189387288902385
+    ],
+    "reference_post_warmup_mean_tps": 25.914546322688693,
+    "candidate_post_warmup_mean_tps": 26.206847375955775,
+    "speedup_percent": 1.1279420045689381
+  },
+  "conclusion": "Retain for Full Decode CUDA Graph with mamba_cache_mode=align: direct persistent-cache recurrence removes recurrent gather/store without changing service decode/logprobs. It is intentionally disabled for cache_all and non-full-graph paths."
+}

@@ -207,6 +207,12 @@ torch::Tensor rwkv7_recurrent_t1_exact_update(const torch::Tensor& state,
                                               const torch::Tensor& v,
                                               const torch::Tensor& sa);
 
+torch::Tensor rwkv7_recurrent_t1_exact_direct_cache(
+    torch::Tensor& cache, const torch::Tensor& slot_ids,
+    const torch::Tensor& exp_w, const torch::Tensor& kk,
+    const torch::Tensor& kk_a, const torch::Tensor& k, const torch::Tensor& v,
+    const torch::Tensor& r);
+
 void rwkv7_masked_store(torch::Tensor& cache, const torch::Tensor& values,
                         const torch::Tensor& slot_ids);
 
