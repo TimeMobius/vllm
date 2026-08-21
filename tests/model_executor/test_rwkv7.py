@@ -37,6 +37,7 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_kk_pre_reference,
     rwkv7_lnx_rkvres_xg,
     rwkv7_lnx_rkvres_xg_reference,
+    rwkv7_masked_store_triton,
     rwkv7_mix6,
     rwkv7_mix6_reference,
     rwkv7_recurrent_reference,
@@ -1622,16 +1623,42 @@ def test_rwkv7_full_graph_store_fallback_skips_padding_slots():
 
     RWKV7Block._store_kv_states(
         block,
-        torch.tensor([1, -1]),
+        torch.tensor([0, -1]),
         values,
         values + 10,
         values + 20,
     )
 
-    assert torch.equal(block.kv_cache[0][0], torch.zeros(4))
-    assert torch.equal(block.kv_cache[0][1], values[0])
-    assert torch.equal(block.kv_cache[1][1], values[0] + 10)
-    assert torch.equal(block.kv_cache[2][1], values[0] + 20)
+    assert torch.equal(block.kv_cache[0][0], values[0])
+    assert torch.equal(block.kv_cache[0][1], torch.zeros(4))
+    assert torch.equal(block.kv_cache[1][0], values[0] + 10)
+    assert torch.equal(block.kv_cache[2][0], values[0] + 20)
+    assert torch.equal(block.kv_cache[1][1], torch.zeros(4))
+    assert torch.equal(block.kv_cache[2][1], torch.zeros(4))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_rwkv7_triton_masked_store_skips_padding_slots(dtype):
+    if dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("bfloat16 is not supported on this CUDA device.")
+
+    # State-cache views can use a padded row stride even though every row is
+    # contiguous. Keep both operands strided to cover the graph-safe kernel
+    # addressing used by the CUDA Graph decode path.
+    cache = torch.empty_strided((4, 2, 3), (8, 3, 1), device="cuda", dtype=dtype)
+    cache.fill_(-7)
+    values = torch.empty_strided((2, 2, 3), (8, 3, 1), device="cuda", dtype=dtype)
+    values.copy_(torch.arange(2 * 2 * 3, device="cuda", dtype=dtype).reshape(2, 2, 3))
+    rwkv7_masked_store_triton(
+        cache, values, torch.tensor([0, -1], device="cuda", dtype=torch.long)
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(cache[0], values[0], rtol=0, atol=0)
+    torch.testing.assert_close(
+        cache[1:], torch.full_like(cache[1:], -7), rtol=0, atol=0
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -2303,9 +2330,7 @@ def test_rwkv7_final_norm_cuda_custom_op_matches_native_layer_norm(
 ):
     """Keep the compiled full-graph final-norm call bitwise eager-equivalent."""
     generator = torch.Generator(device="cuda").manual_seed(0)
-    hidden_states = torch.randn(
-        4, 64, device="cuda", dtype=dtype, generator=generator
-    )
+    hidden_states = torch.randn(4, 64, device="cuda", dtype=dtype, generator=generator)
     weight = torch.randn(64, device="cuda", dtype=dtype, generator=generator)
     bias = (
         torch.randn(64, device="cuda", dtype=dtype, generator=generator)
@@ -2314,9 +2339,7 @@ def test_rwkv7_final_norm_cuda_custom_op_matches_native_layer_norm(
     )
     output = torch.empty_like(hidden_states)
 
-    torch.ops.vllm.rwkv7_final_norm(
-        hidden_states, weight, bias, output, 1e-5
-    )
+    torch.ops.vllm.rwkv7_final_norm(hidden_states, weight, bias, output, 1e-5)
 
     torch.testing.assert_close(
         output,

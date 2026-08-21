@@ -32,6 +32,7 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_kk_pre,
     rwkv7_kk_pre_reference,
     rwkv7_lnx_rkvres_xg,
+    rwkv7_masked_store_triton,
     rwkv7_mix6,
     rwkv7_mix6_reference,
     rwkv7_recurrent_t1,
@@ -1897,9 +1898,31 @@ class RWKV7Block(nn.Module, MambaBase):
             return
 
         if self._uses_full_cudagraphs:
-            # The extension-backed masked store is optional in source checkouts.
-            # Keep the fallback graph-safe: CUDA graphs use PAD_SLOT_ID=-1,
-            # so clamp the index and preserve the existing row for padding.
+            if _rwkv7_env_flag_enabled(
+                "RWKV7_USE_TRITON_MASKED_STORE", default=True
+            ):
+                # The extension is unavailable in this source checkout. Use a
+                # graph-safe Triton scatter that skips PAD_SLOT_ID=-1 directly.
+                rwkv7_masked_store_triton(
+                    self.kv_cache[0],
+                    attn_shift_state.to(self.kv_cache[0].dtype),
+                    slot_ids,
+                )
+                rwkv7_masked_store_triton(
+                    self.kv_cache[1],
+                    recurrent_state.to(self.kv_cache[1].dtype),
+                    slot_ids,
+                )
+                rwkv7_masked_store_triton(
+                    self.kv_cache[2],
+                    ffn_shift_state.to(self.kv_cache[2].dtype),
+                    slot_ids,
+                )
+                return
+
+            # A/B fallback for source checkouts without the native extension.
+            # Do not use this in production: padding is remapped to slot zero
+            # and relies on duplicate-index write ordering to preserve it.
             safe_slot_ids = slot_ids.clamp_min(0)
 
             def masked_values(

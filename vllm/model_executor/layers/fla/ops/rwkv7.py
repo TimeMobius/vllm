@@ -52,6 +52,29 @@ def _rwkv7_recurrent_t1_reference(
 if HAS_TRITON:
 
     @triton.jit
+    def _rwkv7_masked_store_kernel(
+        cache_ptr,
+        values_ptr,
+        slot_ids_ptr,
+        CACHE_ROW_STRIDE: tl.constexpr,
+        VALUES_ROW_STRIDE: tl.constexpr,
+        ROW_WIDTH: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        batch_idx = tl.program_id(0)
+        block_idx = tl.program_id(1)
+        slot_id = tl.load(slot_ids_ptr + batch_idx)
+        if slot_id >= 0:
+            offsets = block_idx * BLOCK + tl.arange(0, BLOCK)
+            mask = offsets < ROW_WIDTH
+            values = tl.load(
+                values_ptr + batch_idx * VALUES_ROW_STRIDE + offsets, mask=mask
+            )
+            tl.store(
+                cache_ptr + slot_id * CACHE_ROW_STRIDE + offsets, values, mask=mask
+            )
+
+    @triton.jit
     def _rwkv7_recurrent_t1_matrix_kernel(
         state_ptr,
         w_ptr,
@@ -92,6 +115,55 @@ if HAS_TRITON:
         tl.store(
             out_reduce_ptr + value_base + v_offsets,
             tl.sum(new_state * r_val, axis=0),
+        )
+
+
+def rwkv7_masked_store_triton(
+    cache: torch.Tensor,
+    values: torch.Tensor,
+    slot_ids: torch.Tensor,
+) -> None:
+    """Store valid state-cache rows without remapping graph padding to zero.
+
+    Full CUDA Graph decode pads uniform batches with ``PAD_SLOT_ID=-1``. This
+    source-checkout fallback uses a capture-safe Triton scatter instead of
+    ``index_select + where + index_copy_``; it avoids reading old recurrent
+    state rows and cannot overwrite a valid slot-zero update with a padded row.
+    """
+    if cache.ndim != values.ndim or cache.shape[1:] != values.shape[1:]:
+        raise ValueError("`cache` and `values` must have matching row shapes.")
+    if slot_ids.shape != (values.shape[0],):
+        raise ValueError("`slot_ids` must have one entry per values row.")
+    if slot_ids.dtype not in (torch.int32, torch.int64):
+        raise ValueError("`slot_ids` must have an integer dtype.")
+    if any(tensor.device != cache.device for tensor in (values, slot_ids)):
+        raise ValueError("`cache`, `values`, and `slot_ids` must share a device.")
+
+    if HAS_TRITON and cache.device.type == "cuda":
+        # vLLM state-cache views may use padded row strides. The kernel works
+        # directly from row strides, without a graph-unsafe contiguous copy.
+        row_width = values[0].numel() if values.shape[0] else 0
+        if row_width:
+            block = 256
+            _rwkv7_masked_store_kernel[
+                (values.shape[0], triton.cdiv(row_width, block))
+            ](
+                cache,
+                values,
+                slot_ids,
+                CACHE_ROW_STRIDE=cache.stride(0),
+                VALUES_ROW_STRIDE=values.stride(0),
+                ROW_WIDTH=row_width,
+                BLOCK=block,
+            )
+            return
+
+    valid = slot_ids >= 0
+    if torch.any(valid):
+        cache.index_copy_(
+            0,
+            slot_ids[valid].to(dtype=torch.long),
+            values[valid].to(cache.dtype),
         )
 
 

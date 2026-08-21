@@ -1,0 +1,37 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp / Python 3.11.15 / PyTorch 2.11.0+cu130",
+  "workload": {
+    "endpoint": "/v1/completions",
+    "model": "xiaoke-5",
+    "num_requests": 128,
+    "concurrency": 128,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "return_token_ids": true,
+    "completed_tokens_per_run": 3824
+  },
+  "reference": {
+    "mode": "FULL_DECODE_ONLY, RWKV7_USE_TRITON_MASKED_STORE=0",
+    "aggregate_output_tps": [373.69364532876153, 383.8611306239029],
+    "mean_aggregate_output_tps": 378.7773879763322,
+    "raw_summaries": [
+      "/tmp/rwkv7_triton_store_bench/fullgraph_legacy_store_c128_1/summary.json",
+      "/tmp/rwkv7_triton_store_bench/fullgraph_legacy_store_c128_2/summary.json"
+    ]
+  },
+  "candidate": {
+    "mode": "FULL_DECODE_ONLY, RWKV7_USE_TRITON_MASKED_STORE=1",
+    "aggregate_output_tps": [457.51552017253783, 460.05059270426665],
+    "mean_aggregate_output_tps": 458.78305643840224,
+    "raw_summaries": [
+      "/tmp/rwkv7_triton_store_bench/fullgraph_triton_store_c128_1/summary.json",
+      "/tmp/rwkv7_triton_store_bench/fullgraph_triton_store_c128_2/summary.json"
+    ]
+  },
+  "mean_aggregate_output_tps_speedup_percent": 21.122081465715482,
+  "conclusion": "The capture-safe Triton state-store fallback is retained as the default for source checkouts without the native CUDA masked-store extension."
+}
