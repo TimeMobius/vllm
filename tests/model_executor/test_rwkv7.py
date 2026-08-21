@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import gc
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +30,7 @@ from vllm.distributed.parallel_state import (
     ensure_model_parallel_initialized,
     init_distributed_environment,
 )
+from vllm.engine.arg_utils import EngineArgs
 from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.fla.ops import (
     fused_mul_recurrent_rwkv7,
@@ -64,9 +67,12 @@ from vllm.model_executor.models.rwkv7 import (
     _rwkv7_should_compile,
     rwkv7_final_norm,
 )
+from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
+from vllm.v1.engine import EngineCoreRequest
+from vllm.v1.engine.llm_engine import LLMEngine
 
 try:
     import pytest
@@ -2282,6 +2288,84 @@ def test_rwkv7_pp_runtime_falls_back_to_hf_dtype_without_model_config():
     )
 
     assert RWKV7Model._get_effective_model_dtype(dummy_model) == torch.float32
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_rwkv7_full_cudagraph_c128_padding_engine_integration(monkeypatch):
+    """Exercise a real 127-request decode replay padded to the C=128 graph.
+
+    This is intentionally opt-in because it loads the external production
+    checkpoint. It complements the small tensor tests by verifying the V1
+    scheduler, linear-attention metadata, CUDA Graph replay, and all RWKV7
+    state caches together.
+    """
+    model_path = os.getenv("VLLM_RWKV7_ENGINE_TEST_MODEL_PATH")
+    if not model_path:
+        pytest.skip("Set VLLM_RWKV7_ENGINE_TEST_MODEL_PATH for C=128 engine coverage.")
+    if not Path(model_path).exists():
+        pytest.skip(f"RWKV7 engine model path does not exist: {model_path}")
+
+    monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    engine = None
+    try:
+        engine_args = EngineArgs(
+            model=model_path,
+            skip_tokenizer_init=True,
+            dtype="bfloat16",
+            max_model_len=16,
+            max_num_seqs=128,
+            gpu_memory_utilization=0.8,
+            disable_log_stats=True,
+            compilation_config={
+                "cudagraph_mode": "FULL_DECODE_ONLY",
+                "cudagraph_capture_sizes": [128],
+            },
+        )
+        engine = LLMEngine.from_engine_args(engine_args, enable_multiprocessing=False)
+        model_runner = engine.model_executor.driver_worker.worker.model_runner
+        params = SamplingParams(temperature=0.0, top_p=1.0, max_tokens=2, seed=0)
+        for request_idx in range(127):
+            request = EngineCoreRequest(
+                request_id=f"rwkv7-c128-{request_idx}",
+                prompt_token_ids=[1],
+                mm_features=None,
+                sampling_params=params,
+                pooling_params=None,
+                arrival_time=time.time(),
+                lora_request=None,
+                cache_salt=None,
+                data_parallel_rank=None,
+            )
+            engine.add_request(
+                request.request_id, request, request.sampling_params, prompt_text=None
+            )
+
+        assert not engine.step()  # Prefill; the next step is decode C=127 -> C=128.
+        guard_rows_before = [
+            tuple(cache[-1].detach().cpu().clone() for cache in layer_states)
+            for layer_states in model_runner.kv_caches
+        ]
+        outputs = engine.step()
+        generated_tokens = [
+            output.outputs[0].token_ids for output in outputs if output.outputs
+        ]
+
+        assert len(generated_tokens) == 127
+        assert len({tuple(tokens) for tokens in generated_tokens}) == 1
+        for before, layer_states in zip(
+            guard_rows_before, model_runner.kv_caches, strict=True
+        ):
+            for expected, cache in zip(before, layer_states, strict=True):
+                torch.testing.assert_close(
+                    cache[-1].detach().cpu(), expected, rtol=0, atol=0
+                )
+    finally:
+        if engine is not None:
+            engine.engine_core.shutdown()
+        del engine
+        cleanup_dist_env_and_memory()
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def test_rwkv7_full_cudagraph_compile_requires_explicit_opt_in(monkeypatch):
