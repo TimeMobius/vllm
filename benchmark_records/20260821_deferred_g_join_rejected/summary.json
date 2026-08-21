@@ -1,0 +1,19 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_DEFER_MULTISTREAM_G_JOIN=1",
+  "status": "rejected",
+  "implementation": "With balanced C=1 auxiliary streams enabled, record R readiness before executing the independent G LoRA on the R stream; join G only immediately before the attention tail, allowing G to overlap the existing FP32 cast, kk_pre, and recurrent path.",
+  "correctness": {
+    "cuda_unit": "forward_decode_batch and recurrent-input projection bundles are torch.equal to the non-deferred auxiliary-stream route",
+    "service_trace": "8 prompts x 16 greedy decode with logprobs=20 is byte-identical to the strict baseline",
+    "full_decode_graph": "all configured sizes 1,2,4,8,16,32,64,128 captured successfully"
+  },
+  "performance": {
+    "c1_32_token_output_tps": {
+      "balanced_aux_baseline": 28.4557709040041,
+      "deferred_g_join": 28.459368931309612,
+      "percent_change": 0.01264425855350393
+    },
+    "decision": "The C=1 change is far below the 1% materiality threshold and within normal run-to-run noise. The source path and startup flag were restored; do not enable this candidate."
+  }
+}

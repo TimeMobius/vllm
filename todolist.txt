@@ -70,6 +70,11 @@ screen -ls
 - [x] 配对固定负载：C=1 32-token `27.9366 → 28.4571 TPS`（**+1.86%**）；512-token steady `27.9596 → 28.4891 TPS`（**+1.89%**）。C=128 实测 `1567.52 aggregate TPS`，该 gate 不触发，不能归因。保留原因是零精度漂移下可复现的 C=1 改善；仍远未达到 50+ TPS，主瓶颈依旧是大量严格 BF16 GEMV。证据：`benchmark_records/20260821_multistream_aux_projection_full_graph/`。
 - [x] 外部 dashboard POST 于 `2026-08-21 16:45:52` 成功完成、保存 8 条记录：C=1/2/4/8/16/32/64/128 均 100% success；每请求输出 TPS `36.2/31.2/34.2/32.5/30.8/26.2/22.2/17.3`，整体 TPS `35.6/30.7/33.5/31.8/30.0/25.4/21.5/16.8`。这是服务 API 回归门禁；completion 数量可变，不能与 fixed-payload C=128 aggregate TPS 混用。
 
+### 2026-08-21 deferred G-tail join（拒绝）
+
+- [x] 试验 `RWKV7_DEFER_MULTISTREAM_G_JOIN=1`：在已保留的 C=1 balanced auxiliary streams 中，R 完成后先 record event，G LoRA 与主流的 BF16→FP32 / `kk_pre` / exact FP32 recurrent 尝试重叠，只在 attention tail 前 join。CUDA unit 的 projection bundle / `forward_decode_batch` 均 `torch.equal`，8×16 `logprobs=20` 服务 trace byte-identical，Full Decode graph `1..128` capture 成功。
+- [x] 但 C=1 32-token 仅 `28.4558 → 28.4594 TPS`（+0.013%，低于 1% materiality gate、属于噪声）；已完全 restore source 与启动环境开关，不保留额外 event/state 复杂度。证据：`benchmark_records/20260821_deferred_g_join_rejected/`。
+
 ### 2026-08-21 C=1 multi-stream R/K/V projection（已保留）
 
 - [x] 新增显式开关 `RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1`：仅对 TP=1、direct linear、**decode batch=1** 的独立 R/K/V BF16 `F.linear`，在三个 lazy CUDA child streams 并行提交。main stream 先 record readiness event，三个 branch 完成后全部 wait 才进入 recurrence；F.linear 的 input / weight / bias / dtype / reduction contract 完全不变。batch > 1 回退稳定单 stream，避免把 stream synchronization 开销带到高并发 graph replay。
