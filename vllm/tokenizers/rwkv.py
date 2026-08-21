@@ -276,6 +276,14 @@ class RWKVTokenizer(TokenizerLike):
             token_id: self._token_bytes_to_str(token_bytes)
             for token_id, token_bytes in self._id_to_token.items()
         }
+        # Most base-vocabulary tokens are individually valid UTF-8. Keep a
+        # compact set of the exceptional byte-fragment token IDs so normal
+        # fast-decoder calls need no reconstructed-byte preflight at all.
+        self._fast_backend_maybe_invalid_utf8_ids = {
+            token_id
+            for token_id, token_bytes in self._id_to_token.items()
+            if not self._is_valid_utf8(token_bytes)
+        }
         self._token_str_to_id = {
             token_str: token_id for token_id, token_str in self._id_to_token_str.items()
         }
@@ -335,6 +343,14 @@ class RWKVTokenizer(TokenizerLike):
             and bos_token in chat_template
             else ""
         )
+
+    @staticmethod
+    def _is_valid_utf8(token_bytes: bytes) -> bool:
+        try:
+            token_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
 
     def _build_fast_backend(self) -> Any | None:
         if FastWorldTokenizer is None:
@@ -837,6 +853,21 @@ class RWKVTokenizer(TokenizerLike):
             for token_id in ids
         ):
             return None
+
+        # pyrwkv_tokenizer decodes the reconstructed bytes as UTF-8 inside a
+        # PyO3 extension. Avoid invoking it for sequences we can completely
+        # reconstruct from the base vocabulary and already know are invalid.
+        # Do not preflight sequences involving special/added/unknown IDs: the
+        # Python fallback handles those with their existing semantics.
+        if any(
+            token_id in self._fast_backend_maybe_invalid_utf8_ids for token_id in ids
+        ):
+            token_bytes = [self._id_to_token.get(token_id) for token_id in ids]
+            if all(token is not None for token in token_bytes):
+                try:
+                    b"".join(cast(bytes, token) for token in token_bytes).decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
         try:
             return str(self._fast_backend.decode(ids))
         except Exception:

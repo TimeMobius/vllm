@@ -1,0 +1,26 @@
+{
+  "change": "Skip pyrwkv_tokenizer fast decode only when base-vocabulary bytes are provably invalid UTF-8, so existing Python replacement-character fallback is selected before PyO3 panics. Valid UTF-8 byte fragments still use the fast backend.",
+  "unit_tests": {
+    "command": "tests/tokenizers/test_rwkv.py + tests/tools/test_rwkv7_logprob_regression.py",
+    "rwkv_tokenizer_result": "18 passed",
+    "coverage": [
+      "invalid byte skips fake backend",
+      "separately invalid UTF-8 fragments combined into valid UTF-8 retain fast backend",
+      "normal valid UTF-8 retains fast backend",
+      "added-token semantics regression"
+    ]
+  },
+  "service_gate": {
+    "workload": "8 prompts x 16 greedy tokens, logprobs=20, Full Decode CUDA Graph",
+    "text_mismatch": 0,
+    "token_mismatch": 0,
+    "selected_logprob_max_abs_error": 0.0,
+    "common_topk_logprob_max_abs_error": 0.0,
+    "strict_equal_full_trace": true
+  },
+  "panic_gate": {
+    "actual_checkpoint_vocab": "65,534 base entries, 486 individually invalid UTF-8 byte fragment IDs",
+    "isolated_invalid_byte_100_decodes": "before 101 Rust panic lines; after 0",
+    "dashboard_run": "after candidate produced 0 RWKV fast tokenizer panic warnings"
+  }
+}

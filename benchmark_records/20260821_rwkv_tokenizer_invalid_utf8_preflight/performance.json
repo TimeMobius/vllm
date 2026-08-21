@@ -1,0 +1,128 @@
+{
+  "hardware": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp, Full Decode CUDA Graph; model math and CUDA kernels unchanged",
+  "local_service": {
+    "c1_output_tps": 27.37128597524166,
+    "c128_aggregate_output_tps": 1544.954004649525,
+    "note": "Local fixed-prompt completion controls remain within normal restart noise; this change targets API detokenization/panic overhead rather than GPU GEMV throughput."
+  },
+  "dashboard": {
+    "baseline_20260821_144419": {
+      "1": {
+        "ttft_ms": 316.0,
+        "output_tps_per_request": 36.4,
+        "overall_tps_per_request": 35.8,
+        "requests": 3,
+        "tokens": 2023
+      },
+      "2": {
+        "ttft_ms": 388.0,
+        "output_tps_per_request": 31.7,
+        "overall_tps_per_request": 31.2,
+        "requests": 6,
+        "tokens": 4050
+      },
+      "4": {
+        "ttft_ms": 501.0,
+        "output_tps_per_request": 33.2,
+        "overall_tps_per_request": 32.4,
+        "requests": 12,
+        "tokens": 8008
+      },
+      "8": {
+        "ttft_ms": 507.0,
+        "output_tps_per_request": 32.2,
+        "overall_tps_per_request": 31.4,
+        "requests": 16,
+        "tokens": 10638
+      },
+      "16": {
+        "ttft_ms": 624.0,
+        "output_tps_per_request": 30.5,
+        "overall_tps_per_request": 29.6,
+        "requests": 32,
+        "tokens": 21185
+      },
+      "32": {
+        "ttft_ms": 777.0,
+        "output_tps_per_request": 25.7,
+        "overall_tps_per_request": 25.0,
+        "requests": 32,
+        "tokens": 21072
+      },
+      "64": {
+        "ttft_ms": 1261.0,
+        "output_tps_per_request": 21.9,
+        "overall_tps_per_request": 21.0,
+        "requests": 64,
+        "tokens": 42163
+      },
+      "128": {
+        "ttft_ms": 1617.0,
+        "output_tps_per_request": 17.0,
+        "overall_tps_per_request": 16.3,
+        "requests": 128,
+        "tokens": 84660
+      }
+    },
+    "candidate_20260821_150223": {
+      "1": {
+        "ttft_ms": 286.0,
+        "output_tps_per_request": 35.0,
+        "overall_tps_per_request": 34.5,
+        "requests": 3,
+        "tokens": 1949
+      },
+      "2": {
+        "ttft_ms": 273.0,
+        "output_tps_per_request": 32.8,
+        "overall_tps_per_request": 32.4,
+        "requests": 6,
+        "tokens": 4188
+      },
+      "4": {
+        "ttft_ms": 388.0,
+        "output_tps_per_request": 34.3,
+        "overall_tps_per_request": 33.7,
+        "requests": 12,
+        "tokens": 8273
+      },
+      "8": {
+        "ttft_ms": 426.0,
+        "output_tps_per_request": 34.4,
+        "overall_tps_per_request": 33.7,
+        "requests": 16,
+        "tokens": 11368
+      },
+      "16": {
+        "ttft_ms": 630.0,
+        "output_tps_per_request": 30.8,
+        "overall_tps_per_request": 30.0,
+        "requests": 32,
+        "tokens": 21453
+      },
+      "32": {
+        "ttft_ms": 745.0,
+        "output_tps_per_request": 26.4,
+        "overall_tps_per_request": 25.6,
+        "requests": 32,
+        "tokens": 21560
+      },
+      "64": {
+        "ttft_ms": 932.0,
+        "output_tps_per_request": 22.1,
+        "overall_tps_per_request": 21.4,
+        "requests": 64,
+        "tokens": 42523
+      },
+      "128": {
+        "ttft_ms": 1452.0,
+        "output_tps_per_request": 17.3,
+        "overall_tps_per_request": 16.7,
+        "requests": 128,
+        "tokens": 86337
+      }
+    },
+    "note": "Dashboard sampling/output lengths differ between runs, so use it as an end-to-end stability and no-panic validation, not a strict paired GPU throughput claim."
+  }
+}

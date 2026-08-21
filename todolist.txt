@@ -14,7 +14,7 @@
 - [x] Full Decode CUDA Graph 已验证并运行：capture sizes 为 `1,2,4,8,16,32,64,128`。
 - [x] 当前稳定服务在 `http://127.0.0.1:8030`（局域网地址：`http://192.168.10.121:8030`）。
 - [x] `2026-08-21` 已验证 `/health` 返回 HTTP 200，`/v1/models` 返回 `xiaoke-5`。
-- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；full-fusion 服务已在 `2026-08-21 14:17:24` POST 回归成功、保存 8 条记录：C=1 输出/整体 `39.5 / 38.8 t/s`，C=128 每请求输出/整体 `17.5 / 16.9 t/s`，全点成功率 100%。该 1→128 sweep 的每请求输出速度不能与本地 C=128 closed-loop aggregate TPS 直接混用。
+- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；最近一次 POST 于 **2026-08-21 14:44:19** 成功结束、保存 8 条记录，所有点成功率 100%：C=1 输出/整体 `36.4 / 35.8 t/s`（3 requests / 2,023 tokens），C=128 每请求输出/整体 `17.0 / 16.3 t/s`（128 requests / 84,660 tokens）。它验证 stable x=32 full-fusion 的外部 OpenAI 并发服务未崩溃；该 1→128 sweep 的每请求输出速度不能与本地 C=128 closed-loop aggregate TPS 直接混用。
 - [x] 使用 NVIDIA GeForce RTX 4090 D（sm89）、BF16 projection、FP32 recurrent state；Python 统一使用 vllm-sp 环境。
 
 ### 稳定启动命令
@@ -57,6 +57,12 @@ curl -fsS http://127.0.0.1:8030/health
 curl -fsS http://127.0.0.1:8030/v1/models
 screen -ls
 ```
+
+### 2026-08-21 RWKV tokenizer invalid-UTF-8 panic preflight（已保留）
+
+- [x] 真实 checkpoint vocab 的 65,534 个 base token 中有 486 个 UTF-8 byte fragment。旧 `pyrwkv_tokenizer` 对不完整 byte stream 会先 Rust panic、再 warning、最后才走原有 Python replacement-character fallback；此前 dashboard 一轮出现 778 次 warning。
+- [x] 仅对含这些 fragment ID 的完整 base-token 序列做 UTF-8 preflight：已确定 invalid 时直接走**原有** Python fallback，合法 fragment 拼接仍走 fast decoder，added/special/unknown token 语义不变。
+- [x] tokenizer suite `18 passed`；isolated 100 次 invalid-byte decode 的 Rust panic 行数 `101 → 0`；8×16 service text/token/logprob trace byte-identical；最新 dashboard POST（2026-08-21 15:02:23）1→128 全点 100% success 且 server log 0 panic warning。它消除 API detokenization/logging 开销，不改变 GPU GEMV 瓶颈；证据：`benchmark_records/20260821_rwkv_tokenizer_invalid_utf8_preflight/`。
 
 ### 2026-08-21 Full-fusion CTA 资源调优（已拒绝，不影响稳定服务）
 

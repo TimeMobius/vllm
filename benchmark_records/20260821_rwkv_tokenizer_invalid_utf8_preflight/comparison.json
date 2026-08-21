@@ -1,0 +1,6 @@
+{
+  "accuracy_gate_passed": true,
+  "panic_elimination_passed": true,
+  "retained": true,
+  "reason": "The old optional PyO3 path deterministically panics on provably invalid base-vocabulary byte streams, emits Rust stderr and Python warnings, and then executes the same Python fallback. Preflight preserves all valid/added-token fast paths and directly chooses the existing fallback for the known-invalid case. It removes 778 observed warnings in the previous dashboard run and 0 warnings in the candidate dashboard run without changing any model output/logprob trace."
+}

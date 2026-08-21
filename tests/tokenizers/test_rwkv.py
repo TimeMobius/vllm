@@ -225,29 +225,67 @@ def test_rwkv_tokenizer_round_trips_and_prefers_longest_match(tmp_path):
     assert tokenizer.vocab_size == 64
 
 
-def test_rwkv_fast_decoder_panic_falls_back_to_python_bytes(tmp_path):
+def test_rwkv_invalid_utf8_preflight_skips_fast_decoder(tmp_path):
     vocab_path = tmp_path / "rwkv_vocab_v20250609.txt"
     vocab_path.write_text("1 b'\\xff' 1\n", encoding="utf-8")
     tokenizer = get_tokenizer(str(vocab_path))
 
-    # PyO3's PanicException inherits directly from BaseException. This fake
-    # backend mirrors an older pyrwkv_tokenizer UTF-8 panic without emitting a
-    # Rust panic message in the test process.
-    panic_type = type(
-        "PanicException",
-        (BaseException,),
-        {"__module__": "pyo3_runtime"},
-    )
+    class FakeDecoder:
+        called = False
 
-    class PanicDecoder:
         def decode(self, ids):
             del ids
-            raise panic_type("invalid UTF-8")
+            self.called = True
+            return "fast decoder should not be called"
 
-    tokenizer._fast_backend = PanicDecoder()
+    fake_decoder = FakeDecoder()
+    tokenizer._fast_backend = fake_decoder
     tokenizer._fast_backend_vocab_size = 2
 
     assert tokenizer.decode([1]) == "�"
+    assert not fake_decoder.called
+
+
+def test_rwkv_utf8_fragments_still_use_fast_decoder_when_combined(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20250609.txt"
+    vocab_path.write_text("1 b'\\xc2' 1\n2 b'\\xa9' 1\n", encoding="utf-8")
+    tokenizer = get_tokenizer(str(vocab_path))
+
+    class FakeDecoder:
+        calls: list[list[int]] = []
+
+        def decode(self, ids):
+            self.calls.append(ids)
+            return "©"
+
+    fake_decoder = FakeDecoder()
+    tokenizer._fast_backend = fake_decoder
+    tokenizer._fast_backend_vocab_size = 3
+
+    # The individual bytes are invalid UTF-8 fragments, but their concatenation
+    # is valid. The preflight must preserve the fast backend in that case.
+    assert tokenizer.decode([1, 2]) == "©"
+    assert fake_decoder.calls == [[1, 2]]
+
+
+def test_rwkv_valid_utf8_uses_fast_decoder(tmp_path):
+    vocab_path = tmp_path / "rwkv_vocab_v20250609.txt"
+    vocab_path.write_text("1 'a' 1\n", encoding="utf-8")
+    tokenizer = get_tokenizer(str(vocab_path))
+
+    class FakeDecoder:
+        calls: list[list[int]] = []
+
+        def decode(self, ids):
+            self.calls.append(ids)
+            return "fast decoded"
+
+    fake_decoder = FakeDecoder()
+    tokenizer._fast_backend = fake_decoder
+    tokenizer._fast_backend_vocab_size = 2
+
+    assert tokenizer.decode([1]) == "fast decoded"
+    assert fake_decoder.calls == [[1]]
 
 
 def test_rwkv_tokenizer_preserves_hf_added_token_semantics(tmp_path):
