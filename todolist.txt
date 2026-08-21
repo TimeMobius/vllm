@@ -66,6 +66,7 @@
 - [x] Full Decode CUDA Graph 阶段门禁（decode + prefix align）：`FULL_DECODE_ONLY` 已通过两次串行 8 prompt 回归（0/256 token mismatch、重复 0 mismatch）及 8 并发 64-token 压测；eager prefix-align 148.164 → Full Graph 168.063 TPS（+13.43%），记录于 `benchmark_records/20260821_full_cuda_graph_prefix_verified/`。
 - [ ] Full Decode CUDA Graph 在统一远程首页、并发128工作负载下的性能门禁：Eager aggregate 11.1 TPS vs FULL_DECODE_ONLY 7.8 TPS（-29.73%），TTFT 1606ms vs 1835ms；负收益结果已保留于 `benchmark_records/20260821_remote_eager_vs_full_graph_c128.json`，当前不能把 Full Graph 宣称为并发128下的最终保留提速，需继续优化/定位。
 - [ ] Full mixed-prefill / FULL_AND_PIECEWISE 仍需单独完成，不得以 decode-only 结果代替。
+- [ ] `FULL_AND_PIECEWISE` exploratory smoke 已能启动并完成远程首页测试；8 prompt × 16 decode steps 的 Top-K logprob/text 对齐为 0 mismatch，但并发128 aggregate TPS=7.8，未超过 Eager 的 11.1 TPS，记录于 `benchmark_records/20260821_remote_full_and_piecewise_c128/`，暂不作为保留提速。
 - [x] Full decode CUDA Graph（`FULL_DECODE_ONLY`）完成：RWKV7 关闭模型级 compile、在 graph 内从持久 block-table/seq-len 重新派生 state slot，并为未重编译的 `_C` 扩展提供 PAD-slot 安全 store fallback。关闭 prefix cache 的 8 prompt × 32 token 串行回归相对 eager 为 0/256 token mismatch，候选两次重复为 0 mismatch；209-token prompt、8 并发、64 输出 token 的 3 轮均值为 136.490 → 150.150 TPS（+10.01%）。记录：`benchmark_records/20260821_full_decode_cuda_graph_verified/`。
 
 ## 7. 第五阶段：模型级融合与更高阶 CUDA 优化

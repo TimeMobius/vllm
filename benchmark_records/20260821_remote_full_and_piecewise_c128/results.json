@@ -1,0 +1,104 @@
+{
+  "source": "http://192.168.10.121:3000/",
+  "algorithm": "FULL_AND_PIECEWISE",
+  "mode": "FULL_AND_PIECEWISE",
+  "rows": [
+    {
+      "concurrency": 1,
+      "ttft_ms": 297.0,
+      "p50_ms": 291.0,
+      "p95_ms": 311.0,
+      "p99_ms": 312.0,
+      "output_tps": 38.5,
+      "aggregate_tps": 37.9,
+      "requests": 3,
+      "tokens": 2198,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 2,
+      "ttft_ms": 396.0,
+      "p50_ms": 370.0,
+      "p95_ms": 482.0,
+      "p99_ms": 490.0,
+      "output_tps": 30.4,
+      "aggregate_tps": 29.9,
+      "requests": 6,
+      "tokens": 4094,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 4,
+      "ttft_ms": 392.0,
+      "p50_ms": 408.0,
+      "p95_ms": 455.0,
+      "p99_ms": 455.0,
+      "output_tps": 31.5,
+      "aggregate_tps": 31.0,
+      "requests": 12,
+      "tokens": 8278,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 8,
+      "ttft_ms": 479.0,
+      "p50_ms": 483.0,
+      "p95_ms": 519.0,
+      "p99_ms": 519.0,
+      "output_tps": 29.3,
+      "aggregate_tps": 28.7,
+      "requests": 16,
+      "tokens": 11179,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 16,
+      "ttft_ms": 590.0,
+      "p50_ms": 594.0,
+      "p95_ms": 607.0,
+      "p99_ms": 607.0,
+      "output_tps": 25.1,
+      "aggregate_tps": 24.6,
+      "requests": 32,
+      "tokens": 21985,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 32,
+      "ttft_ms": 844.0,
+      "p50_ms": 865.0,
+      "p95_ms": 935.0,
+      "p99_ms": 935.0,
+      "output_tps": 19.6,
+      "aggregate_tps": 19.2,
+      "requests": 32,
+      "tokens": 22266,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 64,
+      "ttft_ms": 1084.0,
+      "p50_ms": 1155.0,
+      "p95_ms": 1156.0,
+      "p99_ms": 1156.0,
+      "output_tps": 12.8,
+      "aggregate_tps": 12.5,
+      "requests": 64,
+      "tokens": 43403,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 128,
+      "ttft_ms": 1737.0,
+      "p50_ms": 1873.0,
+      "p95_ms": 1875.0,
+      "p99_ms": 1875.0,
+      "output_tps": 8.0,
+      "aggregate_tps": 7.8,
+      "requests": 128,
+      "tokens": 87312,
+      "success_rate": 100.0
+    }
+  ],
+  "notes": "Exploratory mixed prefill/decode remote test. Logprob parity passed separately; performance retained only after comparison."
+}
