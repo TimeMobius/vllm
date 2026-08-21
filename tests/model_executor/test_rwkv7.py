@@ -2075,6 +2075,34 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
                 torch.cuda.synchronize()
                 for output, expected in zip(actual, reference, strict=True):
                     assert torch.equal(output, expected)
+
+            # Bulk decode uses the same child streams only when the
+            # explicit opt-in is set. Validate all projection outputs at
+            # a non-GEMV batch size before relying on a padded graph replay.
+            bulk_hidden = torch.randn(
+                8, config.hidden_size, device="cuda", dtype=torch.bfloat16,
+                generator=generator,
+            )
+            bulk_delta = torch.randn(
+                8, config.hidden_size, device="cuda", dtype=torch.bfloat16,
+                generator=generator,
+            )
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_BULK_DECODE", raising=False)
+            bulk_reference = layer_one_attention._project_recurrent_inputs(
+                bulk_hidden, bulk_delta, v_first=v_first.expand(8, -1)
+            )
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_BULK_DECODE", "1")
+            bulk_actual = layer_one_attention._project_recurrent_inputs(
+                bulk_hidden, bulk_delta, v_first=v_first.expand(8, -1),
+                allow_decode_multistream=True,
+            )
+            torch.cuda.synchronize()
+            for output, expected in zip(bulk_actual, bulk_reference, strict=True):
+                assert torch.equal(output, expected)
         finally:
             cleanup_dist_env_and_memory()
 

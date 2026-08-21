@@ -1188,7 +1188,12 @@ class RWKV7Attention(nn.Module):
                 "RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", default=False
             )
             and xr.is_cuda
-            and xr.shape[0] == 1
+            and (
+                xr.shape[0] == 1
+                or _rwkv7_env_flag_enabled(
+                    "RWKV7_USE_MULTISTREAM_BULK_DECODE", default=False
+                )
+            )
             and xr.device == xk.device == xv.device
         ):
             return (
@@ -1328,7 +1333,12 @@ class RWKV7Attention(nn.Module):
                     "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", default=False
                 )
                 and xr.is_cuda
-                and xr.shape[0] == 1
+                and (
+                    xr.shape[0] == 1
+                    or _rwkv7_env_flag_enabled(
+                        "RWKV7_USE_MULTISTREAM_BULK_DECODE", default=False
+                    )
+                )
                 and xr.device
                 == xw.device
                 == xk.device

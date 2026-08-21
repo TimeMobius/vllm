@@ -1,0 +1,18 @@
+{
+  "date": "2026-08-21",
+  "candidate": "persistent three-stream bulk decode projection scheduling",
+  "flags": [
+    "RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS=1",
+    "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS=1",
+    "RWKV7_USE_MULTISTREAM_BULK_DECODE=1"
+  ],
+  "accuracy": "byte-identical service trace (8 prompts x 16, logprobs=20)",
+  "unit_test": "1 passed; focused suite 89 passed, 4 skipped",
+  "c128_baseline_tps": [1569.7989531570515, 1569.1904175461257],
+  "c128_candidate_tps": [1582.4512564953955, 1587.542166085934],
+  "c128_baseline_mean_tps": 1569.4946853515885,
+  "c128_candidate_mean_tps": 1584.9967112906647,
+  "c128_speedup_percent": 0.9876882202892042,
+  "c1_candidate_mean_tps": 28.45871331347331,
+  "decision": "retained"
+}
