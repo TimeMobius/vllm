@@ -80,6 +80,7 @@ screen -ls
 ### 2.3 编译/图模式的现状
 
 - [x] `FULL_DECODE_ONLY` CUDA Graph 已通过真实 C=128 padded engine integration，测试覆盖普通 full decode graph 与 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 路径。
+- [x] **C=1 full-model compile复测（2026-08-21）**：完整 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 服务精度仍为 text/token/logprob 0 差异，但 C=1 post-warmup `25.852 TPS` 对严格稳定路径 `25.961 TPS`（-0.42%），无稳定收益，继续保持 opt-in 不启用。证据：`benchmark_records/20260821_full_decode_compile_c1_rejected/`。
 - [x] model `torch.compile` 是严格对齐的 opt-in；此前 C=128 服务均值约 `707.73 → 706.10 TPS`，2026-08-21 追加 `use_inductor_graph_partition=true` 复测也仅 `706.21 → 694.72 TPS`（剔除 candidate 首轮仍为 706.61），暂无稳定收益，**默认不打开**。
 - [x] 证据：`benchmark_records/20260821_full_decode_cuda_graph_verified/`、`benchmark_records/20260821_full_decode_compile_final_norm/`、`benchmark_records/20260821_full_decode_compile_inductor_partition_rejected/`。
 

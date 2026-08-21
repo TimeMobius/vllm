@@ -1,0 +1,18 @@
+{
+  "date": "2026-08-21",
+  "candidate": "RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1",
+  "status": "rejected_no_stable_c1_speedup",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "device": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "service_accuracy": {
+    "text_mismatch": 0,
+    "token_mismatch": 0,
+    "max_selected_logprob_error": 0.0,
+    "max_common_topk_logprob_error": 0.0
+  },
+  "compile_c1_tps": [25.89504162308439, 25.808541293165902, 25.895303350327527],
+  "stable_c1_tps": [25.28078522304779, 25.959341860940327, 25.96265298636209],
+  "compile_c1_post_warmup_mean": 25.851922321746713,
+  "stable_c1_post_warmup_mean": 25.960997423651207,
+  "relative_percent": -0.4202
+}
