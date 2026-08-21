@@ -421,3 +421,19 @@ curl -fsS http://192.168.10.121:3000/
   下一次 GEMV 实验必须采用 persistent output buffer 或融合紧随的 activation/
   second low-rank projection，单独 allocating op 不再重复。记录：
   `benchmark_records/20260821_native_bf16_lora_input_gemv_candidate/`。
+
+### 2026-08-21 persistent-output native BF16 LoRA-input GEMV（精度通过、性能拒绝）
+
+- [x] 为排除上一轮 standalone custom GEMV 的 allocator 成本，进一步实现过
+  persistent-output out-variant：每个 `RWKV7LoRA` 拥有 CUDA-Graph-stable
+  `[1,rank]` BF16 scratch，kernel 直接写入，后续原 activation 和原 second
+  `F.linear` 消费；不再在 graph replay 分配 output。
+- [x] 目标 shape out-op CUDA unit `3 passed`；Full Decode Graph
+  `1,2,4,8,16,32,64,128` 正常；服务 8×16 `logprobs=20` trace 字节级零差。
+- [x] restart-paired 仍回退：C=1 `28.4484 → 28.0959 TPS`（**-1.24%**），
+  C=128 `1567.2270 → 1562.4224 TPS`（-0.31%；M=1 路径不应触发）。结论是
+  allocator 不是根因，standalone low-rank custom GEMV 在实际 graph/stream
+  调度中本身不如当前 F.linear；已完整恢复。后续不再重复单独 LoRA-input
+  replacement，必须尝试同时减少 launch 的 complete producer-consumer fusion，
+  且保持原 BF16 reduction/activation rounding contract。记录：
+  `benchmark_records/20260821_native_bf16_lora_input_gemv_persistent_candidate/`。
