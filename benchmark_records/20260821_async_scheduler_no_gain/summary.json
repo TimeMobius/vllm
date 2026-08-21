@@ -1,0 +1,32 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp / Python 3.11.15 / PyTorch 2.11.0+cu130",
+  "candidate": "--async-scheduling",
+  "common_mode": "BF16 projection, FP32 recurrent state, mamba_cache_mode=align, FULL_DECODE_ONLY CUDA Graph",
+  "accuracy": {
+    "requests": 8,
+    "decode_tokens_per_request": 16,
+    "temperature": 0,
+    "logprobs": 20,
+    "text_mismatch": 0,
+    "token_ids_mismatch": 0,
+    "selected_logprob_max_abs_error": 0,
+    "common_topk_logprob_max_abs_error": 0
+  },
+  "c1": {
+    "async_tps": [26.205163615495746, 25.755317884182098, 26.199522168622273],
+    "stable_tps": [25.74726395170781, 26.186647472043248, 25.753147728119945],
+    "async_post_warmup_mean_tps": 25.977420026402186,
+    "stable_post_warmup_mean_tps": 25.969897600081595,
+    "change_percent": 0.02896689742422277
+  },
+  "c128": {
+    "async_tps": [1251.6364710130015, 1254.9222745926356, 1252.9419526872516, 1253.591128948277],
+    "stable_tps": [1253.2380940843327, 1251.5503671914187, 1251.6778057254346, 1249.2364122768565],
+    "async_mean_tps": 1253.2729568102914,
+    "stable_mean_tps": 1251.4256698195106,
+    "change_percent": 0.14762015471002432
+  },
+  "decision": "Do not retain: results are strict-parity but <=0.15%, below the repository's stability/noise threshold."
+}
