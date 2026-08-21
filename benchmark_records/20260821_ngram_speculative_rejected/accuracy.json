@@ -1,0 +1,26 @@
+{
+  "date": "2026-08-21",
+  "reference": "strict exact-direct-cache Full Decode CUDA Graph service trace",
+  "candidate": {
+    "method": "vLLM ngram speculative decoding",
+    "num_speculative_tokens": 4,
+    "prompt_lookup_min": 2,
+    "prompt_lookup_max": 5
+  },
+  "workload": {
+    "requests": 8,
+    "decode_tokens_per_request": 16,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "ignore_eos": true,
+    "logprobs": 20
+  },
+  "result": {
+    "text_mismatch": 0,
+    "token_ids_mismatch": 0,
+    "selected_logprob_max_abs_error": 0.00190654955804348,
+    "common_topk_logprob_max_abs_error": 0.1264791488647461
+  },
+  "decision": "Reject: although greedy token IDs matched in this small trace, nonzero selected and Top-K logprob error violates strict service parity."
+}

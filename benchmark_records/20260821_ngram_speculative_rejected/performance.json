@@ -1,0 +1,30 @@
+{
+  "date": "2026-08-21",
+  "gpu": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "runtime": "vllm-sp / Python 3.11.15 / PyTorch 2.11.0+cu130",
+  "workload": {
+    "endpoint": "/v1/completions",
+    "model": "xiaoke-5",
+    "num_requests": 1,
+    "concurrency": 1,
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0,
+    "ignore_eos": true
+  },
+  "strict_direct_cache_reference": {
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "post_warmup_mean_aggregate_output_tps": 26.206847375955775
+  },
+  "ngram_speculative_candidate": {
+    "requested_cudagraph_mode": "FULL_DECODE_ONLY",
+    "actual_cudagraph_mode": "PIECEWISE (forced by vLLM)",
+    "aggregate_output_tps": [17.265584133265637, 17.204803650002653, 17.239161132439463],
+    "post_warmup_mean_aggregate_output_tps": 17.221982391221058,
+    "observed_mean_acceptance_length": 3.5,
+    "observed_average_draft_acceptance_rate": 0.625
+  },
+  "post_warmup_change_percent": -34.28592297207805,
+  "decision": "Reject: ngram speculative decode loses Full Decode CUDA Graph, disables async scheduling, and is materially slower despite nonzero draft acceptance."
+}
