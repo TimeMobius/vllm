@@ -58,6 +58,7 @@ from vllm.model_executor.models.rwkv7 import (
     RWKV7FeedForward,
     RWKV7ForCausalLM,
     RWKV7Model,
+    RWKV7PerfFlags,
     _load_rwkv7_perf_flags,
     _rwkv7_should_compile,
 )
@@ -604,6 +605,31 @@ def _make_stable_rwkv7_recurrent_inputs(
     }
 
 
+def test_rwkv7_perf_flags_default_to_verified_cuda_paths(monkeypatch):
+    for name in (
+        "RWKV7_USE_FUSED_MIX6",
+        "RWKV7_USE_FUSED_KK_PRE",
+        "RWKV7_USE_FUSED_LNX_RKVRES_XG",
+        "RWKV7_USE_FUSED_CMIX",
+        "RWKV7_USE_ALT_RECURRENT_KERNEL",
+        "RWKV7_USE_DIRECT_LINEAR",
+        "RWKV7_USE_CACHED_FP32_PARAMS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    flags = _load_rwkv7_perf_flags()
+
+    assert flags == RWKV7PerfFlags(
+        use_fused_mix6=True,
+        use_fused_kk_pre=True,
+        use_fused_lnx_rkvres_xg=True,
+        use_fused_cmix=True,
+        use_alt_recurrent_kernel=True,
+        use_direct_linear=True,
+        use_cached_fp32_params=True,
+    )
+
+
 def test_rwkv7_perf_flags_from_env(monkeypatch):
     monkeypatch.setenv("RWKV7_USE_FUSED_MIX6", "1")
     monkeypatch.setenv("RWKV7_USE_FUSED_KK_PRE", "true")
@@ -645,9 +671,7 @@ def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
     expected_state, expected_output = _rwkv7_recurrent_t1_reference(
         state, w, kk, a, k, v, r
     )
-    actual_state, actual_output = rwkv7_recurrent_t1(
-        state, w, kk, a, k, v, r
-    )
+    actual_state, actual_output = rwkv7_recurrent_t1(state, w, kk, a, k, v, r)
     torch.cuda.synchronize()
 
     torch.testing.assert_close(actual_state, expected_state, rtol=5e-4, atol=5e-4)
@@ -878,7 +902,7 @@ def test_rwkv7_attention_direct_linear_flag_matches_reference(monkeypatch):
         )
         ensure_model_parallel_initialized(1, 1, backend="gloo")
         try:
-            monkeypatch.delenv("RWKV7_USE_DIRECT_LINEAR", raising=False)
+            monkeypatch.setenv("RWKV7_USE_DIRECT_LINEAR", "0")
             attn_ref = RWKV7Attention(
                 config=config,
                 layer_idx=1,
@@ -952,7 +976,7 @@ def test_rwkv7_feed_forward_direct_linear_flag_matches_reference(monkeypatch):
         )
         ensure_model_parallel_initialized(1, 1, backend="gloo")
         try:
-            monkeypatch.delenv("RWKV7_USE_DIRECT_LINEAR", raising=False)
+            monkeypatch.setenv("RWKV7_USE_DIRECT_LINEAR", "0")
             ffn_ref = RWKV7FeedForward(
                 config=config,
                 layer_idx=1,
@@ -1055,7 +1079,7 @@ def test_rwkv7_feed_forward_fused_cmix_activation_matches_reference(monkeypatch)
 def test_rwkv7_feed_forward_fused_cmix_activation_falls_back_without_flag(
     monkeypatch,
 ):
-    monkeypatch.delenv("RWKV7_USE_FUSED_CMIX", raising=False)
+    monkeypatch.setenv("RWKV7_USE_FUSED_CMIX", "0")
 
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cuda"))
@@ -1253,9 +1277,11 @@ def test_rwkv7_attention_cached_fp32_params_match_and_invalidate(monkeypatch):
 
             with torch.no_grad():
                 attn.k_k.add_(0.25)
-            expected_k_k = attn.k_k[attn.key_start : attn.key_end].view(
-                attn.local_num_heads, attn.head_dim
-            ).to(torch.float32)
+            expected_k_k = (
+                attn.k_k[attn.key_start : attn.key_end]
+                .view(attn.local_num_heads, attn.head_dim)
+                .to(torch.float32)
+            )
             actual_k, actual_kk = attn._prepare_recurrent_key_terms(k, a)
             expected_k, expected_kk = rwkv7_kk_pre_reference(
                 k,

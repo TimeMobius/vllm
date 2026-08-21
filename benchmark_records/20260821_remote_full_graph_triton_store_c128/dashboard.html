@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM API 性能测试</title>
+    <script src="/assets/vendor/chart.js/chart.umd.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; background: #f5f7fa; color: #1a1a2e; line-height: 1.5; }
+        .container { max-width: 1360px; margin: 0 auto; padding: 0 20px; }
+        header { background: #fff; border-bottom: 1px solid #e8ecf1; padding: 16px 0; position: sticky; top: 0; z-index: 10; }
+        header .container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+        header h1 { font-size: 1.25rem; font-weight: 700; color: #1a1a2e; display: flex; align-items: center; gap: 8px; } header h1 span { color: #5b6abf; }
+        .subtitle { font-size: 0.8rem; color: #8e95a8; margin-top: 1px; }
+        .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 18px; border-radius: 8px; border: none; font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.2s; text-decoration: none; }
+        .btn-primary { background: #5b6abf; color: #fff; } .btn-primary:hover { background: #4a5aaf; } .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-outline { background: #fff; color: #5b6abf; border: 1.5px solid #d0d5e0; } .btn-outline:hover { border-color: #5b6abf; background: #f0f2ff; }
+        .status-bar { background: #fff; border-radius: 12px; padding: 14px 20px; margin: 20px 0; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; border: 1px solid #e8ecf1; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; } .status-dot.idle { background: #4caf50; } .status-dot.running { background: #ff9800; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .status-text { font-size: 0.88rem; color: #5a6072; } .status-label { font-weight: 600; color: #1a1a2e; } .last-run { margin-left: auto; font-size: 0.8rem; color: #8e95a8; }
+        .summary-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
+        .summary-card { background: #fff; border-radius: 12px; padding: 18px 16px; border: 1px solid #e8ecf1; box-shadow: 0 1px 3px rgba(0,0,0,0.04); display: flex; align-items: center; gap: 14px; }
+        .summary-card .icon { font-size: 1.6rem; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: #f0f2ff; flex-shrink: 0; }
+        .summary-card .num { font-size: 1.2rem; font-weight: 700; font-family: 'SF Mono', monospace; } .summary-card .lbl { font-size: 0.78rem; color: #8e95a8; margin-top: 1px; }
+        .model-tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+        .model-tab { padding: 8px 18px; border-radius: 8px; border: 1.5px solid #d0d5e0; background: #fff; cursor: pointer; font-size: 0.85rem; transition: all 0.2s; display: flex; align-items: center; gap: 6px; color: #5a6072; }
+        .model-tab:hover { border-color: #5b6abf; color: #5b6abf; } .model-tab.active { background: #5b6abf; color: #fff; border-color: #5b6abf; }
+        .model-tab .status-icon { font-size: 0.8rem; }
+        .view-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+        .view-tab { padding: 6px 14px; border-radius: 6px; border: none; background: #f0f2f5; cursor: pointer; font-size: 0.8rem; transition: all 0.2s; color: #5a6072; }
+        .view-tab:hover { background: #e0e3ed; } .view-tab.active { background: #5b6abf; color: #fff; }
+        .model-content { display: none; } .model-content.active { display: block; }
+        .view-content { display: none; } .view-content.active { display: block; }
+        .table-card { background: #fff; border-radius: 12px; border: 1px solid #e8ecf1; box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow: hidden; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        th, td { padding: 11px 14px; text-align: right; white-space: nowrap; }
+        th { background: #f8f9fc; color: #5a6072; font-weight: 500; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.3px; }
+        th:first-child, td:first-child { text-align: left; }
+        td { color: #1a1a2e; border-bottom: 1px solid #f0f2f5; } tr:last-child td { border-bottom: none; } tr:hover td { background: #f8f9ff; }
+        .ttft { color: #5b6abf; font-weight: 600; } .ttft .unit { font-weight: 400; color: #8e95a8; font-size: 0.72rem; }
+        .speed { color: #2e7d32; font-weight: 600; } .speed .unit { font-weight: 400; color: #8e95a8; font-size: 0.72rem; }
+        .metric-warn { color: #e65100; } .metric-danger { color: #c62828; }
+        .chart-wrap { background: #fff; border-radius: 12px; border: 1px solid #e8ecf1; box-shadow: 0 1px 3px rgba(0,0,0,0.04); padding: 24px; }
+        .chart-wrap canvas { min-height: 420px; width: 100%; }
+        .side-layout { display: grid; grid-template-columns: 1fr 240px; gap: 20px; margin-top: 20px; }
+        @media (max-width: 860px) { .side-layout { grid-template-columns: 1fr; } }
+        .sidebar-card { background: #fff; border-radius: 12px; padding: 18px; border: 1px solid #e8ecf1; box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-bottom: 16px; }
+        .sidebar-card .card-title { font-size: 0.85rem; font-weight: 600; color: #1a1a2e; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        .sidebar-card ul { list-style: none; } .sidebar-card li { border-bottom: 1px solid #f0f2f5; } .sidebar-card li:last-child { border-bottom: none; }
+        .sidebar-card li a { display: flex; align-items: center; gap: 8px; padding: 8px 0; color: #5a6072; text-decoration: none; font-size: 0.85rem; }
+        .sidebar-card li a:hover { color: #5b6abf; }
+        .sidebar-card li a .tag { margin-left: auto; font-size: 0.68rem; background: #eef0ff; color: #5b6abf; padding: 1px 8px; border-radius: 10px; }
+        .sidebar-card li a .tag-today { background: #e8f5e9; color: #2e7d32; }
+        .empty-state { text-align: center; padding: 60px 20px; color: #5a6072; }
+        .empty-state .icon { font-size: 3rem; margin-bottom: 12px; } .empty-state h3 { font-size: 1.15rem; margin-bottom: 6px; color: #1a1a2e; }
+        .empty-state p { font-size: 0.88rem; max-width: 460px; margin: 0 auto 20px; }
+        .toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 10px; background: #fff; border: 1px solid #e8ecf1; box-shadow: 0 8px 24px rgba(0,0,0,0.1); z-index: 1000; display: none; max-width: 380px; }
+        .toast.show { display: block; animation: slideIn 0.3s ease; } @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .spinner { width: 14px; height: 14px; border: 2px solid #e0e0e0; border-top-color: #5b6abf; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+<header>
+    <div class="container">
+        <div><h1>🔬 <span>LLM</span> 性能测试</h1><div class="subtitle">模型延迟与吞吐量监控 · <span id="current-date">2026-08-21</span></div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-primary" id="runTestBtn" onclick="runTest()">▶ 运行测试</button>
+            <a href="/" class="btn btn-outline">📊 仪表板</a>
+        </div>
+    </div>
+</header>
+<div class="container">
+    <div class="status-bar" id="statusBar">
+        <span class="status-dot idle" id="statusDot"></span>
+        <span class="status-label">状态</span>
+        <span class="status-text" id="statusText">就绪</span>
+        <span class="last-run" id="lastRunInfo"></span>
+    </div>
+
+    
+    <div class="summary-row" id="summaryRow">
+        <div class="summary-card"><div class="icon">⏱️</div><div><div class="num" id="avgTtft">-</div><div class="lbl">平均 TTFT</div></div></div>
+        <div class="summary-card"><div class="icon">🚀</div><div><div class="num" id="avgOut">-</div><div class="lbl">平均输出速度</div></div></div>
+        <div class="summary-card"><div class="icon">📈</div><div><div class="num" id="avgTps">-</div><div class="lbl">平均吞吐</div></div></div>
+        <div class="summary-card"><div class="icon">📨</div><div><div class="num" id="totalReq">-</div><div class="lbl">总请求</div></div></div>
+        <div class="summary-card"><div class="icon">🔤</div><div><div class="num" id="totalTok">-</div><div class="lbl">总 Token</div></div></div>
+        <div class="summary-card"><div class="icon">🤖</div><div><div class="num">1</div><div class="lbl">模型数</div></div></div>
+    </div>
+
+    <div class="model-tabs" id="modelTabs">
+        
+        
+        <button class="model-tab active" onclick="switchModel('xiaoke-5')">
+            <span class="status-icon">✅</span>
+            🤖
+            xiaoke-5
+        </button>
+        
+    </div>
+
+    
+    <div class="model-content active" id="mc-xiaoke-5">
+        <div class="view-tabs">
+            <button class="view-tab active" onclick="switchView('xiaoke-5','table')">📊 数据表</button>
+            <button class="view-tab" onclick="switchView('xiaoke-5','ttft')">⏱️ TTFT</button>
+            <button class="view-tab" onclick="switchView('xiaoke-5','tps')">🚀 吞吐</button>
+            <button class="view-tab" onclick="switchView('xiaoke-5','pct')">📉 延迟分布</button>
+            <button class="view-tab" onclick="switchView('xiaoke-5','all')">📊 综合</button>
+        </div>
+        <div class="view-content active" id="v-xiaoke-5-table">
+            <div class="table-card"><div class="table-wrap"><table><thead><tr><th>并发</th><th>TTFT</th><th>P50</th><th>P95</th><th>P99</th><th>输出速度</th><th>吞吐</th><th>请求</th><th>Token</th><th>成功率</th></tr></thead>
+            <tbody>
+            
+                <tr>
+                    <td><strong>1</strong></td>
+                    <td class="ttft">372.0<span class="unit">ms</span></td>
+                    <td>314.0</td>
+                    <td class="metric-warn">484.0</td>
+                    <td class="metric-danger">499.0</td>
+                    <td class="speed">32.2<span class="unit">t/s</span></td>
+                    <td>31.6<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>3</td>
+                    <td>1998</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+                <tr>
+                    <td><strong>2</strong></td>
+                    <td class="ttft">266.0<span class="unit">ms</span></td>
+                    <td>240.0</td>
+                    <td class="metric-warn">321.0</td>
+                    <td class="metric-danger">321.0</td>
+                    <td class="speed">29.0<span class="unit">t/s</span></td>
+                    <td>28.7<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>6</td>
+                    <td>4055</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+                <tr>
+                    <td><strong>4</strong></td>
+                    <td class="ttft">437.0<span class="unit">ms</span></td>
+                    <td>464.0</td>
+                    <td class="metric-warn">469.0</td>
+                    <td class="metric-danger">469.0</td>
+                    <td class="speed">28.5<span class="unit">t/s</span></td>
+                    <td>28.0<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>12</td>
+                    <td>8028</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+                <tr>
+                    <td><strong>8</strong></td>
+                    <td class="ttft">536.0<span class="unit">ms</span></td>
+                    <td>514.0</td>
+                    <td class="metric-warn">594.0</td>
+                    <td class="metric-danger">594.0</td>
+                    <td class="speed">25.8<span class="unit">t/s</span></td>
+                    <td>25.3<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>16</td>
+                    <td>10735</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+                <tr>
+                    <td><strong>16</strong></td>
+                    <td class="ttft">626.0<span class="unit">ms</span></td>
+                    <td>625.0</td>
+                    <td class="metric-warn">655.0</td>
+                    <td class="metric-danger">673.0</td>
+                    <td class="speed">22.1<span class="unit">t/s</span></td>
+                    <td>21.6<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>32</td>
+                    <td>21482</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+                <tr>
+                    <td><strong>32</strong></td>
+                    <td class="ttft">982.0<span class="unit">ms</span></td>
+                    <td>992.0</td>
+                    <td class="metric-warn">1172.0</td>
+                    <td class="metric-danger">1234.0</td>
+                    <td class="speed">14.6<span class="unit">t/s</span></td>
+                    <td>14.3<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>32</td>
+                    <td>21388</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+                <tr>
+                    <td><strong>64</strong></td>
+                    <td class="ttft">1360.0<span class="unit">ms</span></td>
+                    <td>1394.0</td>
+                    <td class="metric-warn">1564.0</td>
+                    <td class="metric-danger">1565.0</td>
+                    <td class="speed">7.8<span class="unit">t/s</span></td>
+                    <td>7.7<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>64</td>
+                    <td>42791</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+                <tr>
+                    <td><strong>128</strong></td>
+                    <td class="ttft">2341.0<span class="unit">ms</span></td>
+                    <td>2506.0</td>
+                    <td class="metric-warn">2508.0</td>
+                    <td class="metric-danger">2817.0</td>
+                    <td class="speed">4.3<span class="unit">t/s</span></td>
+                    <td>4.2<span style="font-size:0.72rem;color:#8e95a8">t/s</span></td>
+                    <td>128</td>
+                    <td>85846</td>
+                    <td>✅<span style="margin-left:2px">100.0%</span></td>
+                </tr>
+            
+            </tbody></table></div></div>
+        </div>
+        <div class="view-content" id="v-xiaoke-5-ttft"><div class="chart-wrap"><canvas id="c-xiaoke-5-ttft"></canvas></div></div>
+        <div class="view-content" id="v-xiaoke-5-tps"><div class="chart-wrap"><canvas id="c-xiaoke-5-tps"></canvas></div></div>
+        <div class="view-content" id="v-xiaoke-5-pct"><div class="chart-wrap"><canvas id="c-xiaoke-5-pct"></canvas></div></div>
+        <div class="view-content" id="v-xiaoke-5-all"><div class="chart-wrap"><canvas id="c-xiaoke-5-all"></canvas></div></div>
+    </div>
+    
+
+    <div class="side-layout">
+        <div></div>
+        <div>
+            <div class="sidebar-card">
+                <div class="card-title">📅 历史记录</div>
+                
+                <ul>
+                    <li><a href="/history/2026-08-21">📊 2026-08-21<span class="tag tag-today">今天</span></a></li>
+                
+                    <li><a href="/history/2026-08-20">📊 2026-08-20</a></li>
+                </ul>
+                
+            </div>
+        </div>
+    </div>
+    
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let charts={};
+
+function switchModel(m){
+    document.querySelectorAll('.model-tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.model-content').forEach(c=>c.classList.remove('active'));
+    document.querySelectorAll('.model-tab').forEach(t=>{if(t.textContent.includes(m))t.classList.add('active');});
+    const mc=document.getElementById('mc-'+m);
+    if(!mc)return;
+    mc.classList.add('active');
+    const at=mc.querySelector('.view-tab.active');
+    if(at){
+        const map={'数据表':'table','TTFT':'ttft','吞吐':'tps','延迟分布':'pct','综合':'all'};
+        switchView(m,map[at.textContent.trim()]||'table',false);
+    }
+}
+function switchView(m,v,changeTab=true){
+    const mc=document.getElementById('mc-'+m);
+    if(!mc)return;
+    if(changeTab){
+        mc.querySelectorAll('.view-tab').forEach(t=>t.classList.remove('active'));
+        const lb={'table':'数据表','ttft':'TTFT','tps':'吞吐','pct':'延迟分布','all':'综合'};
+        mc.querySelectorAll('.view-tab').forEach(t=>{if(t.textContent.trim()===lb[v])t.classList.add('active');});
+    }
+    mc.querySelectorAll('.view-content').forEach(c=>c.classList.remove('active'));
+    const vc=document.getElementById('v-'+m+'-'+v);
+    if(vc)vc.classList.add('active');
+    if(v!=='table'){
+        setTimeout(()=>{
+            const cid='c-'+m+'-'+v;
+            const canvas=document.getElementById(cid);
+            if(canvas&&canvas.parentElement.offsetHeight>0){
+                const k=m+v;if(charts[k]){charts[k].destroy();delete charts[k];}
+                renderChart(m,v);
+            }
+        },100);
+    }
+}
+function getModelData(m){
+    const el=document.getElementById('mc-'+m);if(!el)return[];
+    const rows=el.querySelectorAll('tbody tr');if(!rows.length)return[];
+    return Array.from(rows).map(tr=>{
+        const t=tr.querySelectorAll('td');
+        return {c:parseInt(t[0].textContent),ttft:parseFloat(t[1].textContent),p50:parseFloat(t[2].textContent),p95:parseFloat(t[3].textContent),p99:parseFloat(t[4].textContent),out:parseFloat(t[5].textContent),tps:parseFloat(t[6].textContent)};
+    }).sort((a,b)=>a.c-b.c);
+}
+function renderChart(m,type){
+    const d=getModelData(m);if(!d.length)return;
+    const ctx=document.getElementById('c-'+m+'-'+type);if(!ctx)return;
+    const k=m+type;if(charts[k]){charts[k].destroy();delete charts[k];}
+    let cfg;
+    if(type==='ttft'){
+        cfg={type:'line',data:{labels:d.map(x=>x.c),datasets:[{label:'TTFT (ms)',data:d.map(x=>x.ttft),borderColor:'#5b6abf',backgroundColor:'rgba(91,106,191,0.1)',fill:true,tension:0.3,pointRadius:5}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{title:{display:true,text:'TTFT 随并发变化',font:{size:14}}},scales:{x:{title:{display:true,text:'并发'}},y:{title:{display:true,text:'ms'},beginAtZero:true}}}};
+    }else if(type==='tps'){
+        cfg={type:'line',data:{labels:d.map(x=>x.c),datasets:[
+            {label:'输出速度 (t/s)',data:d.map(x=>x.out),borderColor:'#2e7d32',backgroundColor:'rgba(46,125,50,0.1)',fill:true,tension:0.3,pointRadius:5},
+            {label:'整体吞吐 (t/s)',data:d.map(x=>x.tps),borderColor:'#5b6abf',backgroundColor:'rgba(91,106,191,0.1)',fill:true,tension:0.3,pointRadius:4,borderDash:[5,3]}
+        ]},options:{responsive:true,maintainAspectRatio:false,plugins:{title:{display:true,text:'吞吐量趋势',font:{size:14}}},scales:{x:{title:{display:true,text:'并发'}},y:{title:{display:true,text:'t/s'},beginAtZero:true}}}};
+    }else if(type==='pct'){
+        cfg={type:'line',data:{labels:d.map(x=>x.c),datasets:[
+            {label:'P50',data:d.map(x=>x.p50),borderColor:'#2e7d32',tension:0.3,pointRadius:4},
+            {label:'P95',data:d.map(x=>x.p95),borderColor:'#e65100',tension:0.3,pointRadius:4},
+            {label:'P99',data:d.map(x=>x.p99),borderColor:'#c62828',tension:0.3,pointRadius:4},
+            {label:'平均',data:d.map(x=>x.ttft),borderColor:'#5b6abf',borderDash:[5,3],tension:0.3,pointRadius:4}
+        ]},options:{responsive:true,maintainAspectRatio:false,plugins:{title:{display:true,text:'TTFT 百分位分布',font:{size:14}}},scales:{x:{title:{display:true,text:'并发'}},y:{title:{display:true,text:'ms'},beginAtZero:true}}}};
+    }else if(type==='all'){
+        cfg={type:'bar',data:{labels:d.map(x=>'x'+x.c),datasets:[
+            {label:'TTFT (ms)',data:d.map(x=>x.ttft),backgroundColor:'#5b6abf',borderRadius:4},
+            {label:'输出速度 (t/s)',data:d.map(x=>x.out),backgroundColor:'#2e7d32',borderRadius:4},
+            {label:'吞吐 (t/s)',data:d.map(x=>x.tps),backgroundColor:'#00838f',borderRadius:4}
+        ]},options:{responsive:true,maintainAspectRatio:false,plugins:{title:{display:true,text:'各并发综合指标',font:{size:14}}},scales:{x:{title:{display:true,text:'并发'}},y:{title:{display:true,text:'值'},beginAtZero:true}}}};
+    }
+    if(cfg) charts[k]=new Chart(ctx,cfg);
+}
+(function(){
+    const tbl=document.querySelector('.table-card');if(!tbl)return;
+    const rows=tbl.querySelectorAll('tbody tr');if(!rows.length)return;
+    let t=0,o=0,p=0,rq=0,tk=0,c=0;
+    rows.forEach(tr=>{const td=tr.querySelectorAll('td');if(td.length>=7){t+=parseFloat(td[1].textContent)||0;o+=parseFloat(td[5].textContent)||0;p+=parseFloat(td[6].textContent)||0;rq+=parseInt(td[7].textContent)||0;tk+=parseInt(td[8].textContent.replace(/,/g,''))||0;c++;}});
+    if(c>0){document.getElementById('avgTtft').textContent=(t/c).toFixed(0)+' ms';document.getElementById('avgOut').textContent=(o/c).toFixed(1)+' t/s';document.getElementById('avgTps').textContent=(p/c).toFixed(1)+' t/s';document.getElementById('totalReq').textContent=rq;document.getElementById('totalTok').textContent=tk.toLocaleString();}
+})();
+let si=null;
+async function runTest(){const btn=document.getElementById('runTestBtn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> 测试中...';try{const r=await fetch('/api/run-test',{method:'POST'});if(r.ok)startPolling();else{showToast('启动失败','error');btn.disabled=false;btn.innerHTML='▶ 运行测试';}}catch(e){showToast('网络错误','error');btn.disabled=false;btn.innerHTML='▶ 运行测试';}}
+function startPolling(){if(si)clearInterval(si);si=setInterval(async()=>{
+    try{const r=await fetch('/api/status'),s=await r.json();const dot=document.getElementById('statusDot'),txt=document.getElementById('statusText'),btn=document.getElementById('runTestBtn');
+    if(s.running){dot.className='status-dot running';txt.innerHTML='<span style="display:flex;align-items:center;gap:8px"><span class="spinner"></span>'+(s.message||'测试中...')+'</span>';btn.disabled=true;btn.innerHTML='<span class="spinner"></span> 测试中...';}
+    else{dot.className='status-dot idle';txt.textContent=s.message||'就绪';btn.disabled=false;btn.innerHTML='▶ 运行测试';if(s.last_run)document.getElementById('lastRunInfo').textContent='上次:'+s.last_run;if(s.last_run_status==='success'){clearInterval(si);showToast('✅ 完成，刷新中...','info');setTimeout(()=>location.reload(),1500);}else if(s.last_run_status&&s.last_run_status.startsWith('failed')){clearInterval(si);showToast('❌ 失败','error');}}
+    }catch(e){}
+},2000);}
+function showToast(msg,type){const t=document.getElementById('toast');t.textContent=msg;t.style.borderLeft='4px solid '+(type==='error'?'#ef5350':'#5b6abf');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),4000);}
+(async function(){try{const r=await fetch('/api/status'),s=await r.json();if(s.running)startPolling();if(s.last_run)document.getElementById('lastRunInfo').textContent='上次:'+s.last_run;}catch(e){}})();
+</script>
+</body>
+</html>

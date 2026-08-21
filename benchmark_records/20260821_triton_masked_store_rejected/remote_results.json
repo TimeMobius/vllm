@@ -1,0 +1,103 @@
+{
+  "source": "http://192.168.10.121:3000/",
+  "algorithm": "full_decode_graph_triton_state_store",
+  "rows": [
+    {
+      "concurrency": 1,
+      "ttft_ms": 372.0,
+      "p50_ms": 314.0,
+      "p95_ms": 484.0,
+      "p99_ms": 499.0,
+      "output_tps": 32.2,
+      "aggregate_tps": 31.6,
+      "requests": 3,
+      "tokens": 1998,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 2,
+      "ttft_ms": 266.0,
+      "p50_ms": 240.0,
+      "p95_ms": 321.0,
+      "p99_ms": 321.0,
+      "output_tps": 29.0,
+      "aggregate_tps": 28.7,
+      "requests": 6,
+      "tokens": 4055,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 4,
+      "ttft_ms": 437.0,
+      "p50_ms": 464.0,
+      "p95_ms": 469.0,
+      "p99_ms": 469.0,
+      "output_tps": 28.5,
+      "aggregate_tps": 28.0,
+      "requests": 12,
+      "tokens": 8028,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 8,
+      "ttft_ms": 536.0,
+      "p50_ms": 514.0,
+      "p95_ms": 594.0,
+      "p99_ms": 594.0,
+      "output_tps": 25.8,
+      "aggregate_tps": 25.3,
+      "requests": 16,
+      "tokens": 10735,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 16,
+      "ttft_ms": 626.0,
+      "p50_ms": 625.0,
+      "p95_ms": 655.0,
+      "p99_ms": 673.0,
+      "output_tps": 22.1,
+      "aggregate_tps": 21.6,
+      "requests": 32,
+      "tokens": 21482,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 32,
+      "ttft_ms": 982.0,
+      "p50_ms": 992.0,
+      "p95_ms": 1172.0,
+      "p99_ms": 1234.0,
+      "output_tps": 14.6,
+      "aggregate_tps": 14.3,
+      "requests": 32,
+      "tokens": 21388,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 64,
+      "ttft_ms": 1360.0,
+      "p50_ms": 1394.0,
+      "p95_ms": 1564.0,
+      "p99_ms": 1565.0,
+      "output_tps": 7.8,
+      "aggregate_tps": 7.7,
+      "requests": 64,
+      "tokens": 42791,
+      "success_rate": 100.0
+    },
+    {
+      "concurrency": 128,
+      "ttft_ms": 2341.0,
+      "p50_ms": 2506.0,
+      "p95_ms": 2508.0,
+      "p99_ms": 2817.0,
+      "output_tps": 4.3,
+      "aggregate_tps": 4.2,
+      "requests": 128,
+      "tokens": 85846,
+      "success_rate": 100.0
+    }
+  ],
+  "notes": "No RWKV7 feature flags in launch command; verified defaults. Source-checkout lacks _C::rwkv7_masked_store, so candidate uses fused Triton state-store fallback."
+}

@@ -360,27 +360,37 @@ def _can_use_rwkv7_alt_recurrent(
     return all(t.dtype == torch.float32 and t.is_contiguous() for t in tensors)
 
 
-def _rwkv7_env_flag_enabled(name: str) -> bool:
+def _rwkv7_env_flag_enabled(name: str, *, default: bool = False) -> bool:
+    """Read an RWKV7 feature flag, allowing an explicit opt-out.
+
+    The optimized CUDA paths below are correctness-tested defaults.  Setting a
+    variable to ``0``/``false``/``off`` remains useful for A/B profiling and
+    isolating regressions without carrying a long production launch command.
+    """
     value = os.getenv(name)
     if value is None:
-        return False
+        return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_rwkv7_perf_flags() -> RWKV7PerfFlags:
     return RWKV7PerfFlags(
-        use_fused_mix6=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_MIX6"),
-        use_fused_kk_pre=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_KK_PRE"),
+        use_fused_mix6=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_MIX6", default=True),
+        use_fused_kk_pre=_rwkv7_env_flag_enabled(
+            "RWKV7_USE_FUSED_KK_PRE", default=True
+        ),
         use_fused_lnx_rkvres_xg=_rwkv7_env_flag_enabled(
-            "RWKV7_USE_FUSED_LNX_RKVRES_XG"
+            "RWKV7_USE_FUSED_LNX_RKVRES_XG", default=True
         ),
-        use_fused_cmix=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_CMIX"),
+        use_fused_cmix=_rwkv7_env_flag_enabled("RWKV7_USE_FUSED_CMIX", default=True),
         use_alt_recurrent_kernel=_rwkv7_env_flag_enabled(
-            "RWKV7_USE_ALT_RECURRENT_KERNEL"
+            "RWKV7_USE_ALT_RECURRENT_KERNEL", default=True
         ),
-        use_direct_linear=_rwkv7_env_flag_enabled("RWKV7_USE_DIRECT_LINEAR"),
+        use_direct_linear=_rwkv7_env_flag_enabled(
+            "RWKV7_USE_DIRECT_LINEAR", default=True
+        ),
         use_cached_fp32_params=_rwkv7_env_flag_enabled(
-            "RWKV7_USE_CACHED_FP32_PARAMS"
+            "RWKV7_USE_CACHED_FP32_PARAMS", default=True
         ),
     )
 
@@ -1229,7 +1239,7 @@ class RWKV7Attention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if (
             self.perf_flags.use_alt_recurrent_kernel
-            and os.getenv("RWKV7_USE_FUSED_RECURRENT_T1") == "1"
+            and _rwkv7_env_flag_enabled("RWKV7_USE_FUSED_RECURRENT_T1", default=True)
             and recurrent_state.ndim == 4
             and recurrent_state.shape[-2:] == (64, 64)
         ):
@@ -2506,7 +2516,7 @@ def _rwkv7_should_compile(vllm_config: VllmConfig) -> bool:
         "positions": 0,
         "intermediate_tensors": 0,
         "inputs_embeds": 0,
-    }
+    },
 )
 class RWKV7Model(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
