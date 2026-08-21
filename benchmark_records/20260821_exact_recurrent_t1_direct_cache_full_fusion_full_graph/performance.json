@@ -1,0 +1,21 @@
+{
+  "hardware": "NVIDIA GeForce RTX 4090 D (sm89)",
+  "model": "/hikscale/models/XiaoKe/rwkv-0-hf",
+  "dtype": "bfloat16 projections with float32 recurrent state",
+  "cudagraph_mode": "FULL_DECODE_ONLY",
+  "mamba_cache_mode": "align",
+  "c128": {
+    "workload": "128 closed-loop completion requests, concurrency 128, 32 output tokens/request, 4096 aggregate tokens/round; warmups excluded",
+    "baseline_aggregate_output_tps": 1365.3813967590327,
+    "candidate_aggregate_output_tps": 1541.7093220670179,
+    "relative_change_percent": 12.913141882866845,
+    "sample_count": 4
+  },
+  "c1": {
+    "workload": "1 completion request, concurrency 1, 32 output tokens/request; first measurement excluded as warmup",
+    "baseline_output_tps": 26.220976815220787,
+    "candidate_output_tps": 26.345054921736157,
+    "relative_change_percent": 0.4731979292355744,
+    "sample_count": 2
+  }
+}

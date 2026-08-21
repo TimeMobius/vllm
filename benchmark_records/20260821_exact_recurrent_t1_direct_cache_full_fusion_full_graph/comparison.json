@@ -1,0 +1,9 @@
+{
+  "baseline": "exact direct-cache: separate exact `sa` state-cache reduction followed by fused state-update/output-reduction",
+  "candidate": "exact direct-cache full fusion: `sa` reduction, state update, and output reduction with one cache read and one cache write",
+  "accuracy_gate_passed": true,
+  "performance_gate_passed": true,
+  "retained": true,
+  "primary_result": {"metric": "C=128 aggregate output TPS", "baseline": 1365.3813967590327, "candidate": 1541.7093220670179, "relative_change_percent": 12.913141882866845},
+  "secondary_result": {"metric": "C=1 output TPS", "baseline": 26.220976815220787, "candidate": 26.345054921736157, "relative_change_percent": 0.4731979292355744}
+}

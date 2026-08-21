@@ -1,7 +1,7 @@
 # RWKV7 vLLM-SP 性能优化追踪
 
-> **最后核对：2026-08-21（Asia/Shanghai，exact direct-cache update/reduce fusion 已验证）**
-> 2026-08-21：保留 strict direct-cache state update + output-reduction fusion：服务精度为零差异，C=128 aggregate TPS `1252.19 → 1365.23`（+9.03%）。稳定服务仍为 exact direct-cache。
+> **最后核对：2026-08-21（Asia/Shanghai，exact direct-cache full fusion 已验证）**
+> 2026-08-21：保留 strict direct-cache `sa + update + output` single-state-read fusion：服务精度为零差异，C=128 aggregate TPS `1365.38 → 1541.71`（+12.91%）。稳定服务为该 full-fusion 路径。
 > 工作目录：`/mnt/data/Codes/RWKV/vllm/vllm-rwkv7-sp-fast`
 > 分支：`codex/rwkv7-sp-fast`
 > 目标：在严格数值对齐和回归测试门禁下，提高 RWKV7 的 **Full Decode CUDA Graph** 和高并发 decode 吞吐。
@@ -13,7 +13,7 @@
 - [x] Full Decode CUDA Graph 已验证并运行：capture sizes 为 `1,2,4,8,16,32,64,128`。
 - [x] 当前稳定服务在 `http://127.0.0.1:8030`（局域网地址：`http://192.168.10.121:8030`）。
 - [x] `2026-08-21` 已验证 `/health` 返回 HTTP 200，`/v1/models` 返回 `xiaoke-5`。
-- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；最近一次 POST 于 `2026-08-21 12:58:01` 完成、成功保存 8 条记录。该 sweep 报告 C=1 `36.1 t/s`、C=128 `13.8 t/s`（后者是每请求而非 aggregate；128 并发 aggregate 约 `1766 t/s` 的 dashboard 口径，不能与本地 128 closed-loop、32-token 基准直接混用）。
+- [x] dashboard 测试服务为 `http://192.168.10.121:3000`；最近已于 `2026-08-21 13:47:38` 成功完成 8 条记录，full-fusion 服务的新一轮 POST 已发起并将在完成后再记录。其 1→128 sweep 的每请求输出速度不能与本地 C=128 closed-loop aggregate TPS 直接混用。
 - [x] 使用 NVIDIA GeForce RTX 4090 D（sm89）、BF16 projection、FP32 recurrent state；Python 统一使用 vllm-sp 环境。
 
 ### 稳定启动命令
@@ -27,6 +27,7 @@ VLLM_DISABLE_COMPILE_CACHE=1 \
 RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1 \
 RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1 \
 RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1 \
+RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION=1 \
 RWKV7_USE_NATIVE_STRIDED_GATHER=1 \
 RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1 \
 RWKV7_USE_TRITON_MASKED_STORE=1 \
@@ -95,7 +96,7 @@ screen -ls
 
 默认开关：`RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1`；回退：设为 `0`。
 
-### 2.4 精确 direct-cache state update + output-reduction fusion（新增，待提交）
+### 2.4 精确 direct-cache state update + output-reduction fusion（`8343b8ae7`）
 
 - [x] 在 `rwkv7_recurrent_t1_exact_direct_cache` 的 direct persistent-cache fast path 中，将原先独立的 exact state-update 和 exact output-reduction 合为一个 native CUDA kernel；敏感的 `sa` reduction 保持独立且不改变。
 - [x] 新 kernel 刻意复刻既有 output reduction 的 `32 x 4` CTA、四路 FP32 accumulator 与 `4 -> 2 -> 1` shared-memory 加法树；state update 继续使用显式 round-to-nearest FP32 multiply/add 次序。对 padded graph lane，slot 0 仅用于被丢弃的读输出，永不写入 cache。
@@ -105,7 +106,15 @@ screen -ls
 
 默认开关不变：`RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1`；同样设为 `0` 可回退整个 direct-cache fast path。
 
-### 2.5 Full-graph state cache 的 native strided gather/store
+### 2.5 精确 direct-cache `sa + update + output` full fusion（新增，待提交）
+
+- [x] 将 retained direct-cache 的 `sa` cache reduction 与 update/output-reduction 继续合为一个 `32 x 4` CTA CUDA kernel：每个 FP32 recurrent state element 仅从 global cache 读取一次、写回一次；original state 暂存 shared memory，避免 64-value register array 的 256-byte stack spill。
+- [x] 保持严格算术合约：`sa` 与 output 仍使用既有的四路 partial accumulators、`4 -> 2 -> 1` shared-memory tree 和 FP32 round-to-nearest multiply/add；graph padding lane 仅从 slot 0 读取被丢弃输出、绝不写 cache。此路径默认启用；可设置 `RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION=0` 回退到 2.4 的两 kernel direct-cache 路径。
+- [x] 精度：single-step B=1/8/128、3 seeds 以及新增 10-step recurrent cache regression B=1/8/128 均 valid output 与完整 cache `torch.equal`；服务 8 prompts ×16 decode、greedy、`logprobs=20` text/token/selected/common Top-K **0 差异**；focused suite（先停服务以释放 GPU）**81 passed, 2 skipped**，包括两个 C=128 padded Full CUDA Graph integration mode。
+- [x] clean-restart paired service benchmark（C=128 四个 non-warmup samples）`1365.38 → 1541.71 TPS`，**+12.91%**；C=1 post-warmup `26.22 → 26.35 TPS`（+0.47%，不将其误称为单流突破）。这是真正消除了 `sa` 的额外 full-state global read 与每层一个 graph node 的高并发收益。
+- [x] 证据：`benchmark_records/20260821_exact_recurrent_t1_direct_cache_full_fusion_full_graph/`。
+
+### 2.6 Full-graph state cache 的 native strided gather/store
 
 - [x] 提交：`b30e12944 RWKV7: accelerate strided full graph state cache`。
 - [x] 在 Full Decode graph 中，以 CUDA 行拷贝 gather 替换 RWKV7 block 的 state-cache `index_select`；native masked store 支持 graph replay 的 padded row stride。
@@ -116,7 +125,7 @@ screen -ls
 
 回退开关：`RWKV7_USE_NATIVE_STRIDED_GATHER=0`、`RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=0`。
 
-### 2.6 编译/图模式的现状
+### 2.7 编译/图模式的现状
 
 - [x] `FULL_DECODE_ONLY` CUDA Graph 已通过真实 C=128 padded engine integration，测试覆盖普通 full decode graph 与 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 路径。
 - [x] **C=1 full-model compile复测（2026-08-21）**：完整 `RWKV7_COMPILE_WITH_FULL_CUDAGRAPH=1` 服务精度仍为 text/token/logprob 0 差异，但 C=1 post-warmup `25.852 TPS` 对严格稳定路径 `25.961 TPS`（-0.42%），无稳定收益，继续保持 opt-in 不启用。证据：`benchmark_records/20260821_full_decode_compile_c1_rejected/`。
@@ -141,9 +150,10 @@ screen -ls
 
 ### 4.1 C=1 与 C=128 是不同目标
 
-- [x] 最新稳定服务（2026-08-21、32 output tokens、temperature=0、`ignore_eos=true`）C=1 三轮为 `25.31 / 25.95 / 25.95 TPS`，均值 **25.74 TPS**；C=8/32/128 aggregate 均值分别为 **158.95 / 460.69 / 705.31 TPS**。
+- [x] 最新 strict stable service（2026-08-21、32 output tokens、temperature=0、`ignore_eos=true`）full-fusion C=1 post-warmup 为 `26.343 / 26.347 TPS`，均值 **26.35 TPS**；C=128 closed-loop aggregate 的 clean-restart paired mean 为 **1541.71 TPS**。它是 aggregate 口径，不等同于每请求输出速度。
 - [x] 因此“50+ TPS”应明确为单请求 C=1 目标，而不是 aggregate C=128。C=128 已远超 50 aggregate TPS，但每请求平均约 5.51 TPS，属排队/批处理吞吐指标，不能与单流 latency 指标混用。
 - [x] C=1 Torch profile（31 generation steps）表明三类 BF16 `internal::gemvx` 合计 **984.67 ms**，约占 trace 1.20 s CUDA time 的 **82%**，并有约 **426 个小 linear/step**；下一最大收益点是 decoder 小 projection/FFN down projection，不是 state cache。
+- [x] checkpoint 实测 dense BF16 projection weights 每 token 至少要流过约 **23.71 GiB**（61 layers，attention direct projections、low-rank branches、FFN up/down；无精确零权重）。RTX 4090 D 的理论约 1008 GB/s 对应仅权重读取上界约 **39.6 TPS**，因此在本硬件、strict dense BF16 的 C=1 口径下不应承诺 50+；要跨越它必须实现 strict-compatible activation sparsity/压缩或使用更高带宽硬件。
 - [x] 在同 checkpoint `/hikscale/models/XiaoKe/rwkv-0.pth` 和同 RTX 4090 D 上复现 Albatross C++：`--wkv32 --cmix-sparse off` 为 31.61 raw tok/s，默认 sparse CMix 为 41.15 raw tok/s（+30.2%）。它是 FP16 standalone graph，未经过 vLLM API/sampling 与 BF16 strict logprob 门禁；其 README 的 145+ TPS 是 RTX 5090 的 standalone 结果，不能直接与本机 vLLM C=1 比较。完整证据：`benchmark_records/20260821_single_decode_bottleneck_and_albatross/`。
 
 - [x] 历史 trace（`/tmp/rwkv7_exact_profile_20260821_1616/`）显示：BF16 GEMM/CUTLASS 约 24%，ATen elementwise 约 20%，ATen reductions 约 13%，旧 cache gather/store 约 20%，exact recurrent update 约 9%。
@@ -160,6 +170,7 @@ export VLLM_RWKV7_ENGINE_TEST_MODEL_PATH=/hikscale/models/XiaoKe/rwkv-0-hf
 export RWKV7_USE_EXACT_RECURRENT_T1_UPDATE=1
 export RWKV7_USE_EXACT_RECURRENT_T1_OUTPUT_REDUCTION=1
 export RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE=1
+export RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION=1
 export RWKV7_USE_NATIVE_STRIDED_GATHER=1
 export RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1
 
@@ -167,7 +178,7 @@ export RWKV7_USE_NATIVE_STRIDED_MASKED_STORE=1
   tests/model_executor/test_rwkv7.py -v
 ```
 
-当前最近完整 focused 结果（direct-cache 启用）：**78 passed, 2 skipped**。其中包含 C=128 padded Full CUDA Graph engine integration；skip 为既有的外部 reference runtime 依赖。
+当前最近完整 focused 结果（full-fusion direct-cache 启用、停服务释放 GPU）：**81 passed, 2 skipped**。其中包含 C=128 padded Full CUDA Graph engine integration；skip 为既有的外部 reference runtime 依赖。
 
 ### 服务精度对齐
 
@@ -223,6 +234,7 @@ curl -fsS http://192.168.10.121:3000/
 3. [x] **cublasLt isolated algorithm profiling**：已覆盖 decoder/FFN `M=1/8/32/128`、0/4/8/32/64/256 MiB workspace；strict exact 候选在 C=128 与 PyTorch/CUTLASS 持平量级，未接入。
 4. [x] **C=128 Full Decode trace（2026-08-21）**：10 个 `generation_128` graph replay 为 `173.95 ms/graph`（约 735.8 raw aggregate tok/s）；CUTLASS projection 23.94%、ATen elementwise 21.83%、ATen reductions 14.54%、大 FP32 recurrent-state gather/store 合计 20.28%、exact state update 9.84%。idle API 三轮为 `704.10 / 708.56 / 706.67 TPS`，后两轮均值 `707.61`；与外部 dashboard 的 1→128 sweep 重叠会显著污染 client TPS，不能混用。`uint4` copy-only A/B 不稳定且无收益，未接入。证据：`benchmark_records/20260821_c128_full_decode_profile/`。
 5. [x] **官方 upstream 审查（2026-08-21）**：已 fetch 且核实远端 `upstream/main=a60c66e3d`（同日官方 tip）；当前分支相对其为本地独有 153、upstream 独有 4,996 commits，不能盲目 merge/rebase。已审阅 Kimi K3/KDA、Qwen3.5 GDN、Mamba hybrid cache：借鉴 decode-only guard、persistent-state 原地 mutation、固定输出 buffer、warm-up 和 fallback；不移植其不同数学的 recurrent kernels。官方当前没有名为 Qwen3.6 或 Qwen3.8 的同名 model implementation。
+5. [x] **官方 upstream 二次核查（2026-08-21）**：已执行 `git fetch upstream main`，最新 `upstream/main=c8438a3d40168ce1d9eade0dc15ccbe5d27adb68`（`2026-08-21 17:33:41 +05:30`，仅 KV-transfer README dead-link 文档修复）；相对原先审阅点 `a60c66e3d`，RWKV/GDN/KDA/Mamba model/layer/csrc 路径没有新可移植性能变更。当前本分支 local-only 159、upstream-only 4,997，继续禁止盲目 merge/rebase。Kimi GDN direct-state decode 可继续借鉴 layout guard、padding 和 direct mutation 结构，但 recurrence 数学不兼容，不能复制 kernel。
 6. [ ] 将每个有效改动按阶段提交：有意义的 commit message、`Assisted-by: Codex` trailer、完整测试与 benchmark record；不要 push remote。
 8. [x] **online FP8 量化探索（拒绝）**：`--quantization fp8` 仍可 Full Decode CUDA Graph，C=1 `30.89 TPS`（约 +17.9%）且 C=128 `1218.58 TPS`（约 +1.11%）；但相对严格服务 8×16 gate 出现 `5/8` text/token 分歧、selected logprob max `3.20997`、common Top-K max `13.64159`。这是模型质量变化，不是可接受的末位误差；稳定 BF16 服务已恢复。证据：`benchmark_records/20260821_fp8_online_quantization_rejected/`。
 9. [x] **FP16 dtype 探索（拒绝）**：`--dtype float16` 相对 BF16 strict trace 仍有 `2/8` text/token 分歧（selected max `2.70194`），且没有速度收益：C=1 `26.17 TPS`（-0.16%）、C=128 `1198.66 TPS`（-0.55%）。Albatross 的 FP16 standalone 表现不能通过仅切换 vLLM dtype 获得。证据：`benchmark_records/20260821_fp16_dtype_rejected/`。

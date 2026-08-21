@@ -698,10 +698,14 @@ def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
     reason="RWKV7 exact direct-cache CUDA op is unavailable",
 )
 @pytest.mark.parametrize("batch_size", [1, 8, 128])
+@pytest.mark.parametrize("full_fusion", [False, True])
 def test_rwkv7_recurrent_t1_exact_direct_cache_matches_reference(
-    monkeypatch, batch_size
+    monkeypatch, batch_size, full_fusion
 ):
     monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "1")
+    monkeypatch.setenv(
+        "RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION", "1" if full_fusion else "0"
+    )
     num_slots, num_heads, head_dim, value_dim = 257, 4, 64, 64
     for seed in (13, 71, 173):
         torch.manual_seed(seed + batch_size)
@@ -753,6 +757,67 @@ def test_rwkv7_recurrent_t1_exact_direct_cache_matches_reference(
         # A padded graph lane has no observable output. If a valid request owns
         # slot zero, its in-place update may happen before the padded lane reads
         # the clamped slot-zero state; only valid lanes are part of the contract.
+        assert torch.equal(actual_output[valid_slots], expected_output[valid_slots])
+        assert torch.equal(actual_cache, expected_cache)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(
+    not rwkv7_recurrent_t1_exact_direct_cache_available(),
+    reason="RWKV7 exact direct-cache CUDA op is unavailable",
+)
+@pytest.mark.parametrize("batch_size", [1, 8, 128])
+def test_rwkv7_recurrent_t1_exact_direct_cache_full_fusion_matches_over_steps(
+    monkeypatch, batch_size
+):
+    """Protect against exact-but-single-step-only cache fusion regressions."""
+    monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "1")
+    monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION", "1")
+    num_slots, num_heads, head_dim, value_dim = 257, 4, 64, 64
+    torch.manual_seed(907 + batch_size)
+    cache_backing = torch.randn(
+        num_slots,
+        3,
+        num_heads,
+        head_dim,
+        value_dim,
+        device="cuda",
+        dtype=torch.float32,
+    )
+    actual_cache = cache_backing[:, 1]
+    expected_cache = actual_cache.clone()
+    slot_ids = torch.randperm(num_slots, device="cuda")[:batch_size].to(
+        dtype=torch.long
+    )
+    if batch_size > 1:
+        slot_ids[-1] = -1
+    valid_slots = slot_ids >= 0
+
+    for _ in range(10):
+        w, kk, a, k, v, r = [
+            torch.randn(
+                batch_size,
+                num_heads,
+                head_dim,
+                device="cuda",
+                dtype=torch.float32,
+            ).contiguous()
+            for _ in range(6)
+        ]
+        expected_state = expected_cache.index_select(0, slot_ids.clamp_min(0))
+        expected_sa = (expected_state * (-kk).unsqueeze(-1)).sum(dim=-2)
+        expected_state = (
+            torch.exp(w).unsqueeze(-1) * expected_state
+            + (kk * a).unsqueeze(-1) * expected_sa.unsqueeze(-2)
+            + k.unsqueeze(-1) * v.unsqueeze(-2)
+        )
+        expected_output = (expected_state * r.unsqueeze(-1)).sum(dim=-2)
+        expected_cache.index_copy_(
+            0, slot_ids[valid_slots], expected_state[valid_slots]
+        )
+        actual_output = rwkv7_recurrent_t1_exact_direct_cache(
+            actual_cache, slot_ids, w, kk, a, k, v, r
+        )
         assert torch.equal(actual_output[valid_slots], expected_output[valid_slots])
         assert torch.equal(actual_cache, expected_cache)
 

@@ -6,7 +6,9 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdlib>
 #include <optional>
+#include <string>
 #include <tuple>
 
 namespace {
@@ -568,6 +570,153 @@ __global__ void rwkv7_recurrent_t1_exact_cache_update_reduce_kernel(
   }
 }
 
+__global__ void rwkv7_recurrent_t1_exact_cache_full_fusion_kernel(
+    float* __restrict__ cache, const int64_t* __restrict__ slot_ids,
+    const float* __restrict__ exp_w, const float* __restrict__ kk,
+    const float* __restrict__ kk_a, const float* __restrict__ k,
+    const float* __restrict__ v, const float* __restrict__ r,
+    float* __restrict__ out, const int64_t output_numel,
+    const int64_t num_heads, const int64_t cache_row_stride) {
+  // Each block has the same output layout as the exact cache-reduction and
+  // update/reduce kernels. Stage the original state in shared memory so the
+  // exact `sa` reduction, state update, and output reduction use one cache read
+  // and one cache write without register spilling. The arithmetic and both
+  // reduction trees deliberately preserve the existing exact-kernel contracts.
+  constexpr int kOutputVector = 4;
+  constexpr int kHeadDim = 64;
+  constexpr int kThreadsX = 32;
+  constexpr int kThreadsY = 4;
+  __shared__ float shared[kThreadsY][kThreadsX][kOutputVector];
+  __shared__ float original_state[kHeadDim][kThreadsX][kOutputVector];
+
+  const int64_t output_base =
+      (static_cast<int64_t>(blockIdx.x) * kThreadsX + threadIdx.x) *
+      kOutputVector;
+  if (output_base >= output_numel) {
+    return;
+  }
+  const int64_t batch_head = output_base / kHeadDim;
+  const int64_t batch_idx = batch_head / num_heads;
+  const int64_t head_idx = batch_head - batch_idx * num_heads;
+  const int64_t slot_id = slot_ids[batch_idx];
+  // Match graph padding semantics: a padded lane can read slot zero for its
+  // ignored output but never mutates the persistent state.
+  const int64_t safe_slot = slot_id < 0 ? 0 : slot_id;
+  const int64_t value_base = output_base - batch_head * kHeadDim;
+  float* state_base = cache + safe_slot * cache_row_stride +
+                      head_idx * kHeadDim * kHeadDim + value_base;
+  const float* exp_w_base = exp_w + batch_head * kHeadDim;
+  const float* kk_base = kk + batch_head * kHeadDim;
+  const float* kk_a_base = kk_a + batch_head * kHeadDim;
+  const float* k_base = k + batch_head * kHeadDim;
+  const float* v_base = v + batch_head * kHeadDim + value_base;
+  const float* r_base = r + batch_head * kHeadDim;
+
+  // Mirror rwkv7_recurrent_t1_exact_cache_reduce_kernel for
+  // sa = sum(state * -kk, dim=-2), while retaining every state element.
+  float sa_accum[kOutputVector][kThreadsY] = {};
+#pragma unroll
+  for (int d_base = threadIdx.y; d_base < kHeadDim;
+       d_base += kThreadsY * kThreadsY) {
+#pragma unroll
+    for (int i = 0; i < kThreadsY; ++i) {
+      const int d = d_base + i * kThreadsY;
+#pragma unroll
+      for (int lane = 0; lane < kOutputVector; ++lane) {
+        const float state = state_base[d * kHeadDim + lane];
+        original_state[d][threadIdx.x][lane] = state;
+        sa_accum[lane][i] =
+            __fadd_rn(sa_accum[lane][i], __fmul_rn(state, -kk_base[d]));
+      }
+    }
+  }
+
+#pragma unroll
+  for (int lane = 0; lane < kOutputVector; ++lane) {
+    float combined = __fadd_rn(sa_accum[lane][0], sa_accum[lane][1]);
+    combined = __fadd_rn(combined, sa_accum[lane][2]);
+    shared[threadIdx.y][threadIdx.x][lane] =
+        __fadd_rn(combined, sa_accum[lane][3]);
+  }
+  __syncthreads();
+  if (threadIdx.y < 2) {
+#pragma unroll
+    for (int lane = 0; lane < kOutputVector; ++lane) {
+      shared[threadIdx.y][threadIdx.x][lane] =
+          __fadd_rn(shared[threadIdx.y][threadIdx.x][lane],
+                    shared[threadIdx.y + 2][threadIdx.x][lane]);
+    }
+  }
+  __syncthreads();
+  if (threadIdx.y == 0) {
+#pragma unroll
+    for (int lane = 0; lane < kOutputVector; ++lane) {
+      shared[0][threadIdx.x][lane] =
+          __fadd_rn(shared[0][threadIdx.x][lane], shared[1][threadIdx.x][lane]);
+    }
+  }
+  __syncthreads();
+
+  // Every y lane reads the exact sa result for its x/lane output column.
+  float output_accum[kOutputVector][kThreadsY] = {};
+#pragma unroll
+  for (int d_base = threadIdx.y; d_base < kHeadDim;
+       d_base += kThreadsY * kThreadsY) {
+#pragma unroll
+    for (int i = 0; i < kThreadsY; ++i) {
+      const int d = d_base + i * kThreadsY;
+#pragma unroll
+      for (int lane = 0; lane < kOutputVector; ++lane) {
+        const float state = original_state[d][threadIdx.x][lane];
+        volatile float state_decay = __fmul_rn(exp_w_base[d], state);
+        volatile float key_sa =
+            __fmul_rn(kk_a_base[d], shared[0][threadIdx.x][lane]);
+        volatile float key_value = __fmul_rn(k_base[d], v_base[lane]);
+        volatile float partial = __fadd_rn(state_decay, key_sa);
+        volatile float updated_state = __fadd_rn(partial, key_value);
+        if (slot_id >= 0) {
+          state_base[d * kHeadDim + lane] = updated_state;
+        }
+        output_accum[lane][i] = __fadd_rn(output_accum[lane][i],
+                                          __fmul_rn(updated_state, r_base[d]));
+      }
+    }
+  }
+
+#pragma unroll
+  for (int lane = 0; lane < kOutputVector; ++lane) {
+    float combined = __fadd_rn(output_accum[lane][0], output_accum[lane][1]);
+    combined = __fadd_rn(combined, output_accum[lane][2]);
+    shared[threadIdx.y][threadIdx.x][lane] =
+        __fadd_rn(combined, output_accum[lane][3]);
+  }
+  __syncthreads();
+  if (threadIdx.y < 2) {
+#pragma unroll
+    for (int lane = 0; lane < kOutputVector; ++lane) {
+      shared[threadIdx.y][threadIdx.x][lane] =
+          __fadd_rn(shared[threadIdx.y][threadIdx.x][lane],
+                    shared[threadIdx.y + 2][threadIdx.x][lane]);
+    }
+  }
+  __syncthreads();
+  if (threadIdx.y == 0) {
+#pragma unroll
+    for (int lane = 0; lane < kOutputVector; ++lane) {
+      out[output_base + lane] =
+          __fadd_rn(shared[0][threadIdx.x][lane], shared[1][threadIdx.x][lane]);
+    }
+  }
+}
+
+bool rwkv7_recurrent_t1_exact_cache_full_fusion_enabled() {
+  const char* value = std::getenv("RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION");
+  return value == nullptr ||
+         (std::string(value) == "1" || std::string(value) == "true" ||
+          std::string(value) == "TRUE" || std::string(value) == "on" ||
+          std::string(value) == "ON");
+}
+
 torch::Tensor rwkv7_recurrent_t1_exact_direct_cache(
     torch::Tensor& cache, const torch::Tensor& slot_ids,
     const torch::Tensor& exp_w, const torch::Tensor& kk,
@@ -607,7 +756,6 @@ torch::Tensor rwkv7_recurrent_t1_exact_direct_cache(
       "all direct-cache tensors must share `cache`'s CUDA device.");
   c10::cuda::OptionalCUDAGuard device_guard;
   device_guard.set_index(cache.get_device());
-  auto sa = torch::empty(scalar_shape, cache.options());
   auto out = torch::empty(scalar_shape, cache.options());
   constexpr int kThreadsX = 32;
   constexpr int kThreadsY = 4;
@@ -617,18 +765,28 @@ torch::Tensor rwkv7_recurrent_t1_exact_direct_cache(
   const int64_t reduce_blocks =
       (output_numel + outputs_per_block - 1) / outputs_per_block;
   auto stream = at::cuda::getCurrentCUDAStream();
-  rwkv7_recurrent_t1_exact_cache_reduce_kernel<<<
-      reduce_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
-      cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
-      kk.data_ptr<float>(), sa.data_ptr<float>(), output_numel, num_heads,
-      cache.stride(0), true);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-  rwkv7_recurrent_t1_exact_cache_update_reduce_kernel<<<
-      reduce_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
-      cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
-      exp_w.data_ptr<float>(), kk_a.data_ptr<float>(), k.data_ptr<float>(),
-      v.data_ptr<float>(), sa.data_ptr<float>(), r.data_ptr<float>(),
-      out.data_ptr<float>(), output_numel, num_heads, cache.stride(0));
+  if (rwkv7_recurrent_t1_exact_cache_full_fusion_enabled()) {
+    rwkv7_recurrent_t1_exact_cache_full_fusion_kernel<<<
+        reduce_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
+        cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
+        exp_w.data_ptr<float>(), kk.data_ptr<float>(), kk_a.data_ptr<float>(),
+        k.data_ptr<float>(), v.data_ptr<float>(), r.data_ptr<float>(),
+        out.data_ptr<float>(), output_numel, num_heads, cache.stride(0));
+  } else {
+    auto sa = torch::empty(scalar_shape, cache.options());
+    rwkv7_recurrent_t1_exact_cache_reduce_kernel<<<
+        reduce_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
+        cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
+        kk.data_ptr<float>(), sa.data_ptr<float>(), output_numel, num_heads,
+        cache.stride(0), true);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    rwkv7_recurrent_t1_exact_cache_update_reduce_kernel<<<
+        reduce_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
+        cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
+        exp_w.data_ptr<float>(), kk_a.data_ptr<float>(), k.data_ptr<float>(),
+        v.data_ptr<float>(), sa.data_ptr<float>(), r.data_ptr<float>(),
+        out.data_ptr<float>(), output_numel, num_heads, cache.stride(0));
+  }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return out;
 }
