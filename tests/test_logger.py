@@ -15,7 +15,6 @@ from uuid import uuid4
 
 import pytest
 
-from vllm.entrypoints.logger import RequestLogger
 from vllm.logger import (
     _DATE_FORMAT,
     _FORMAT,
@@ -25,6 +24,7 @@ from vllm.logger import (
 )
 from vllm.logging_utils import NewLineFormatter
 from vllm.logging_utils.dump_input import prepare_object_to_dump
+from vllm.entrypoints.serve.utils.request_logger import RequestLogger
 
 
 def f1(x):
@@ -274,7 +274,7 @@ def test_request_logger_log_outputs():
     # Create a mock logger to capture log calls
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger = RequestLogger(max_log_len=None)
 
         # Test basic output logging
@@ -300,7 +300,7 @@ def test_request_logger_log_outputs_streaming_delta():
     """Test log_outputs with streaming delta mode."""
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger = RequestLogger(max_log_len=None)
 
         # Test streaming delta logging
@@ -327,7 +327,7 @@ def test_request_logger_log_outputs_streaming_complete():
     """Test log_outputs with streaming complete mode."""
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger = RequestLogger(max_log_len=None)
 
         # Test streaming complete logging
@@ -354,7 +354,7 @@ def test_request_logger_log_outputs_with_truncation():
     """Test log_outputs respects max_log_len setting."""
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         # Set max_log_len to 10
         request_logger = RequestLogger(max_log_len=10)
 
@@ -389,7 +389,7 @@ def test_request_logger_log_outputs_none_values():
     """Test log_outputs handles None values correctly."""
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger = RequestLogger(max_log_len=None)
 
         # Test with None output_token_ids
@@ -415,7 +415,7 @@ def test_request_logger_log_outputs_empty_output():
     """Test log_outputs handles empty output correctly."""
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger = RequestLogger(max_log_len=5)
 
         # Test with empty output
@@ -441,7 +441,7 @@ def test_request_logger_log_outputs_integration():
     """Test that log_outputs can be called alongside log_inputs."""
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger = RequestLogger(max_log_len=None)
 
         # Test that both methods can be called without interference
@@ -487,7 +487,7 @@ def test_request_logger_writes_io_jsonl(tmp_path):
         enable_log_outputs=False,
     )
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger.log_inputs(
             request_id="test-io-log",
             prompt="abcdef",
@@ -538,7 +538,7 @@ def test_streaming_complete_logs_full_text_content():
     full accumulated text, not just token count."""
     mock_logger = MagicMock()
 
-    with patch("vllm.entrypoints.logger.logger", mock_logger):
+    with patch("vllm.entrypoints.serve.utils.request_logger.logger", mock_logger):
         request_logger = RequestLogger(max_log_len=None)
 
         # Test with actual content instead of token count format

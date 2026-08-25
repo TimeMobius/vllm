@@ -1,8 +1,9 @@
-#include "cache.h"
-#include "cuda_utils.h"
+// Provides torch::Tensor for ops.h (previously included transitively via
+// cache.h, which is no longer included here after cache ops moved to
+// _C_stable_libtorch).
+#include <torch/all.h>
 #include "ops.h"
 #include "core/registration.h"
-
 #include <torch/library.h>
 #include <torch/version.h>
 
@@ -33,41 +34,6 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   ops.def("get_cuda_view_from_cpu_tensor(Tensor cpu_tensor) -> Tensor");
   ops.impl("get_cuda_view_from_cpu_tensor", torch::kCPU,
            &get_cuda_view_from_cpu_tensor);
-
-  ops.def(
-      "rwkv7_alt_recurrent("
-      "    Tensor r, Tensor w, Tensor k, Tensor v, Tensor kk, Tensor a, "
-      "Tensor? initial_state=None) -> (Tensor, Tensor)");
-  ops.impl("rwkv7_alt_recurrent", torch::kCUDA, &rwkv7_alt_recurrent);
-
-  ops.def(
-      "rwkv7_reduce_d64_atten_exact(Tensor state, Tensor vector) "
-      "-> Tensor");
-  ops.impl("rwkv7_reduce_d64_atten_exact", torch::kCUDA,
-           &rwkv7_reduce_d64_atten_exact);
-
-  ops.def(
-      "rwkv7_recurrent_t1_exact_update("
-      "Tensor state, Tensor exp_w, Tensor kk_a, Tensor k, Tensor v, "
-      "Tensor sa) -> Tensor");
-  ops.impl("rwkv7_recurrent_t1_exact_update", torch::kCUDA,
-           &rwkv7_recurrent_t1_exact_update);
-
-  ops.def(
-      "rwkv7_recurrent_t1_exact_direct_cache(Tensor(a!) cache, Tensor "
-      "slot_ids, "
-      "Tensor exp_w, Tensor kk, Tensor kk_a, Tensor k, Tensor v, Tensor r) -> "
-      "Tensor");
-  ops.impl("rwkv7_recurrent_t1_exact_direct_cache", torch::kCUDA,
-           &rwkv7_recurrent_t1_exact_direct_cache);
-
-  ops.def(
-      "rwkv7_masked_store(Tensor(a!) cache, Tensor values, Tensor slot_ids) -> "
-      "()");
-  ops.impl("rwkv7_masked_store", torch::kCUDA, &rwkv7_masked_store);
-
-  ops.def("rwkv7_strided_gather(Tensor cache, Tensor slot_ids) -> Tensor");
-  ops.impl("rwkv7_strided_gather", torch::kCUDA, &rwkv7_strided_gather);
 
   // Attention ops
   // Compute the attention between an input query and the cached
@@ -851,7 +817,8 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _custom_ar), custom_ar) {
 
   custom_ar.def("free_shared_buffer", &free_shared_buffer);
 #ifdef USE_ROCM
-  // Quick Reduce all-reduce kernels
+TORCH_LIBRARY_FRAGMENT(CONCAT(TORCH_EXTENSION_NAME, _custom_ar), custom_ar) {
+  // Quick Reduce all-reduce kernels (ROCm-only; stays on legacy _C).
   custom_ar.def(
       "qr_all_reduce(int fa, Tensor inp, Tensor out, int quant_level, bool "
       "cast_bf2half) -> ()");
@@ -859,15 +826,13 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _custom_ar), custom_ar) {
 
   custom_ar.def("init_custom_qr", &init_custom_qr);
   custom_ar.def("qr_destroy", &qr_destroy);
-
   custom_ar.def("qr_get_handle", &qr_get_handle);
 
   custom_ar.def("qr_open_handles(int _fa, Tensor[](b!) handles) -> ()");
   custom_ar.impl("qr_open_handles", torch::kCPU, &qr_open_handles);
 
-  // Max input size in bytes
   custom_ar.def("qr_max_size", &qr_max_size);
-#endif
 }
+#endif
 
 REGISTER_EXTENSION(TORCH_EXTENSION_NAME)

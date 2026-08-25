@@ -2,29 +2,36 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
+import contextlib
+import json
 import sys
 import tempfile
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from io import BytesIO, StringIO
-from typing import Any, TypeAlias
+from typing import Any, NoReturn, TypeAlias
 from urllib.parse import urlparse
 
 import aiohttp
 import pybase64 as base64
+import pydantic
 import torch
 from fastapi import UploadFile
 from prometheus_client import start_http_server
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 from pydantic_core.core_schema import ValidationInfo
 from starlette.datastructures import State
+from starlette.responses import JSONResponse
 from tqdm import tqdm
+from urllib3.util import parse_url
 
+import vllm.envs as envs
 from vllm.config import config
+from vllm.connections import HTTPResponseSizeExceededError, global_http_connection
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.openai.api_server import init_app_state
+from vllm.entrypoints.launchers.api_server.entry import init_app_state
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -35,33 +42,48 @@ from vllm.entrypoints.openai.engine.protocol import (
     ErrorResponse,
     OpenAIBaseModel,
 )
-from vllm.entrypoints.openai.speech_to_text.protocol import (
-    TranscriptionRequest,
-    TranscriptionResponse,
-    TranscriptionResponseVerbose,
-    TranslationRequest,
-    TranslationResponse,
-    TranslationResponseVerbose,
-)
 from vllm.entrypoints.pooling.embed.protocol import (
     EmbeddingRequest,
     EmbeddingResponse,
 )
-from vllm.entrypoints.pooling.score.protocol import (
+from vllm.entrypoints.pooling.scoring.protocol import (
     RerankRequest,
     RerankResponse,
     ScoreRequest,
     ScoreResponse,
 )
-from vllm.entrypoints.utils import create_error_response
+from vllm.entrypoints.serve import create_error_response
+from vllm.entrypoints.speech_to_text.transcription.protocol import (
+    TranscriptionRequest,
+    TranscriptionResponse,
+    TranscriptionResponseVerbose,
+)
+from vllm.entrypoints.speech_to_text.translation.protocol import (
+    TranslationRequest,
+    TranslationResponse,
+    TranslationResponseVerbose,
+)
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.reasoning import ReasoningParserManager
 from vllm.utils import random_uuid
 from vllm.utils.argparse_utils import FlexibleArgumentParser
+from vllm.utils.mem_constants import MiB_bytes
 from vllm.version import __version__ as VLLM_VERSION
 
 logger = init_logger(__name__)
+
+
+def _get_audio_download_limit_bytes() -> int:
+    return int(envs.VLLM_MAX_AUDIO_CLIP_FILESIZE_MB * MiB_bytes)
+
+
+def _raise_audio_filesize_limit(size_bytes: int) -> NoReturn:
+    raise VLLMValidationError(
+        "Maximum file size exceeded",
+        parameter="audio_filesize_mb",
+        value=size_bytes / MiB_bytes,
+    )
 
 
 class BatchTranscriptionRequest(TranscriptionRequest):
@@ -178,6 +200,18 @@ class BatchRequestInput(OpenAIBaseModel):
         return TypeAdapter(BatchRequestInputBody).validate_python(value)
 
 
+AllResponse: TypeAlias = (
+    ChatCompletionResponse
+    | EmbeddingResponse
+    | ScoreResponse
+    | RerankResponse
+    | TranscriptionResponse
+    | TranscriptionResponseVerbose
+    | TranslationResponse
+    | TranslationResponseVerbose
+)
+
+
 class BatchResponseData(OpenAIBaseModel):
     # HTTP status code of the response.
     status_code: int = 200
@@ -186,17 +220,7 @@ class BatchResponseData(OpenAIBaseModel):
     request_id: str
 
     # The body of the response.
-    body: (
-        ChatCompletionResponse
-        | EmbeddingResponse
-        | ScoreResponse
-        | RerankResponse
-        | TranscriptionResponse
-        | TranscriptionResponseVerbose
-        | TranslationResponse
-        | TranslationResponseVerbose
-        | None
-    ) = None
+    body: AllResponse | None = None
 
 
 class BatchRequestOutput(OpenAIBaseModel):
@@ -439,46 +463,76 @@ async def write_file(
         await write_local_file(path_or_url, batch_outputs)
 
 
-async def download_bytes_from_url(url: str) -> bytes:
+async def download_bytes_from_url(
+    url: str,
+    allowed_media_domains: list[str] | None = None,
+) -> bytes:
     """
     Download data from a URL or decode from a data URL.
 
     Args:
         url: Either an HTTP/HTTPS URL or a data URL (data:...;base64,...)
+        allowed_media_domains: If set, only HTTP/HTTPS URLs whose hostname
+            is in this list are permitted. data: URLs are not subject to
+            this restriction.
 
     Returns:
         Data as bytes
     """
     parsed = urlparse(url)
 
-    # Handle data URLs (base64 encoded)
+    # Handle data URLs (base64 encoded) - not subject to domain restrictions
     if parsed.scheme == "data":
         # Format: data:...;base64,<base64_data>
         if "," in url:
             header, data = url.split(",", 1)
             if "base64" in header:
+                decoded_size_bytes = len(data.rstrip("=")) * 3 // 4
+                if decoded_size_bytes > _get_audio_download_limit_bytes():
+                    _raise_audio_filesize_limit(decoded_size_bytes)
                 return base64.b64decode(data)
             else:
-                raise ValueError(f"Unsupported data URL encoding: {header}")
+                raise VLLMValidationError(
+                    f"Unsupported data URL encoding: {header}",
+                    parameter="url",
+                )
         else:
-            raise ValueError(f"Invalid data URL format: {url}")
+            raise VLLMValidationError(
+                f"Invalid data URL format: {url}",
+                parameter="url",
+            )
 
     # Handle HTTP/HTTPS URLs
     elif parsed.scheme in ("http", "https"):
-        async with (
-            aiohttp.ClientSession() as session,
-            session.get(url) as resp,
-        ):
-            if resp.status != 200:
-                raise Exception(
-                    f"Failed to download data from URL: {url}. Status: {resp.status}"
+        if allowed_media_domains is not None:
+            url_spec = parse_url(url)
+            if url_spec.hostname not in allowed_media_domains:
+                raise VLLMValidationError(
+                    f"The URL must be from one of the allowed domains: "
+                    f"{allowed_media_domains}. Input URL domain: "
+                    f"{url_spec.hostname}",
+                    parameter="url",
+                    value=url_spec.hostname,
                 )
-            return await resp.read()
+            # Use the normalized URL to prevent parsing discrepancies
+            # between urllib3 and aiohttp (e.g. backslash-@ attacks).
+            url = url_spec.url
+
+        try:
+            return await global_http_connection.async_get_bytes(
+                url,
+                allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
+                max_bytes=_get_audio_download_limit_bytes(),
+            )
+        except HTTPResponseSizeExceededError as exc:
+            _raise_audio_filesize_limit(exc.received_bytes)
 
     else:
-        raise ValueError(
+        raise VLLMValidationError(
             f"Unsupported URL scheme: {parsed.scheme}. "
-            "Supported schemes: http, https, data"
+            "Supported schemes: http, https, data",
+            parameter="url",
+            value=parsed.scheme,
         )
 
 
@@ -513,19 +567,13 @@ async def run_request(
     except Exception as e:
         response = create_error_response(e)
 
-    if isinstance(
-        response,
-        (
-            ChatCompletionResponse,
-            EmbeddingResponse,
-            ScoreResponse,
-            RerankResponse,
-            TranscriptionResponse,
-            TranscriptionResponseVerbose,
-            TranslationResponse,
-            TranslationResponseVerbose,
-        ),
-    ):
+    if isinstance(response, JSONResponse):
+        with contextlib.suppress(pydantic.ValidationError):
+            response = TypeAdapter(AllResponse | ErrorResponse).validate_python(
+                json.loads(response.body)
+            )
+
+    if isinstance(response, AllResponse):
         batch_output = BatchRequestOutput(
             id=f"vllm-{random_uuid()}",
             custom_id=request.custom_id,
@@ -593,7 +641,10 @@ def handle_endpoint_request(
     return run_request(handler_fn, request, tracker)
 
 
-def make_transcription_wrapper(is_translation: bool) -> WrapperFn:
+def make_transcription_wrapper(
+    is_translation: bool,
+    allowed_media_domains: list[str] | None = None,
+) -> WrapperFn:
     """
     Factory function to create a wrapper for transcription/translation handlers.
     The wrapper converts BatchTranscriptionRequest or BatchTranslationRequest
@@ -602,6 +653,8 @@ def make_transcription_wrapper(is_translation: bool) -> WrapperFn:
     Args:
         is_translation: If True, process as translation; otherwise process
             as transcription
+        allowed_media_domains: If set, only URLs from these domains are
+            permitted for HTTP/HTTPS fetches.
 
     Returns:
         A function that takes a handler and returns a wrapped handler
@@ -619,7 +672,10 @@ def make_transcription_wrapper(is_translation: bool) -> WrapperFn:
         ):
             try:
                 # Download data from URL
-                audio_data = await download_bytes_from_url(batch_request_body.file_url)
+                audio_data = await download_bytes_from_url(
+                    batch_request_body.file_url,
+                    allowed_media_domains=allowed_media_domains,
+                )
 
                 # Create a mock file from the downloaded audio data
                 mock_file = UploadFile(
@@ -691,6 +747,8 @@ async def build_endpoint_registry(
     serving_embedding = getattr(state, "serving_embedding", None)
     serving_scores = getattr(state, "serving_scores", None)
 
+    allowed_media_domains = getattr(args, "allowed_media_domains", None)
+
     # Registry of endpoint configurations
     endpoint_registry: dict[str, dict[str, Any]] = {
         "completions": {
@@ -712,14 +770,14 @@ async def build_endpoint_registry(
         "score": {
             "url_matcher": lambda url: url.endswith("/score"),
             "handler_getter": lambda: (
-                serving_scores.create_score if serving_scores is not None else None
+                serving_scores if serving_scores is not None else None
             ),
             "wrapper_fn": None,
         },
         "rerank": {
             "url_matcher": lambda url: url.endswith("/rerank"),
             "handler_getter": lambda: (
-                serving_scores.do_rerank if serving_scores is not None else None
+                serving_scores if serving_scores is not None else None
             ),
             "wrapper_fn": None,
         },
@@ -730,7 +788,10 @@ async def build_endpoint_registry(
                 if openai_serving_transcription is not None
                 else None
             ),
-            "wrapper_fn": make_transcription_wrapper(is_translation=False),
+            "wrapper_fn": make_transcription_wrapper(
+                is_translation=False,
+                allowed_media_domains=allowed_media_domains,
+            ),
         },
         "translations": {
             "url_matcher": lambda url: url == "/v1/audio/translations",
@@ -739,7 +800,10 @@ async def build_endpoint_registry(
                 if openai_serving_translation is not None
                 else None
             ),
-            "wrapper_fn": make_transcription_wrapper(is_translation=True),
+            "wrapper_fn": make_transcription_wrapper(
+                is_translation=True,
+                allowed_media_domains=allowed_media_domains,
+            ),
         },
     }
 
@@ -803,8 +867,7 @@ async def run_batch(
                     error_msg=f"URL {request.url} was used. "
                     "Supported endpoints: /v1/chat/completions, /v1/embeddings,"
                     " /v1/audio/transcriptions, /v1/audio/translations, /score, "
-                    " /rerank. See vllm/entrypoints/openai/api_server.py "
-                    "for supported score/rerank versions.",
+                    " /rerank.",
                 )
             )
 
@@ -815,7 +878,7 @@ async def run_batch(
 
 
 async def main(args: Namespace):
-    from vllm.entrypoints.openai.api_server import build_async_engine_client
+    from vllm.entrypoints.launchers.api_server.entry import build_async_engine_client
     from vllm.usage.usage_lib import UsageContext
 
     validate_run_batch_args(args)

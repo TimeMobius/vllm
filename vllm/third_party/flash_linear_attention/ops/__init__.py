@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Songlin Yang, Yu Zhang
+#
+# This file contains code copied from the flash-linear-attention project.
+# The original source code was licensed under the MIT license and included
+# the following copyright notice:
+# Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
+from .chunk import chunk_gated_delta_rule
+from .fused_gdn_prefill_post_conv import fused_post_conv_prep
+from .fused_recurrent import (
+    fused_recurrent_gated_delta_rule,
+    fused_recurrent_gated_delta_rule_packed_decode,
+)
+from .fused_sigmoid_gating import fused_sigmoid_gating_delta_rule_update
+from .layernorm_guard import RMSNormGated
+from .rwkv7 import (
+    fused_mul_recurrent_rwkv7,
+    fused_mul_recurrent_rwkv7_with_checkpoints,
+    rwkv7_alt_recurrent,
+    rwkv7_alt_recurrent_available,
+    rwkv7_cast_kk_pre,
+    rwkv7_kk_pre,
+    rwkv7_kk_pre_reference,
+    rwkv7_lnx_rkvres_xg,
+    rwkv7_lnx_rkvres_xg_reference,
+    rwkv7_masked_store_triton,
+    rwkv7_mix6,
+    rwkv7_mix6_reference,
+    rwkv7_recurrent_reference,
+    rwkv7_recurrent_reference_with_checkpoints,
+    rwkv7_recurrent_t1,
+    rwkv7_recurrent_t1_exact_direct_cache,
+    rwkv7_recurrent_t1_exact_direct_cache_available,
+    rwkv7_recurrent_t1_exact_output_reduction,
+    rwkv7_recurrent_t1_exact_output_reduction_available,
+    rwkv7_recurrent_t1_exact_update,
+    rwkv7_recurrent_t1_exact_update_available,
+)
+
+__all__ = [
+    "RMSNormGated",
+    "chunk_gated_delta_rule",
+    "fused_recurrent_gated_delta_rule",
+    "fused_recurrent_gated_delta_rule_packed_decode",
+    "fused_post_conv_prep",
+    "fused_sigmoid_gating_delta_rule_update",
+    "fused_mul_recurrent_rwkv7",
+    "fused_mul_recurrent_rwkv7_with_checkpoints",
+    "rwkv7_alt_recurrent",
+    "rwkv7_alt_recurrent_available",
+    "rwkv7_cast_kk_pre",
+    "rwkv7_kk_pre",
+    "rwkv7_kk_pre_reference",
+    "rwkv7_lnx_rkvres_xg",
+    "rwkv7_lnx_rkvres_xg_reference",
+    "rwkv7_mix6",
+    "rwkv7_mix6_reference",
+    "rwkv7_masked_store_triton",
+    "rwkv7_recurrent_reference",
+    "rwkv7_recurrent_t1",
+    "rwkv7_recurrent_t1_exact_direct_cache",
+    "rwkv7_recurrent_t1_exact_direct_cache_available",
+    "rwkv7_recurrent_t1_exact_output_reduction",
+    "rwkv7_recurrent_t1_exact_output_reduction_available",
+    "rwkv7_recurrent_t1_exact_update",
+    "rwkv7_recurrent_t1_exact_update_available",
+    "rwkv7_recurrent_reference_with_checkpoints",
+]

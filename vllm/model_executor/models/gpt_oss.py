@@ -20,11 +20,16 @@ from vllm.distributed import (
     tensor_model_parallel_all_gather,
 )
 from vllm.model_executor.layers.attention import Attention
-from vllm.model_executor.layers.fused_moe import FusedMoE, GateLinear
+from vllm.model_executor.layers.fused_moe import (
+    FusedMoEFactory,
+    fused_moe_make_expert_params_mapping,
+)
 from vllm.model_executor.layers.fused_moe.config import FusedMoEParallelConfig
+from vllm.model_executor.layers.fused_moe.routed_experts import RoutedExperts
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     QKVParallelLinear,
+    ReplicatedLinear,
     RowParallelLinear,
 )
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
@@ -39,6 +44,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
     maybe_remap_kv_scale_name,
+    remap_moe_expert_weights,
 )
 from vllm.model_executor.models.utils import sequence_parallel_chunk
 from vllm.platforms import current_platform
@@ -63,8 +69,21 @@ from .utils import (
     maybe_prefix,
 )
 
+_GPT_OSS_STREAMED_EXPERT_SUFFIX_TO_SHARD = {
+    "w13_weight": "gpt_oss_w13",
+    "w2_weight": "gpt_oss_w2",
+    "w13_bias": "gpt_oss_w13",
+    "w2_bias": "gpt_oss_w2",
+    "w13_weight_scale": "gpt_oss_w13",
+    "w2_weight_scale": "gpt_oss_w2",
+}
+
 
 class OAIAttention(nn.Module):
+    # Override to switch RoPE convention. gpt-oss uses NeoX (chunk halves);
+    # privacy-filter and similar derivatives use GPT-J (interleaved pairs).
+    rope_is_neox_style: bool = True
+
     def __init__(
         self,
         config: GptOssConfig,
@@ -94,7 +113,7 @@ class OAIAttention(nn.Module):
                 "beta_slow": config.rope_parameters["beta_slow"],
                 "truncate": config.rope_parameters.get("truncate", True),
             },
-            is_neox_style=True,
+            is_neox_style=self.rope_is_neox_style,
         )
 
         tp_size = get_tensor_model_parallel_world_size()
@@ -128,9 +147,25 @@ class OAIAttention(nn.Module):
         self.num_local_attention_heads = config.num_attention_heads // tp_size
         self.num_local_key_value_heads = config.num_key_value_heads // tp_size
 
+        self.attn = self._build_attention(
+            config=config,
+            cache_config=cache_config,
+            quant_config=quant_config,
+            prefix=prefix,
+        )
+
+    def _build_attention(
+        self,
+        config: GptOssConfig,
+        cache_config: CacheConfig | None,
+        quant_config: QuantizationConfig | None,
+        prefix: str,
+    ) -> Attention:
+        # Override to swap in an encoder-only attention or alter the
+        # per-layer sliding-window policy.
         # Only apply sliding window to every other layer
         sliding_window = config.sliding_window if self.layer_idx % 2 == 0 else None
-        self.attn = Attention(
+        return Attention(
             self.num_local_attention_heads,
             self.head_dim,
             self.scaling,
@@ -154,6 +189,132 @@ class OAIAttention(nn.Module):
         return output
 
 
+class GptOssRoutedExperts(RoutedExperts):
+    """Load one GPT-OSS expert at a time without assembling the global stack."""
+
+    @staticmethod
+    def _narrow_for_rank(
+        loaded_weight: torch.Tensor,
+        dim: int,
+        rank: int,
+        size: int,
+    ) -> torch.Tensor:
+        start = rank * size
+        available = loaded_weight.shape[dim] - start
+        return loaded_weight.narrow(dim, start, min(size, max(available, 0)))
+
+    @staticmethod
+    def _copy_to_expert(expert_data: torch.Tensor, loaded_weight: torch.Tensor) -> None:
+        if expert_data.numel() == loaded_weight.numel() == 1:
+            expert_data.copy_(loaded_weight.reshape(()))
+            return
+        while loaded_weight.ndim > expert_data.ndim and loaded_weight.shape[-1] == 1:
+            loaded_weight = loaded_weight.squeeze(-1)
+        slices = tuple(slice(0, size) for size in loaded_weight.shape)
+        expert_data[slices].copy_(loaded_weight)
+
+    def _load_expert_bias(
+        self,
+        expert_data: torch.Tensor,
+        loaded_weight: torch.Tensor,
+        shard_id: str,
+    ) -> None:
+        tp_rank = self.moe_config.moe_parallel_config.tp_rank
+        if shard_id == "gpt_oss_w13":
+            loaded_weight = self._narrow_for_rank(
+                loaded_weight, 0, tp_rank, expert_data.shape[0]
+            )
+        elif tp_rank != 0:
+            loaded_weight = torch.zeros_like(loaded_weight)
+        self._copy_to_expert(expert_data, loaded_weight)
+
+    def _load_unquantized_expert(
+        self,
+        expert_data: torch.Tensor,
+        loaded_weight: torch.Tensor,
+        shard_id: str,
+    ) -> None:
+        tp_rank = self.moe_config.moe_parallel_config.tp_rank
+        if shard_id == "gpt_oss_w13":
+            loaded_weight = self._narrow_for_rank(
+                loaded_weight, 1, tp_rank, expert_data.shape[0]
+            )
+            loaded_weight = loaded_weight.t().contiguous()
+        else:
+            loaded_weight = self._narrow_for_rank(
+                loaded_weight, 0, tp_rank, expert_data.shape[1]
+            )
+            loaded_weight = loaded_weight.t().contiguous()
+        self._copy_to_expert(expert_data, loaded_weight)
+
+    def _load_packed_expert(
+        self,
+        expert_data: torch.Tensor,
+        loaded_weight: torch.Tensor,
+        weight_name: str,
+        shard_id: str,
+    ) -> None:
+        tp_rank = self.moe_config.moe_parallel_config.tp_rank
+        is_w13 = shard_id == "gpt_oss_w13"
+        is_weight = weight_name.endswith("_weight")
+        is_partitioned_scale = weight_name.endswith("_weight_scale")
+
+        if is_weight:
+            loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+
+        if is_w13 and (is_weight or is_partitioned_scale):
+            loaded_weight = self._narrow_for_rank(
+                loaded_weight, 0, tp_rank, expert_data.shape[0]
+            )
+        elif not is_w13 and (is_weight or is_partitioned_scale):
+            loaded_weight = self._narrow_for_rank(
+                loaded_weight, -1, tp_rank, expert_data.shape[-1]
+            )
+
+        self._copy_to_expert(expert_data, loaded_weight)
+
+    def weight_loader(
+        self,
+        param: torch.nn.Parameter,
+        loaded_weight: torch.Tensor,
+        weight_name: str,
+        shard_id: str,
+        expert_id: int,
+        return_success: bool = False,
+    ) -> bool | None:
+        if shard_id not in ("gpt_oss_w13", "gpt_oss_w2"):
+            return super().weight_loader(
+                param,
+                loaded_weight,
+                weight_name,
+                shard_id,
+                expert_id,
+                return_success,
+            )
+
+        expert_id = self._map_global_expert_id_to_local_expert_id(expert_id)
+        if expert_id == -1:
+            return False if return_success else None
+
+        expert_data = param.data[expert_id]
+        weight_dtype = getattr(self.quant_method, "weight_dtype", "")
+        quant_method_name = self.quant_method.__class__.__name__
+
+        if weight_name.endswith("_bias"):
+            self._load_expert_bias(expert_data, loaded_weight, shard_id)
+        elif weight_dtype in (
+            "gpt_oss_mxfp4",
+            "mxfp4",
+        ) or quant_method_name in (
+            "CompressedTensorsW4A4Nvfp4MoEMethod",
+            "Nvfp4OnlineMoEMethod",
+        ):
+            self._load_packed_expert(expert_data, loaded_weight, weight_name, shard_id)
+        else:
+            self._load_unquantized_expert(expert_data, loaded_weight, shard_id)
+        return True if return_success else None
+
+
 class MLPBlock(torch.nn.Module):
     def __init__(
         self,
@@ -167,26 +328,30 @@ class MLPBlock(torch.nn.Module):
         quant_config = vllm_config.quant_config
         parallel_config = vllm_config.parallel_config
 
-        self.is_sequence_parallel = parallel_config.use_sequence_parallel_moe
+        self.is_sequence_parallel = (
+            parallel_config.use_sequence_parallel_moe
+            and vllm_config.lora_config is None
+        )
 
         self.layer_idx = layer_idx
         self.num_experts = config.num_local_experts
         self.hidden_size = config.hidden_size
         self.experts_per_token = config.num_experts_per_tok
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
-        self.router = GateLinear(
+        self.router = ReplicatedLinear(
             config.hidden_size,
             config.num_local_experts,
             bias=True,
+            quant_config=None,
             prefix=f"{prefix}.router",
+            return_bias=False,
         )
         assert config.intermediate_size % self.world_size == 0
-        self.experts = FusedMoE(
+        self.experts = FusedMoEFactory(
             num_experts=config.num_local_experts,
             top_k=config.num_experts_per_tok,
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
-            reduce_results=True,
             renormalize=True,
             quant_config=quant_config,
             prefix=f"{prefix}.experts",
@@ -194,6 +359,7 @@ class MLPBlock(torch.nn.Module):
             has_bias=True,
             activation="swigluoai",
             is_sequence_parallel=self.is_sequence_parallel,
+            routed_experts_cls=GptOssRoutedExperts,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -206,7 +372,7 @@ class MLPBlock(torch.nn.Module):
                 self, x[:, : self.hidden_size], self.router.weight, self.router.bias
             )
         else:
-            g, _ = self.router(x)
+            g = self.router(x)
         x = self.experts(hidden_states=x, router_logits=g)[:, : self.hidden_size]
 
         if self.is_sequence_parallel:
@@ -216,6 +382,10 @@ class MLPBlock(torch.nn.Module):
 
 
 class TransformerBlock(torch.nn.Module):
+    # Override to swap attention/MLP without re-implementing the block.
+    attention_cls: type[nn.Module] = OAIAttention
+    mlp_cls: type[nn.Module] = MLPBlock
+
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -228,13 +398,13 @@ class TransformerBlock(torch.nn.Module):
         cache_config = vllm_config.cache_config
 
         self.layer_idx = extract_layer_index(prefix)
-        self.attn = OAIAttention(
+        self.attn = self.attention_cls(
             config,
             prefix=f"{prefix}.attn",
             quant_config=quant_config,
             cache_config=cache_config,
         )
-        self.mlp = MLPBlock(vllm_config, self.layer_idx, prefix=f"{prefix}.mlp")
+        self.mlp = self.mlp_cls(vllm_config, self.layer_idx, prefix=f"{prefix}.mlp")
         self.input_layernorm = RMSNorm(config.hidden_size, eps=1e-5)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=1e-5)
 
@@ -260,6 +430,9 @@ class TransformerBlock(torch.nn.Module):
 
 @support_torch_compile
 class GptOssModel(nn.Module, EagleModelMixin):
+    # Override to swap in an alternative TransformerBlock subclass.
+    block_cls: type[nn.Module] = TransformerBlock
+
     def __init__(
         self,
         *,
@@ -276,7 +449,7 @@ class GptOssModel(nn.Module, EagleModelMixin):
         )
         self.start_layer, self.end_layer, self.layers = make_layers(
             self.config.num_hidden_layers,
-            lambda prefix: TransformerBlock(
+            lambda prefix: self.block_cls(
                 vllm_config,
                 prefix=prefix,
                 quant_config=self.quant_config,
@@ -329,7 +502,7 @@ class GptOssModel(nn.Module, EagleModelMixin):
         # Params for weights, weight scales, activation scales
         # (param_name, weight_name, expert_id, shard_id)
         # NOTE: this is only used for quark.
-        return FusedMoE.make_expert_params_mapping(
+        return fused_moe_make_expert_params_mapping(
             self,
             ckpt_gate_proj_name="w1",
             ckpt_down_proj_name="w2",
@@ -374,9 +547,13 @@ class GptOssModel(nn.Module, EagleModelMixin):
         tp_rank_start = tp_rank * per_rank_intermediate_size
         tp_rank_end = min((tp_rank + 1) * per_rank_intermediate_size, intermediate_size)
 
-        for name, weight in weights:
+        # Use centralized weight remapping for MoE expert parameters
+        for name, weight in remap_moe_expert_weights(weights, params_dict):
             # Skip layers on other devices.
             if is_pp_missing_parameter(name, self):
+                continue
+
+            if self._try_load_streamed_expert(name, weight, params_dict, loaded_params):
                 continue
 
             if ".w13_weight_scale" in name:
@@ -557,6 +734,14 @@ class GptOssModel(nn.Module, EagleModelMixin):
                 pcp_rank=get_pcp_group().rank_in_group,
             )
 
+        def _is_mxfp4(weight_dtype: str | None) -> bool:
+            """Return True for any MXFP4 weight-dtype variant.
+
+            Covers "gpt_oss_mxfp4" (GptOssMxfp4MoEMethod) and "mxfp4"
+            (QuarkMoEMethod with fp4 weights) and any future variants.
+            """
+            return weight_dtype is not None and "mxfp4" in weight_dtype
+
         def _get_moe_weight_dtype(layer_id: int = 0) -> str | None:
             """Helper function to get MoE quantization weight dtype.
 
@@ -567,15 +752,15 @@ class GptOssModel(nn.Module, EagleModelMixin):
             Returns:
                 Weight dtype string (e.g., "mxfp4", "fp8") or None if not available
             """
-            if hasattr(self.layers[layer_id].mlp.experts.quant_method, "weight_dtype"):
-                return self.layers[layer_id].mlp.experts.quant_method.weight_dtype
+            if hasattr(self.layers[layer_id].mlp.experts._quant_method, "weight_dtype"):
+                return self.layers[layer_id].mlp.experts._quant_method.weight_dtype
             return None
 
         intermediate_size = self.config.intermediate_size
 
         moe_weight_dtype = _get_moe_weight_dtype(layer_id=0)
 
-        if moe_weight_dtype == "mxfp4":
+        if _is_mxfp4(moe_weight_dtype):
             # MXFP4 requires OCP_MX_BLOCK_SIZE alignment
             intermediate_size_block = intermediate_size // OCP_MX_BLOCK_SIZE
             per_rank_intermediate_size_block = cdiv(intermediate_size_block, tp_size)
@@ -589,6 +774,7 @@ class GptOssModel(nn.Module, EagleModelMixin):
         tp_rank_start = tp_rank * per_rank_intermediate_size
         tp_rank_end = min((tp_rank + 1) * per_rank_intermediate_size, intermediate_size)
         expert_params_mapping = self.get_expert_mapping()
+        # Streamed per-expert reload is intentionally unsupported for Quark.
         for name, loaded_weight in weights:
             if is_pp_missing_parameter(name, self):
                 continue
@@ -620,53 +806,14 @@ class GptOssModel(nn.Module, EagleModelMixin):
                         "an unexpected condition. Please open an issue if encountered."
                     )
 
+                # The MoE refactor (#41184) moved expert params under
+                # `mlp.experts.routed_experts.*`; remap the legacy checkpoint
+                # name so keys like w2_bias resolve against params_dict.
+                fused_name = fused_name.replace(
+                    ".mlp.experts.", ".mlp.experts.routed_experts."
+                )
+
                 moe_quant_method = _get_moe_weight_dtype(layer_id=layer_id)
-
-            def kv_cache_scale_loader(
-                quant_config: QuantizationConfig,
-                name: str,
-                params_dict: dict[str, typing.Any],
-                weight: torch.Tensor,
-                default_weight_loader: Callable[..., None],
-                loaded_params: set[str],
-            ) -> tuple[bool, set[str]]:
-                """
-                Load KV cache output scales.
-                Returns:
-                    Tuple of (bool, set):
-                    - bool: True if KV-cache scale was loaded into loaded_params
-                    - set: Updated set of loaded_params if True else the original set
-                """
-                # load explicit cached KV output scale from quant_config
-                if quant_config is not None and (
-                    scale_name := quant_config.get_cache_scale(name)
-                ):
-                    param = params_dict[scale_name]
-                    weight_loader = getattr(
-                        param, "weight_loader", default_weight_loader
-                    )
-                    if weight.numel() != 1:
-                        raise ValueError(
-                            f"KV cache scale '{scale_name}' is expected to be a "
-                            f"scalar, but got a tensor of shape {weight.shape}."
-                        )
-                    # Ensure weight is a scalar before passing to loader.
-                    weight_loader(param, weight.flatten()[0])
-                    loaded_params.add(scale_name)
-                    return True, loaded_params
-
-                return False, loaded_params
-
-            load_kv_cache_scale_completed, loaded_params = kv_cache_scale_loader(
-                self.quant_config,
-                name,
-                params_dict,
-                loaded_weight,
-                default_weight_loader,
-                loaded_params,
-            )
-            if load_kv_cache_scale_completed:
-                continue
 
             if (
                 all(key in name for key in ["input_scale", "mlp.experts"])
@@ -679,7 +826,7 @@ class GptOssModel(nn.Module, EagleModelMixin):
                 continue
 
             # Unified handler for mxfp4 weights and scales
-            elif moe_quant_method == "mxfp4" and any(
+            elif _is_mxfp4(moe_quant_method) and any(
                 name.endswith(suffix)
                 for suffix in [
                     ".w13_weight_scale",
@@ -1003,9 +1150,16 @@ class GptOssModel(nn.Module, EagleModelMixin):
         tp_rank_start = tp_rank * per_rank_intermediate_size
         tp_rank_end = min((tp_rank + 1) * per_rank_intermediate_size, intermediate_size)
 
-        for name, weight in weights:
+        # Use centralized weight remapping for MoE expert parameters.
+        # The MoERunner refactor moved expert params under
+        # `mlp.experts.routed_experts.*`; this remaps checkpoint names so
+        # MoE weight/bias keys resolve against params_dict.
+        for name, weight in remap_moe_expert_weights(weights, params_dict):
             # Skip layers on other devices.
             if is_pp_missing_parameter(name, self):
+                continue
+
+            if self._try_load_streamed_expert(name, weight, params_dict, loaded_params):
                 continue
 
             if ".w13_weight" in name:
@@ -1086,6 +1240,59 @@ class GptOssModel(nn.Module, EagleModelMixin):
             loaded_params.add(name)
         return loaded_params
 
+    @staticmethod
+    def _get_streamed_expert_info(
+        name: str,
+        params_dict: dict[str, torch.nn.Parameter],
+    ) -> tuple[int, str, str] | None:
+        """Parse ``...experts.<expert_id>.<fused_param>`` checkpoint keys."""
+        if ".mlp.experts." not in name:
+            return None
+        suffix = name.rsplit(".", 1)[-1]
+        shard_id = _GPT_OSS_STREAMED_EXPERT_SUFFIX_TO_SHARD.get(suffix)
+        if shard_id is None:
+            return None
+
+        prefix, expert_suffix = name.split(".mlp.experts.", maxsplit=1)
+        expert_id_str, separator, param_suffix = expert_suffix.partition(".")
+        if not separator or not expert_id_str.isdigit():
+            return None
+        expert_id = int(expert_id_str)
+        for base_layer_prefix in ("", "base_layer."):
+            fused_name = (
+                f"{prefix}.mlp.experts.{base_layer_prefix}routed_experts.{param_suffix}"
+            )
+            if fused_name in params_dict:
+                return expert_id, fused_name, shard_id
+        return None
+
+    @classmethod
+    def _try_load_streamed_expert(
+        cls,
+        name: str,
+        loaded_weight: torch.Tensor,
+        params_dict: dict[str, torch.nn.Parameter],
+        loaded_params: set[str],
+    ) -> bool:
+        expert_info = cls._get_streamed_expert_info(name, params_dict)
+        if expert_info is None:
+            return False
+
+        expert_id, fused_name, shard_id = expert_info
+        param = params_dict[fused_name]
+        weight_loader = typing.cast(Callable[..., bool], param.weight_loader)
+        success = weight_loader(
+            param,
+            loaded_weight,
+            weight_name=fused_name,
+            shard_id=shard_id,
+            expert_id=expert_id,
+            return_success=True,
+        )
+        if success:
+            loaded_params.add(fused_name)
+        return True
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
@@ -1102,7 +1309,7 @@ class GptOssModel(nn.Module, EagleModelMixin):
         head_start = tp_rank * heads_per_rank
 
         ep_size = get_ep_group().world_size
-        ep_rank = get_ep_group().rank
+        ep_rank = get_ep_group().rank_in_group
         num_experts = self.config.num_local_experts
         experts_per_rank = num_experts // ep_size
         ep_rank_start = ep_rank * experts_per_rank
@@ -1113,8 +1320,22 @@ class GptOssModel(nn.Module, EagleModelMixin):
             if hasattr(self.config, "quantization_config")
             else None
         )
-
+        # Normalize the checkpoint's quant_method to the internal name.
+        # Note: there are three places where "mxfp4" -> "gpt_oss_mxfp4"
+        # normalization occurs, each serving a different data path:
+        #   1. GptOssMxfp4Config.override_quantization_method() — sets
+        #      ModelConfig.quantization (used to select the QuantizationConfig
+        #      class at model init time), reading from model_arch_config which
+        #      is a snapshot taken before verify_and_update_model_config runs.
+        #   2. GptOssForCausalLMConfig.verify_and_update_model_config() —
+        #      patches hf_config.quantization_config in-place (a separate copy
+        #      of the dict from model_arch_config) for later hf_config lookups.
+        #   3. Here — reads directly from self.config (the raw HF config) which
+        #      may still carry the original "mxfp4" string from the checkpoint.
         if quant_method == "mxfp4":
+            quant_method = "gpt_oss_mxfp4"
+
+        if quant_method == "gpt_oss_mxfp4":
             return self._load_weights_mxfp4(
                 ep_rank_end,
                 ep_rank_start,
@@ -1218,8 +1439,5 @@ class GptOssForCausalLM(
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),
-        )
+        loader = AutoWeightsLoader(self)
         return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)

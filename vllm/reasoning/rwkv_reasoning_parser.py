@@ -85,7 +85,7 @@ class RWKVReasoningParser(ReasoningParser):
 
         end_index = model_output.find(self.end_token)
         if end_index >= 0:
-            reasoning = model_output[:end_index]
+            reasoning = model_output[:end_index].rstrip()
             content = model_output[end_index + len(self.end_token) :] or None
         elif has_start or self.thinking_enabled:
             reasoning = model_output

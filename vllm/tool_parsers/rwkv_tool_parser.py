@@ -39,8 +39,8 @@ class RWKVToolParser(ToolParser):
     tool_call_start_token = "<tool_call>"
     tool_call_end_token = "</tool_call>"
 
-    def __init__(self, tokenizer: TokenizerLike):
-        super().__init__(tokenizer)
+    def __init__(self, tokenizer: TokenizerLike, tools: list[Any] | None = None):
+        super().__init__(tokenizer, tools)
 
         self.current_tool_index = 0
         self.emitted_content_len = 0

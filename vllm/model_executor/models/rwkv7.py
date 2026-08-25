@@ -24,7 +24,7 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.layers.activation import ReLUSquaredActivation
-from vllm.model_executor.layers.fla.ops import (
+from vllm.third_party.flash_linear_attention.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
     rwkv7_alt_recurrent,
@@ -68,6 +68,7 @@ from vllm.model_executor.models.interfaces import (
 from vllm.sequence import IntermediateTensors
 from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
+from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 
 from .utils import AutoWeightsLoader, PPMissingLayer, make_layers, maybe_prefix
 
@@ -1997,8 +1998,8 @@ class RWKV7Block(nn.Module, MambaBase):
         )
 
     @property
-    def mamba_type(self) -> str:
-        return "linear_attention"
+    def mamba_type(self) -> MambaAttentionBackendEnum:
+        return MambaAttentionBackendEnum.LINEAR
 
     def get_state_dtype(self) -> tuple[torch.dtype, ...]:
         # The token-shift values are always the previous token's model-dtype

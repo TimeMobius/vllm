@@ -32,7 +32,7 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.engine.arg_utils import EngineArgs
 from vllm.forward_context import set_forward_context
-from vllm.model_executor.layers.fla.ops import (
+from vllm.third_party.flash_linear_attention.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
     rwkv7_alt_recurrent,
@@ -54,7 +54,7 @@ from vllm.model_executor.layers.fla.ops import (
     rwkv7_recurrent_t1_exact_update,
     rwkv7_recurrent_t1_exact_update_available,
 )
-from vllm.model_executor.layers.fla.ops.rwkv7 import (
+from vllm.third_party.flash_linear_attention.ops.rwkv7 import (
     _rwkv7_mix6_use_triton,
     _rwkv7_recurrent_t1_reference,
 )
@@ -78,6 +78,7 @@ from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
+from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.llm_engine import LLMEngine
 
@@ -1668,6 +1669,8 @@ def test_rwkv7_block_forward_without_metadata():
         try:
             block0 = RWKV7Block(config=config, layer_idx=0, prefix="model.layers.0")
             block1 = RWKV7Block(config=config, layer_idx=1, prefix="model.layers.1")
+            assert block0.mamba_type is MambaAttentionBackendEnum.LINEAR
+            assert block1.mamba_type is MambaAttentionBackendEnum.LINEAR
             _initialize_module_parameters(block0)
             _initialize_module_parameters(block1)
 
