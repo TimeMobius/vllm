@@ -12,6 +12,20 @@ if not current_platform.is_cuda_alike():
 from vllm.v1.worker.block_table import ComputeSlotMappingKernel
 
 
+def test_kimi_warmup_ignores_non_kimi_static_context() -> None:
+    from types import SimpleNamespace
+
+    from vllm.model_executor.warmup.kimi_k3_triton_warmup import _get_kda_layer
+
+    worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            compilation_config=SimpleNamespace(static_forward_context={})
+        )
+    )
+
+    assert _get_kda_layer(worker) is None
+
+
 @pytest.mark.parametrize(
     ("kv_cache_block_size", "blocks_per_kv_block", "block_size", "block_size_rep"),
     [

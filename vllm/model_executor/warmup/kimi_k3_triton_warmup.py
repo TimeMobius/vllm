@@ -19,8 +19,6 @@ logger = init_logger(__name__)
 
 
 def _get_kda_layer(worker: Worker) -> KimiK3DeltaAttention | None:
-    from vllm.models.kimi_k3.nvidia.kda import KimiK3DeltaAttention
-
     compilation_config = getattr(
         worker.model_runner,
         "compilation_config",
@@ -29,14 +27,22 @@ def _get_kda_layer(worker: Worker) -> KimiK3DeltaAttention | None:
     static_context = getattr(compilation_config, "static_forward_context", None)
     if not isinstance(static_context, dict):
         return None
-    return next(
+
+    candidate = next(
         (
             layer
             for layer in static_context.values()
-            if isinstance(layer, KimiK3DeltaAttention)
+            if type(layer).__module__ == "vllm.models.kimi_k3.nvidia.kda"
+            and type(layer).__name__ == "KimiK3DeltaAttention"
         ),
         None,
     )
+    if candidate is None:
+        return None
+
+    from vllm.models.kimi_k3.nvidia.kda import KimiK3DeltaAttention
+
+    return candidate if isinstance(candidate, KimiK3DeltaAttention) else None
 
 
 def _warm_attn_res(worker: Worker) -> None:
@@ -104,7 +110,7 @@ def _warm_recurrent_kda(
         return
 
     kv_cache = layer.kv_cache
-    if not isinstance(kv_cache, (list, tuple)) or len(kv_cache) < 2:
+    if not isinstance(kv_cache, list | tuple) or len(kv_cache) < 2:
         return
     state = kv_cache[1]
     if not isinstance(state, torch.Tensor) or not state.numel():
