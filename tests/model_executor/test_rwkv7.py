@@ -32,6 +32,23 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.engine.arg_utils import EngineArgs
 from vllm.forward_context import set_forward_context
+from vllm.model_executor.layers.mamba.mamba_utils import (
+    get_conv_copy_spec,
+    get_temporal_copy_spec,
+)
+from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
+from vllm.model_executor.models.rwkv7 import (
+    RWKV7Attention,
+    RWKV7Block,
+    RWKV7FeedForward,
+    RWKV7ForCausalLM,
+    RWKV7Model,
+    RWKV7PerfFlags,
+    _load_rwkv7_perf_flags,
+    _rwkv7_should_compile,
+    rwkv7_final_norm,
+)
+from vllm.sampling_params import SamplingParams
 from vllm.third_party.flash_linear_attention.ops import (
     fused_mul_recurrent_rwkv7,
     fused_mul_recurrent_rwkv7_with_checkpoints,
@@ -55,26 +72,10 @@ from vllm.third_party.flash_linear_attention.ops import (
     rwkv7_recurrent_t1_exact_update_available,
 )
 from vllm.third_party.flash_linear_attention.ops.rwkv7 import (
+    _rwkv7_exact_recurrent_t1_direct_cache_enabled,
     _rwkv7_mix6_use_triton,
     _rwkv7_recurrent_t1_reference,
 )
-from vllm.model_executor.layers.mamba.mamba_utils import (
-    get_conv_copy_spec,
-    get_temporal_copy_spec,
-)
-from vllm.model_executor.models.config import RWKV7ForCausalLMConfig
-from vllm.model_executor.models.rwkv7 import (
-    RWKV7Attention,
-    RWKV7Block,
-    RWKV7FeedForward,
-    RWKV7ForCausalLM,
-    RWKV7Model,
-    RWKV7PerfFlags,
-    _load_rwkv7_perf_flags,
-    _rwkv7_should_compile,
-    rwkv7_final_norm,
-)
-from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.configs.rwkv7 import RWKV7Config
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
@@ -621,6 +622,32 @@ def _make_stable_rwkv7_recurrent_inputs(
     }
 
 
+def test_rwkv7_fused_recurrent_t1_defaults_match_model_dispatch(monkeypatch):
+    monkeypatch.delenv("RWKV7_USE_FUSED_RECURRENT_T1", raising=False)
+    assert rwkv7_model._rwkv7_env_flag_enabled(
+        "RWKV7_USE_FUSED_RECURRENT_T1", default=True
+    )
+
+    monkeypatch.setenv("RWKV7_USE_FUSED_RECURRENT_T1", "0")
+    assert not rwkv7_model._rwkv7_env_flag_enabled(
+        "RWKV7_USE_FUSED_RECURRENT_T1", default=True
+    )
+
+
+def test_rwkv7_direct_cache_flag_is_enabled_in_model_and_op_layers(monkeypatch):
+    monkeypatch.delenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", raising=False)
+    assert rwkv7_model._rwkv7_env_flag_enabled(
+        "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", default=True
+    )
+    assert _rwkv7_exact_recurrent_t1_direct_cache_enabled()
+
+    monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "0")
+    assert not rwkv7_model._rwkv7_env_flag_enabled(
+        "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", default=True
+    )
+    assert not _rwkv7_exact_recurrent_t1_direct_cache_enabled()
+
+
 def test_rwkv7_perf_flags_default_to_verified_cuda_paths(monkeypatch):
     for name in (
         "RWKV7_USE_FUSED_MIX6",
@@ -689,7 +716,7 @@ def test_rwkv7_verified_optimizations_default_on_and_explicitly_disabled(
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
-    monkeypatch.setenv("RWKV7_USE_FUSED_RECURRENT_T1", "1")
+    monkeypatch.delenv("RWKV7_USE_FUSED_RECURRENT_T1", raising=False)
     torch.manual_seed(7)
     batch_size, num_heads, head_dim, value_dim = 3, 4, 64, 64
     state = torch.randn(

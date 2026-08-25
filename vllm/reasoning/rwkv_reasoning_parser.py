@@ -20,6 +20,16 @@ class RWKVReasoningParser(ReasoningParser):
     end_token = "</think>"
     reasoning_markers_require_text = True
 
+    @property
+    def reasoning_start_str(self) -> str:
+        """Return the marker that starts an RWKV reasoning block."""
+        return self.start_token
+
+    @property
+    def reasoning_end_str(self) -> str:
+        """Return the marker that ends an RWKV reasoning block."""
+        return self.end_token
+
     def __init__(self, tokenizer: TokenizerLike, *args, **kwargs):
         super().__init__(tokenizer, *args, **kwargs)
 

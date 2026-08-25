@@ -193,9 +193,9 @@ def rwkv7_recurrent_t1(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fuse the T=1 recurrent update and output reduction.
 
-    This is deliberately opt-in while it is being characterized.  The
-    ``RWKV7_USE_FUSED_RECURRENT_T1`` switch lets the normal reference/alternate
-    paths remain available for rollback and A/B benchmarking.
+    The optimized Triton path is enabled by default.  Setting
+    ``RWKV7_USE_FUSED_RECURRENT_T1=0`` keeps the normal reference/alternate
+    paths available for rollback and A/B benchmarking.
     """
     if recurrent_state.ndim != 4:
         raise ValueError(
@@ -206,7 +206,7 @@ def rwkv7_recurrent_t1(
     tensors = (recurrent_state, w, kk, a, k, v, r)
     if (
         not HAS_TRITON
-        or os.getenv("RWKV7_USE_FUSED_RECURRENT_T1", "0") != "1"
+        or os.getenv("RWKV7_USE_FUSED_RECURRENT_T1", "1") != "1"
         or recurrent_state.device.type != "cuda"
         or any(t.dtype != torch.float32 or not t.is_contiguous() for t in tensors)
     ):

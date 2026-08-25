@@ -3,6 +3,8 @@
 
 import pytest
 
+import vllm.config.reasoning as reasoning_config_module
+from vllm.config.reasoning import ReasoningConfig
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 from vllm.reasoning import ReasoningParser, ReasoningParserManager
 
@@ -89,6 +91,30 @@ def _extract_streaming(
         previous_token_ids = current_token_ids
 
     return reasoning or None, content or None
+
+
+def test_rwkv_parser_exposes_reasoning_markers_for_config(tokenizer):
+    parser_cls = ReasoningParserManager.get_reasoning_parser("rwkv")
+    parser = parser_cls(tokenizer)
+
+    assert parser.reasoning_start_str == "<think>"
+    assert parser.reasoning_end_str == "</think>"
+
+
+def test_rwkv_reasoning_config_auto_initializes_token_ids(tokenizer, monkeypatch):
+    monkeypatch.setattr(
+        reasoning_config_module,
+        "cached_tokenizer_from_config",
+        lambda model_config: tokenizer,
+    )
+    config = ReasoningConfig(reasoning_parser="rwkv")
+
+    config.initialize_token_ids(model_config=object())
+
+    assert config.enabled
+    assert config.reasoning_start_token_ids == [1, 3, 4]
+    assert config.reasoning_end_token_ids == [2, 3, 4]
+    assert config.natural_reasoning_end_token_ids == [2, 3, 4]
 
 
 def test_rwkv_parser_is_registered(tokenizer):
