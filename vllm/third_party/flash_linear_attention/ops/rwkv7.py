@@ -35,7 +35,7 @@ def _rwkv7_exact_recurrent_t1_output_reduction_enabled() -> bool:
 
 
 def _rwkv7_exact_recurrent_t1_direct_cache_enabled() -> bool:
-    value = os.getenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "0")
+    value = os.getenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "1")
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 

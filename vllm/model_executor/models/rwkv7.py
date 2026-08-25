@@ -389,7 +389,7 @@ def _rwkv7_shift_cache_dtype(model_dtype: torch.dtype) -> torch.dtype:
     layout is fixed during engine initialization.
     """
     if _rwkv7_env_flag_enabled(
-        "RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", default=False
+        "RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", default=True
     ) and model_dtype in (torch.bfloat16, torch.float16):
         return model_dtype
     return RWKV7_STATE_DTYPE
@@ -1187,13 +1187,13 @@ class RWKV7Attention(nn.Module):
         """
         if not (
             _rwkv7_env_flag_enabled(
-                "RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", default=False
+                "RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", default=True
             )
             and xr.is_cuda
             and (
                 xr.shape[0] == 1
                 or _rwkv7_env_flag_enabled(
-                    "RWKV7_USE_MULTISTREAM_BULK_DECODE", default=False
+                    "RWKV7_USE_MULTISTREAM_BULK_DECODE", default=True
                 )
             )
             and xr.device == xk.device == xv.device
@@ -1332,13 +1332,13 @@ class RWKV7Attention(nn.Module):
             use_aux_multistream = (
                 allow_decode_multistream
                 and _rwkv7_env_flag_enabled(
-                    "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", default=False
+                    "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", default=True
                 )
                 and xr.is_cuda
                 and (
                     xr.shape[0] == 1
                     or _rwkv7_env_flag_enabled(
-                        "RWKV7_USE_MULTISTREAM_BULK_DECODE", default=False
+                        "RWKV7_USE_MULTISTREAM_BULK_DECODE", default=True
                     )
                 )
                 and xr.device
@@ -1395,7 +1395,7 @@ class RWKV7Attention(nn.Module):
         v = v.view(-1, self.local_num_heads, self.head_v_dim)
 
         if (
-            _rwkv7_env_flag_enabled("RWKV7_USE_FUSED_CAST_KK_PRE", default=False)
+            _rwkv7_env_flag_enabled("RWKV7_USE_FUSED_CAST_KK_PRE", default=True)
             and self.head_dim == self.head_v_dim == 64
         ):
             r, w, k, v, kk, a = rwkv7_cast_kk_pre(
@@ -2578,7 +2578,7 @@ class RWKV7Block(nn.Module, MambaBase):
                 self._uses_full_cudagraphs
                 and not cache_all
                 and _rwkv7_env_flag_enabled(
-                    "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", default=False
+                    "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", default=True
                 )
                 and rwkv7_recurrent_t1_exact_direct_cache_available()
                 and recurrent_cache.is_cuda

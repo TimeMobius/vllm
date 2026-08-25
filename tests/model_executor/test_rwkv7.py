@@ -666,6 +666,27 @@ def test_rwkv7_perf_flags_from_env(monkeypatch):
     assert flags.use_cached_fp32_params is True
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE",
+        "RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE",
+        "RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS",
+        "RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS",
+        "RWKV7_USE_MULTISTREAM_BULK_DECODE",
+        "RWKV7_USE_FUSED_CAST_KK_PRE",
+    ],
+)
+def test_rwkv7_verified_optimizations_default_on_and_explicitly_disabled(
+    monkeypatch, name
+):
+    monkeypatch.delenv(name, raising=False)
+    assert rwkv7_model._rwkv7_env_flag_enabled(name, default=True)
+
+    monkeypatch.setenv(name, "0")
+    assert not rwkv7_model._rwkv7_env_flag_enabled(name, default=True)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
     monkeypatch.setenv("RWKV7_USE_FUSED_RECURRENT_T1", "1")
@@ -704,7 +725,7 @@ def test_rwkv7_recurrent_t1_triton_matches_reference(monkeypatch):
 def test_rwkv7_recurrent_t1_exact_direct_cache_matches_reference(
     monkeypatch, batch_size, full_fusion
 ):
-    monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "1")
+    monkeypatch.delenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", raising=False)
     monkeypatch.setenv(
         "RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION", "1" if full_fusion else "0"
     )
@@ -773,7 +794,7 @@ def test_rwkv7_recurrent_t1_exact_direct_cache_full_fusion_matches_over_steps(
     monkeypatch, batch_size
 ):
     """Protect against exact-but-single-step-only cache fusion regressions."""
-    monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", "1")
+    monkeypatch.delenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", raising=False)
     monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION", "1")
     num_slots, num_heads, head_dim, value_dim = 257, 4, 64, 64
     torch.manual_seed(907 + batch_size)
@@ -2036,9 +2057,9 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
                 for _ in range(3)
             )
 
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "0")
             reference = attention._project_rkv_direct(*inputs)
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
             for _ in range(4):
                 actual = attention._project_rkv_direct(*inputs)
                 torch.cuda.synchronize()
@@ -2059,13 +2080,13 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
                 dtype=torch.bfloat16,
                 generator=generator,
             )
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "0")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "0")
             reference = attention._project_recurrent_inputs(
                 hidden_states, delta, v_first=None
             )
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
             for _ in range(4):
                 actual = attention._project_recurrent_inputs(
                     hidden_states,
@@ -2091,13 +2112,13 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
                 dtype=torch.bfloat16,
                 generator=generator,
             )
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "0")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "0")
             reference = layer_one_attention._project_recurrent_inputs(
                 hidden_states, delta, v_first=v_first
             )
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
             for _ in range(4):
                 actual = layer_one_attention._project_recurrent_inputs(
                     hidden_states,
@@ -2120,15 +2141,15 @@ def test_rwkv7_multistream_rkv_projection_preserves_bits(monkeypatch):
                 8, config.hidden_size, device="cuda", dtype=torch.bfloat16,
                 generator=generator,
             )
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
-            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_BULK_DECODE", raising=False)
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "0")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "0")
+            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_BULK_DECODE", "0")
             bulk_reference = layer_one_attention._project_recurrent_inputs(
                 bulk_hidden, bulk_delta, v_first=v_first.expand(8, -1)
             )
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", "1")
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", "1")
-            monkeypatch.setenv("RWKV7_USE_MULTISTREAM_BULK_DECODE", "1")
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_RKV_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_AUX_PROJECTIONS", raising=False)
+            monkeypatch.delenv("RWKV7_USE_MULTISTREAM_BULK_DECODE", raising=False)
             bulk_actual = layer_one_attention._project_recurrent_inputs(
                 bulk_hidden, bulk_delta, v_first=v_first.expand(8, -1),
                 allow_decode_multistream=True,
@@ -3073,7 +3094,7 @@ def test_rwkv7_block_can_use_model_dtype_shift_cache(monkeypatch, model_dtype):
     the recurrent operator's arithmetic contract rather than only eliminate
     the lossless shift-state conversion.
     """
-    monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "1")
+    monkeypatch.delenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", raising=False)
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
     with set_current_vllm_config(vllm_config):
@@ -3099,7 +3120,7 @@ def test_rwkv7_block_can_use_model_dtype_shift_cache(monkeypatch, model_dtype):
 
 def test_rwkv7_model_dtype_shift_cache_preserves_decode_bits(monkeypatch):
     """BF16 shift storage is bitwise equivalent to the legacy FP32 round trip."""
-    monkeypatch.delenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", raising=False)
+    monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "0")
     config = _make_config()
     vllm_config = VllmConfig(device_config=DeviceConfig("cpu"))
     with set_current_vllm_config(vllm_config):
@@ -3128,7 +3149,7 @@ def test_rwkv7_model_dtype_shift_cache_preserves_decode_bits(monkeypatch):
                 torch.randn(1, config.hidden_size, dtype=torch.bfloat16).float(),
             )
 
-            monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "1")
+            monkeypatch.delenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", raising=False)
             candidate = RWKV7Block(
                 config=config, layer_idx=0, prefix="model.layers.candidate"
             ).to(dtype=torch.bfloat16)
@@ -3187,7 +3208,7 @@ def test_rwkv7_model_dtype_shift_cache_preserves_decode_bits(monkeypatch):
 @pytest.mark.parametrize("model_dtype", [torch.bfloat16, torch.float16])
 def test_rwkv7_mamba_state_spec_uses_model_dtype_shift_cache(monkeypatch, model_dtype):
     """The pre-allocation cache spec must match the live block's layout."""
-    monkeypatch.setenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", "1")
+    monkeypatch.delenv("RWKV7_USE_MODEL_DTYPE_SHIFT_CACHE", raising=False)
     vllm_config = SimpleNamespace(model_config=SimpleNamespace(dtype=model_dtype))
     assert RWKV7ForCausalLM.get_mamba_state_dtype_from_config(vllm_config) == (
         model_dtype,
