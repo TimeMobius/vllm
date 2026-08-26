@@ -570,6 +570,7 @@ __global__ void rwkv7_recurrent_t1_exact_cache_update_reduce_kernel(
   }
 }
 
+template <int kOutputVector, int kThreadsX>
 __global__ void rwkv7_recurrent_t1_exact_cache_full_fusion_kernel(
     float* __restrict__ cache, const int64_t* __restrict__ slot_ids,
     const float* __restrict__ exp_w, const float* __restrict__ kk,
@@ -582,9 +583,7 @@ __global__ void rwkv7_recurrent_t1_exact_cache_full_fusion_kernel(
   // exact `sa` reduction, state update, and output reduction use one cache read
   // and one cache write without register spilling. The arithmetic and both
   // reduction trees deliberately preserve the existing exact-kernel contracts.
-  constexpr int kOutputVector = 4;
   constexpr int kHeadDim = 64;
-  constexpr int kThreadsX = 32;
   constexpr int kThreadsY = 4;
   __shared__ float shared[kThreadsY][kThreadsX][kOutputVector];
   __shared__ float original_state[kHeadDim][kThreadsX][kOutputVector];
@@ -709,6 +708,14 @@ __global__ void rwkv7_recurrent_t1_exact_cache_full_fusion_kernel(
   }
 }
 
+bool rwkv7_recurrent_t1_exact_cache_wide_enabled() {
+  const char* value = std::getenv("RWKV7_USE_EXACT_RECURRENT_T1_WIDE_CTA");
+  return value == nullptr ||
+         (std::string(value) == "1" || std::string(value) == "true" ||
+          std::string(value) == "TRUE" || std::string(value) == "on" ||
+          std::string(value) == "ON");
+}
+
 bool rwkv7_recurrent_t1_exact_cache_full_fusion_enabled() {
   const char* value = std::getenv("RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION");
   return value == nullptr ||
@@ -766,12 +773,27 @@ torch::Tensor rwkv7_recurrent_t1_exact_direct_cache(
       (output_numel + outputs_per_block - 1) / outputs_per_block;
   auto stream = at::cuda::getCurrentCUDAStream();
   if (rwkv7_recurrent_t1_exact_cache_full_fusion_enabled()) {
-    rwkv7_recurrent_t1_exact_cache_full_fusion_kernel<<<
-        reduce_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
-        cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
-        exp_w.data_ptr<float>(), kk.data_ptr<float>(), kk_a.data_ptr<float>(),
-        k.data_ptr<float>(), v.data_ptr<float>(), r.data_ptr<float>(),
-        out.data_ptr<float>(), output_numel, num_heads, cache.stride(0));
+    if (rwkv7_recurrent_t1_exact_cache_wide_enabled()) {
+      constexpr int kOutputVector = 8;
+      constexpr int kThreadsX = 16;
+      constexpr int kThreadsY = 4;
+      const int64_t outputs_per_block = kThreadsX * kOutputVector;
+      const int64_t wide_blocks =
+          (output_numel + outputs_per_block - 1) / outputs_per_block;
+      rwkv7_recurrent_t1_exact_cache_full_fusion_kernel<kOutputVector, kThreadsX><<<
+          wide_blocks, dim3(kThreadsX, kThreadsY), 0, stream>>>(
+          cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
+          exp_w.data_ptr<float>(), kk.data_ptr<float>(), kk_a.data_ptr<float>(),
+          k.data_ptr<float>(), v.data_ptr<float>(), r.data_ptr<float>(),
+          out.data_ptr<float>(), output_numel, num_heads, cache.stride(0));
+    } else {
+      rwkv7_recurrent_t1_exact_cache_full_fusion_kernel<4, 32><<<
+          reduce_blocks, dim3(32, 4), 0, stream>>>(
+          cache.data_ptr<float>(), slot_ids.data_ptr<int64_t>(),
+          exp_w.data_ptr<float>(), kk.data_ptr<float>(), kk_a.data_ptr<float>(),
+          k.data_ptr<float>(), v.data_ptr<float>(), r.data_ptr<float>(),
+          out.data_ptr<float>(), output_numel, num_heads, cache.stride(0));
+    }
   } else {
     auto sa = torch::empty(scalar_shape, cache.options());
     rwkv7_recurrent_t1_exact_cache_reduce_kernel<<<

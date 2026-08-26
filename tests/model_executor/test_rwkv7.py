@@ -817,12 +817,16 @@ def test_rwkv7_recurrent_t1_exact_direct_cache_matches_reference(
     reason="RWKV7 exact direct-cache CUDA op is unavailable",
 )
 @pytest.mark.parametrize("batch_size", [1, 8, 128])
+@pytest.mark.parametrize("wide_cta", [False, True])
 def test_rwkv7_recurrent_t1_exact_direct_cache_full_fusion_matches_over_steps(
-    monkeypatch, batch_size
+    monkeypatch, batch_size, wide_cta
 ):
     """Protect against exact-but-single-step-only cache fusion regressions."""
     monkeypatch.delenv("RWKV7_USE_EXACT_RECURRENT_T1_DIRECT_CACHE", raising=False)
     monkeypatch.setenv("RWKV7_USE_EXACT_RECURRENT_T1_FULL_FUSION", "1")
+    monkeypatch.setenv(
+        "RWKV7_USE_EXACT_RECURRENT_T1_WIDE_CTA", "1" if wide_cta else "0"
+    )
     num_slots, num_heads, head_dim, value_dim = 257, 4, 64, 64
     torch.manual_seed(907 + batch_size)
     cache_backing = torch.randn(
