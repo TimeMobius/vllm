@@ -11,6 +11,7 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
     FunctionDefinition,
 )
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage
+from vllm.parser.parser_manager import ParserManager
 from vllm.tool_parsers import ToolParserManager
 
 
@@ -26,6 +27,17 @@ class SimpleTokenizer:
 @pytest.fixture()
 def parser():
     parser_cls = ToolParserManager.get_tool_parser("rwkv")
+    return parser_cls(SimpleTokenizer())
+
+
+@pytest.fixture()
+def delegating_parser():
+    parser_cls = ParserManager.get_parser(
+        tool_parser_name="rwkv",
+        reasoning_parser_name="rwkv",
+        enable_auto_tools=True,
+    )
+    assert parser_cls is not None
     return parser_cls(SimpleTokenizer())
 
 
@@ -73,6 +85,7 @@ def _tool_xml(*, content: str = "") -> str:
 def test_rwkv_tool_parser_is_registered(parser):
     assert parser.tool_call_start_token == "<tool_call>"
     assert parser.tool_call_end_token == "</tool_call>"
+    assert parser.supports_required_and_named is False
 
 
 def test_adjust_request_keeps_sp_tool_markers(parser, chat_request):
@@ -81,6 +94,107 @@ def test_adjust_request_keeps_sp_tool_markers(parser, chat_request):
     adjusted_request = parser.adjust_request(chat_request)
 
     assert adjusted_request.skip_special_tokens is False
+
+
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "required",
+        {"type": "function", "function": {"name": "get_weather"}},
+    ],
+)
+def test_adjust_request_skips_json_guidance_for_native_choices(
+    parser, weather_tool, tool_choice
+):
+    request = ChatCompletionRequest(
+        model="rwkv-test",
+        messages=[],
+        tools=[weather_tool.model_dump()],
+        tool_choice=tool_choice,
+    )
+
+    adjusted_request = parser.adjust_request(request)
+
+    assert adjusted_request.structured_outputs is None
+    assert adjusted_request.skip_special_tokens is False
+
+
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "required",
+        {"type": "function", "function": {"name": "get_weather"}},
+    ],
+)
+def test_required_and_named_choices_use_rwkv_xml_parser(
+    delegating_parser, weather_tool, tool_choice
+):
+    request = ChatCompletionRequest(
+        model="rwkv-test",
+        messages=[],
+        tools=[weather_tool.model_dump()],
+        tool_choice=tool_choice,
+    )
+
+    reasoning, content, tool_calls = delegating_parser.parse(
+        "<think>planning</think>" + _tool_xml(content="I'll check.\n"),
+        request,
+        enable_auto_tools=True,
+    )
+
+    assert reasoning == "planning"
+    assert content == "I'll check.\n"
+    assert tool_calls is not None
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "get_weather"
+    assert json.loads(tool_calls[0].arguments) == {
+        "city": "杭州",
+        "days": 2,
+        "rain": True,
+    }
+
+
+def test_required_choice_uses_rwkv_xml_parser_for_streaming(
+    delegating_parser, weather_tool
+):
+    request = ChatCompletionRequest(
+        model="rwkv-test",
+        messages=[],
+        tools=[weather_tool],
+        tool_choice="required",
+    )
+    deltas = [
+        "<think>planning</think>I'll check.\n<tool_call>\n",
+        '<invoke name="get_weather">\n',
+        '<parameter name="city">杭州</parameter>\n',
+        '<parameter name="days">2</parameter>\n',
+        '<parameter name="rain">true</parameter>\n',
+        "</invoke>\n",
+        "</tool_call>",
+    ]
+
+    messages = []
+    for index, delta in enumerate(deltas):
+        message = delegating_parser.parse_delta(
+            delta,
+            delegating_parser.model_tokenizer.encode(delta),
+            request,
+            finished=index == len(deltas) - 1,
+        )
+        if message is not None:
+            messages.append(message)
+
+    tool_messages = [message for message in messages if message.tool_calls]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content is None
+    assert len(tool_messages[0].tool_calls) == 1
+    call = tool_messages[0].tool_calls[0]
+    assert call.function.name == "get_weather"
+    assert json.loads(call.function.arguments) == {
+        "city": "杭州",
+        "days": 2,
+        "rain": True,
+    }
 
 
 def test_extract_tool_calls_non_streaming(parser, chat_request):

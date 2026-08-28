@@ -6,9 +6,13 @@ from collections.abc import Sequence
 from typing import Any
 
 import regex as re
+from openai.types.responses import ToolChoiceFunction
 
 from vllm.entrypoints.chat_utils import make_tool_call_id
-from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm.entrypoints.openai.chat_completion.protocol import (
+    ChatCompletionNamedToolChoiceParam,
+    ChatCompletionRequest,
+)
 from vllm.entrypoints.openai.engine.protocol import (
     DeltaFunctionCall,
     DeltaMessage,
@@ -17,6 +21,7 @@ from vllm.entrypoints.openai.engine.protocol import (
     FunctionCall,
     ToolCall,
 )
+from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.logger import init_logger
 from vllm.tokenizers import TokenizerLike
 from vllm.tool_parsers.abstract_tool_parser import ToolParser
@@ -38,6 +43,7 @@ class RWKVToolParser(ToolParser):
 
     tool_call_start_token = "<tool_call>"
     tool_call_end_token = "</tool_call>"
+    supports_required_and_named = False
 
     def __init__(self, tokenizer: TokenizerLike, tools: list[Any] | None = None):
         super().__init__(tokenizer, tools)
@@ -63,8 +69,18 @@ class RWKVToolParser(ToolParser):
             )
 
     def adjust_request(
-        self, request: ChatCompletionRequest
-    ) -> ChatCompletionRequest:
+        self, request: ChatCompletionRequest | ResponsesRequest
+    ) -> ChatCompletionRequest | ResponsesRequest:
+        named_tool_choice = isinstance(
+            request.tool_choice,
+            (ChatCompletionNamedToolChoiceParam, ToolChoiceFunction),
+        )
+        if request.tools and (request.tool_choice == "required" or named_tool_choice):
+            # RWKV emits native XML tool calls. Do not let the base parser
+            # replace that format with JSON guided decoding.
+            request.skip_special_tokens = False
+            return request
+
         request = super().adjust_request(request)
         if request.tools and request.tool_choice != "none":
             # <tool_call> is an SP special token. Keep it in the decoded
