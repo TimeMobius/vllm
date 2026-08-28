@@ -2,10 +2,17 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 from vllm.reasoning.abs_reasoning_parsers import ReasoningParser
 from vllm.tokenizers import TokenizerLike
+
+if TYPE_CHECKING:
+    from vllm.entrypoints.openai.chat_completion.protocol import (
+        ChatCompletionRequest,
+    )
+    from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 
 
 class RWKVReasoningParser(ReasoningParser):
@@ -49,6 +56,19 @@ class RWKVReasoningParser(ReasoningParser):
                 f"{self.__class__.__name__} could not tokenize {marker!r}."
             )
         return list(token_ids)
+
+    def adjust_request(
+        self, request: "ChatCompletionRequest | ResponsesRequest"
+    ) -> "ChatCompletionRequest | ResponsesRequest":
+        """Preserve RWKV reasoning markers for the chat parser.
+
+        ``<think>`` may be registered as a special token. The chat/Responses
+        parser therefore needs the detokenizer to keep special tokens visible;
+        Completion requests do not call this parser and retain their default
+        ``skip_special_tokens=True`` behavior.
+        """
+        request.skip_special_tokens = False
+        return request
 
     @staticmethod
     def _find_subsequence(values: Sequence[int], pattern: Sequence[int]) -> int:

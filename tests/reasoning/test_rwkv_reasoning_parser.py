@@ -5,6 +5,8 @@ import pytest
 
 import vllm.config.reasoning as reasoning_config_module
 from vllm.config.reasoning import ReasoningConfig
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 from vllm.reasoning import ReasoningParser, ReasoningParserManager
 
@@ -99,6 +101,30 @@ def test_rwkv_parser_exposes_reasoning_markers_for_config(tokenizer):
 
     assert parser.reasoning_start_str == "<think>"
     assert parser.reasoning_end_str == "</think>"
+
+
+def test_rwkv_reasoning_parser_preserves_special_tokens_for_chat(parser):
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[],
+        skip_special_tokens=True,
+    )
+
+    adjusted_request = parser.adjust_request(request)
+
+    assert adjusted_request is request
+    assert adjusted_request.skip_special_tokens is False
+
+
+def test_completion_keeps_skip_special_tokens_default():
+    request = CompletionRequest(model="test-model", prompt="hello")
+
+    sampling_params = request.to_sampling_params(
+        max_tokens=16,
+        default_sampling_params={},
+    )
+
+    assert sampling_params.skip_special_tokens is True
 
 
 def test_rwkv_reasoning_config_auto_initializes_token_ids(tokenizer, monkeypatch):
